@@ -1,0 +1,27 @@
+# RL Framework Requirements
+# =========================
+
+# Core dependencies
+torch>=2.0.0
+numpy>=1.21.0
+gymnasium>=0.29.0
+matplotlib>=3.5.0
+
+# For MuJoCo environments (optional)
+# gymnasium[mujoco]>=0.29.0
+
+# For Atari environments (optional)
+# gymnasium[atari]>=0.29.0
+# gymnasium[accept-rom-license]
+
+# For video recording
+imageio>=2.9.0
+imageio-ffmpeg>=0.4.5
+
+# Development utilities
+tqdm>=4.60.0
+tensorboard>=2.10.0
+
+# For advanced features (optional)
+# scipy>=1.7.0
+# scikit-learn>=1.0.0
