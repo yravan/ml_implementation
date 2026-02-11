@@ -1,0 +1,555 @@
+"""
+Computational Graph
+===================
+
+A framework for building and executing computational graphs that enable automatic differentiation.
+
+Theory
+------
+Deep learning computations can be represented as Directed Acyclic Graphs (DAGs) where:
+- Nodes represent operations (add, multiply, matrix multiply, activation functions)
+- Edges represent data flow (tensors flowing between operations)
+
+During the **forward pass**, we compute outputs and store intermediate values.
+During the **backward pass**, we traverse the graph in reverse topological order,
+applying the chain rule to compute gradients of the loss with respect to all parameters.
+
+This is the foundation of backpropagation. PyTorch's autograd, TensorFlow's eager mode,
+and JAX's autodiff all work on similar principles.
+
+Key concepts:
+1. **Tensor with gradient tracking**: Wraps NumPy arrays, tracks operations applied
+2. **Operation nodes**: Functions that know how to compute forward and backward
+3. **Topological sorting**: Order nodes so all dependencies come before dependents
+4. **Gradient accumulation**: Sum gradients when a tensor is used multiple times
+
+Math
+----
+# Chain rule for scalar functions:
+# If y = f(g(x)), then dy/dx = (dy/dg) * (dg/dx)
+
+# For vector/matrix functions (Jacobian-vector products):
+# If y = f(x) where x ∈ R^n, y ∈ R^m, then:
+#   Jacobian J = ∂y/∂x has shape (m, n)
+#   J_ij = ∂y_i/∂x_j
+#
+# In backprop, we compute vector-Jacobian products (VJPs):
+#   If L is a scalar loss, we have grad_y = ∂L/∂y (shape m)
+#   Then grad_x = J^T @ grad_y = Σ_i (∂y_i/∂x) * (∂L/∂y_i)
+
+# Example: y = Wx + b
+#   Forward: y = Wx + b
+#   Backward given ∂L/∂y:
+#     ∂L/∂W = ∂L/∂y @ x^T
+#     ∂L/∂x = W^T @ ∂L/∂y
+#     ∂L/∂b = ∂L/∂y
+
+Algorithm
+---------
+Forward Pass:
+    for each operation in topological order:
+        output = operation.forward(inputs)
+        store output for backward pass
+
+Backward Pass:
+    grad_outputs[loss_node] = 1.0  # dL/dL = 1
+    for each operation in reverse topological order:
+        grad_inputs = operation.backward(grad_outputs[output])
+        accumulate grad_inputs to corresponding input nodes
+
+References
+----------
+- "Automatic Differentiation in Machine Learning: a Survey" (Baydin et al., 2018)
+  https://arxiv.org/abs/1502.05767
+- Karpathy's micrograd: Minimal autodiff implementation
+  https://github.com/karpathy/micrograd
+- CS231n: Backpropagation lecture
+  https://cs231n.github.io/optimization-2/
+- PyTorch Autograd tutorial
+  https://pytorch.org/tutorials/beginner/blitz/autograd_tutorial.html
+
+Implementation Notes
+--------------------
+- Store references to parents/children for graph traversal
+- Use weak references to avoid memory leaks with circular dependencies
+- Accumulate gradients (don't overwrite) when tensor used multiple times
+- Clear cached values after backward to free memory
+- Consider using __slots__ for memory efficiency in Tensor class
+"""
+from contextlib import contextmanager
+
+# Implementation Status: NOT STARTED
+# Complexity: Hard
+# Prerequisites: None (foundational module)
+
+import numpy as np
+from typing import List, Optional, Tuple, Callable, Set, Union
+
+# Import Function base class and all operations from functionals
+from .functionals import (
+    Function,
+    # Basic arithmetic (implemented)
+    Add,
+    Mul,
+    MatMul,
+    Pow,
+    Sum,
+    Exp,
+    Log,
+    Reshape,
+    Transpose,
+    Max,
+    # Activations (stubs)
+    Softmax,
+    # Shape ops (stubs)
+    Concat,
+    Stack,
+    Split,
+    Slice,
+    Mean,
+    Var,
+    # Neural network ops (stubs)
+    # Internal
+    Abs,
+    Clamp,
+    LogSigmoid,
+    Sigmoid,
+    Identity,
+    LogSoftmax,
+    _no_grad
+)
+
+
+def convert_to_function(cls):
+    def f(*class_args, **class_kwargs):
+        fn = cls()
+        class_args = list(class_args)
+        children = []
+        for i, arg in enumerate(class_args):
+            if isinstance(arg, Tensor):
+                children.append(arg)
+                class_args[i] = arg.data
+            if isinstance(arg, (float, int)) and not isinstance(arg, bool):
+                class_args[i] = np.array(arg)
+        for k,v in class_kwargs.items():
+            if isinstance(v, Tensor):
+                children.append(v)
+                class_kwargs[k] = v.data
+            if isinstance(v, (float, int)) and not isinstance(v, bool):
+                class_kwargs[k] = np.array(v)
+        requires_grad = any(arg.requires_grad for arg in children)
+        out = Tensor(data=fn.forward(*class_args, **class_kwargs),
+                     requires_grad=requires_grad,
+                     _children=tuple(children),
+                     _grad_fn=fn
+        )
+        return out
+    return f
+
+identity = convert_to_function(Identity)
+set = convert_to_function(Set)
+concat = convert_to_function(Concat)
+add = convert_to_function(Add)
+mul = convert_to_function(Mul)
+matmul = convert_to_function(MatMul)
+pow = convert_to_function(Pow)
+sum = convert_to_function(Sum)
+clamp = convert_to_function(Clamp)
+exp = convert_to_function(Exp)
+log = convert_to_function(Log)
+reshape = convert_to_function(Reshape)
+transpose = convert_to_function(Transpose)
+max = convert_to_function(Max)
+abs = convert_to_function(Abs)
+sigmoid = convert_to_function(Sigmoid)
+logsigmoid = convert_to_function(LogSigmoid)
+softmax = convert_to_function(Softmax)
+logsoftmax = convert_to_function(LogSoftmax)
+split = convert_to_function(Split)
+slice = convert_to_function(Slice)
+mean = convert_to_function(Mean)
+var = convert_to_function(Var)
+
+
+class Tensor:
+    """
+    A tensor that tracks its computational history for automatic differentiation.
+
+    This is similar to PyTorch's Tensor with requires_grad=True.
+
+    Attributes:
+        data: The underlying NumPy array
+        grad: Gradient of loss with respect to this tensor (computed during backward)
+        requires_grad: Whether to track gradients for this tensor
+        _grad_fn: The operation that created this tensor (None for leaf tensors)
+        _children: Tensors that were inputs to the operation that created this
+        is_leaf: True if this tensor was created by user (not by an operation)
+
+    Example:
+        >>> x = Tensor(np.array([1.0, 2.0, 3.0]), requires_grad=True)
+        >>> y = x * 2
+        >>> z = y.sum()
+        >>> z.backward()
+        >>> x.grad
+        array([2., 2., 2.])  # dz/dx = d(sum(2*x))/dx = 2
+
+    PyTorch Analogy:
+        x = torch.tensor([1., 2., 3.], requires_grad=True)
+        y = x * 2
+        z = y.sum()
+        z.backward()
+        x.grad  # tensor([2., 2., 2.])
+    """
+
+    def __init__(self, data: Union[np.ndarray, float, list],
+                 requires_grad: bool = False,
+                 _children: Tuple['Tensor', ...] = (),
+                 _grad_fn: Optional['Function'] = None):
+        """
+        Initialize a Tensor.
+
+        Args:
+            data: The numerical data (will be converted to np.ndarray)
+            requires_grad: Whether to compute gradients for this tensor
+            _children: Parent tensors in the computational graph (internal use)
+            _grad_fn: The function that created this tensor (internal use)
+        """
+        self.data = np.array(data)
+        global _no_grad
+        self.requires_grad = not _no_grad and requires_grad
+        self._children = _children
+        self._grad_fn = _grad_fn
+        self.is_leaf = _grad_fn is None
+        self.grad: Optional[np.ndarray] = None
+
+    @property
+    def shape(self) -> Tuple[int, ...]:
+        """Return shape of underlying data."""
+        return self.data.shape
+
+    @property
+    def ndim(self) -> int:
+        """Return number of dimensions."""
+        return self.data.ndim
+
+    @property
+    def dtype(self):
+        """Data type."""
+        return self.data.dtype
+
+    @property
+    def size(self) -> int:
+        """Total number of elements."""
+        return self.data.size
+
+    def numpy(self) -> np.ndarray:
+        """Return the underlying numpy array."""
+        return self.data
+
+    def backward(self, grad: Optional[np.ndarray] = None) -> None:
+        """
+        Compute gradients via backpropagation.
+
+        This traverses the computational graph in reverse topological order,
+        computing gradients using the chain rule.
+
+        Args:
+            grad: Gradient of loss w.r.t. this tensor. If None and tensor is scalar,
+                  defaults to 1.0 (for loss.backward()).
+
+        Raises:
+            RuntimeError: If called on non-scalar tensor without grad argument
+
+        Example:
+            >>> x = Tensor([1.0, 2.0], requires_grad=True)
+            >>> y = (x ** 2).sum()  # scalar
+            >>> y.backward()  # No grad needed for scalar
+            >>> x.grad
+            array([2., 4.])
+        """
+        if self.grad is None:
+            if self.ndim == 0:
+                self.grad = 1.0
+            else:
+                self.grad = np.ones_like(self.data)
+        else:
+            if grad.ndim != self.ndim:
+                raise RuntimeError("Expected grad with the same dim")
+            if grad.shape != self.shape:
+                raise RuntimeError("Expected grad with the same shape")
+
+        topo = []
+        stack = []
+        visited = {}
+
+        def dfs(node):
+            stack.append(node)
+            visited[node] = "in progress"
+            for child in node._children:
+                if child not in visited:
+                    dfs(child)
+                elif visited[child] == "in progress":
+                    raise RuntimeError("Computation Graph not a DAG")
+                else:
+                    continue
+            visited[node] = "done"
+            topo.append(node)
+            stack.pop()
+
+        dfs(self)
+        reversed_topo = topo[::-1]
+
+        for node in reversed_topo:
+            if node.requires_grad and node._grad_fn is not None:
+                child_grads = node._grad_fn.backward(node.grad)
+                for child, child_grad in zip(node._children, child_grads):
+                    if child.requires_grad:
+                        if child.grad is None:
+                            child.grad = child_grad
+                        else:
+                            child.grad += child_grad
+
+    def zero_grad(self) -> None:
+        """Zero out gradients. Call before each backward pass in training."""
+        self.grad = None
+
+    # ==================== Arithmetic Operations ====================
+    # Each operation creates a new Tensor with appropriate _grad_fn
+
+    def __add__(self, other: Union['Tensor', float, np.ndarray]) -> 'Tensor':
+        """Element-wise addition: self + other."""
+        return add(self, other)
+
+    def __radd__(self, other: Union[float, np.ndarray]) -> 'Tensor':
+        """Reverse addition for scalar + Tensor."""
+        return add(other, self)
+
+    def __mul__(self, other: Union['Tensor', float, np.ndarray]) -> 'Tensor':
+        """Element-wise multiplication: self * other."""
+        return mul(self, other)
+
+    def __rmul__(self, other: Union[float, np.ndarray]) -> 'Tensor':
+        """Reverse multiplication."""
+        return mul(other, self)
+
+    def __neg__(self) -> 'Tensor':
+        """Negation: -self."""
+        return -1 * self
+
+    def __sub__(self, other: Union['Tensor', float, np.ndarray]) -> 'Tensor':
+        """Subtraction: self - other."""
+        return self + (-other)
+
+    def __rsub__(self, other: Union[float, np.ndarray]) -> 'Tensor':
+        """Reverse subtraction."""
+        return other + (-self)
+
+    def __truediv__(self, other: Union['Tensor', float, np.ndarray]) -> 'Tensor':
+        """Division: self / other."""
+        if isinstance(other, (int, np.integer)):
+            other = float(other)
+        return self * (other ** -1)
+
+    def __rtruediv__(self, other: Union[float, np.ndarray]) -> 'Tensor':
+        """Reverse division."""
+        return other * (self ** -1)
+
+    def __pow__(self, power: float) -> 'Tensor':
+        """Power: self ** power."""
+        return pow(self, power)
+
+    def __matmul__(self, other: 'Tensor') -> 'Tensor':
+        """Matrix multiplication: self @ other."""
+        return matmul(self, other)
+
+    def abs(self) -> 'Tensor':
+        """Absolute sum: self + other."""
+        return abs(self)
+
+    def clamp(self, min_val: Optional[Union[float, np.ndarray, int, 'Tensor']] = 0, max_val: Optional[Union[float, np.ndarray, int, 'Tensor']] = 1) -> 'Tensor':
+        return clamp(self, min_val, max_val)
+
+    def __ge__(self, other: Union['Tensor', float, int, np.ndarray]) -> 'Tensor':
+        if isinstance(other, Tensor):
+            return Tensor(np.greater_equal(self.data, other.data))
+        else:
+            return Tensor(np.greater_equal(self.data, other))
+
+    def __gt__(self, other: Union['Tensor', float, int, np.ndarray]) -> 'Tensor':
+        if isinstance(other, Tensor):
+            return Tensor(np.greater(self.data, other.data))
+        else:
+            return Tensor(np.greater(self.data, other))
+
+    def __le__(self, other: Union['Tensor', float, int, np.ndarray]) -> 'Tensor':
+        if isinstance(other, Tensor):
+            return Tensor(np.less_equal(self.data, other.data))
+        else:
+            return Tensor(np.less_equal(self.data, other))
+
+    def __lt__(self, other: Union['Tensor', float, int, np.ndarray]) -> 'Tensor':
+        if isinstance(other, Tensor):
+            return Tensor(np.less(self.data, other.data))
+        else:
+            return Tensor(np.less(self.data, other))
+
+    def __invert__(self) -> 'Tensor':
+        if not self.dtype == np.bool_:
+            raise RuntimeError('Cannot invert non bool tensor')
+        return Tensor(~self.data)
+
+    def copy(self) -> 'Tensor':
+        return identity(self)
+
+    def detach(self) -> 'Tensor':
+        out = self.copy()
+        out.requires_grad = False
+        out.grad = None
+        return out
+
+    def argmax(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
+        arg = np.argmax(self.data, axis=axis, keepdims=keepdims)
+        return Tensor(arg)
+
+    # ==================== Reduction Operations ====================
+
+    def sum(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
+        """Sum elements, optionally along an axis."""
+        return sum(self, axis=axis, keepdims=keepdims)
+
+    def mean(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
+        """Mean of elements."""
+        return mean(self, axis=axis, keepdims=keepdims)
+
+    def max(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
+        """Max of elements or element-wise max with another tensor."""
+        return max(self, axis=axis, keepdims=keepdims)
+    def var(self, axis: Optional[Union[int, Tuple[int, ...]]] = None, keepdims: bool = False) -> 'Tensor':
+        """Variance of elements."""
+        return var(self, axis=axis, keepdims=keepdims)
+
+    # ==================== Shape Operations ====================
+
+    def reshape(self, *shape: int) -> 'Tensor':
+        """Reshape tensor."""
+        return reshape(self, shape)
+
+    def transpose(self, *axes: int) -> 'Tensor':
+        """Transpose tensor."""
+        return transpose(self, *axes)
+
+    def split(self, indices_or_sections, axis:int = 0) -> 'Tensor':
+        return split(self, indices_or_sections, axis=axis)
+
+    def fill(self, value: float) -> 'Tensor':
+        self.data[:] = value
+        self.requires_grad = False
+        self._children = None
+        return self
+
+    def set_in_place(self, indices: Union[int, Tuple[int], List[int], np.ndarray, 'Tensor'], value: Union[float, np.ndarray, 'Tensor']) -> 'Tensor':
+        if isinstance(indices, Tensor):
+            indices = indices.data
+        if isinstance(value, Tensor):
+            self.requires_grad = self.requires_grad or value.requires_grad
+            value = value.data
+            self._children = self._children + (value,)
+        else:
+            self.requires_grad = False
+            self._children = None
+        self.data[indices] = value
+        return self
+
+    def set(self, indices: Union[int, Tuple[int], List[int], np.ndarray, 'Tensor'], values: Union[float, np.ndarray, 'Tensor']) -> 'Tensor':
+        return set(self, indices, values)
+
+    @property
+    def T(self) -> 'Tensor':
+        """Matrix transpose (last two dimensions)."""
+        return self.transpose()
+
+    def __getitem__(self, slices) -> 'Tensor':
+        """Indexing/slicing."""
+        if isinstance(slices, Tensor):
+            slices = tuple(slices.data)
+        return slice(self, slices)
+
+    def sigmoid(self) -> 'Tensor':
+        """Sigmoid activation."""
+        return sigmoid(self)
+
+    def log_sigmoid(self) -> 'Tensor':
+        """Logarithm sigmoid activation."""
+        return logsigmoid(self)
+
+    def exp(self) -> 'Tensor':
+        """Exponential."""
+        return exp(self)
+
+    def log(self) -> 'Tensor':
+        """Natural logarithm."""
+        return log(self)
+
+    def softmax(self, axis: int = -1) -> 'Tensor':
+        """Softmax activation."""
+        return softmax(self, axis=axis)
+
+    def __repr__(self) -> str:
+        """String representation."""
+        return f"Tensor({self.data}, requires_grad={self.requires_grad})"
+
+
+def maximum(*inputs: Union[Tensor, np.ndarray, float, int]) -> Tensor:
+    inputs = list(inputs)
+    for i, input in enumerate(inputs):
+        if not isinstance(input, Tensor):
+            inputs[i] = Tensor(input)
+    middle = stack(*inputs)
+    return middle.max(axis=0)
+
+def minimum(*inputs: Union[Tensor, np.ndarray, float, int]) -> Tensor:
+    inputs = list(inputs)
+    for i, input in enumerate(inputs):
+        if not isinstance(input, Tensor):
+            inputs[i] = Tensor(input)
+    middle = stack(*inputs)
+    return -(-middle).max(axis=0)
+
+def stack(*inputs: Union[Tensor, np.ndarray, float, int], axis: int = 0) -> Tensor:
+    inputs = list(inputs)
+    for i, input in enumerate(inputs):
+        if not isinstance(input, Tensor):
+            inputs[i] = Tensor(input)
+    fn = Stack()
+    data_inputs = [i.data for i in inputs]
+    broadcasted = np.broadcast_arrays(*data_inputs)
+    return Tensor(fn.forward(*broadcasted, axis=axis),
+                  requires_grad=any([i.requires_grad for i in inputs]),
+                  _children=tuple(inputs),
+                  _grad_fn=fn,
+    )
+
+
+
+
+# ==================== Context Manager ====================
+
+@contextmanager
+def no_grad():
+    """
+    Context manager to disable gradient tracking.
+
+    Useful for evaluation/inference when you don't need gradients.
+
+    Example:
+        >>> with no_grad():
+        ...     y = model(x)  # No gradient tracking
+    """
+    global _no_grad
+    old_value = _no_grad
+    try:
+        _no_grad = True
+        yield
+    finally:
+        _no_grad = old_value
+
