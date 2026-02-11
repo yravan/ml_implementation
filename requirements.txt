@@ -1,0 +1,34 @@
+# ML Learning Repository Dependencies
+# =====================================
+# Core dependencies for implementing ML from scratch
+
+# Core numerical computing
+numpy>=1.21.0
+
+# Visualization
+matplotlib>=3.4.0
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=3.0.0  # Coverage reporting
+
+# RL environments
+gymnasium>=0.28.0
+# mujoco>=2.3.0  # Optional: for physics simulation (uncomment if needed)
+
+# Configuration
+pyyaml>=6.0
+
+# Progress bars
+tqdm>=4.62.0
+
+# Optional: for comparing with reference implementations
+# torch>=2.0.0  # Uncomment to compare your implementations with PyTorch
+
+# Optional: for advanced features
+# scipy>=1.7.0  # For special functions (erf, etc.)
+# scikit-learn>=1.0.0  # For data loading utilities and comparison
+
+# Jupyter support (optional)
+# jupyter>=1.0.0
+# ipywidgets>=8.0.0
