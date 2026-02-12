@@ -64,7 +64,9 @@ def train_epoch(
     # Accumulators for metrics (store running correct counts)
     metric_totals = {name: 0.0 for name in metrics}
 
+    pre_load = time.time()
     for batch_idx, batch in enumerate(train_loader):
+        print(f"Data Loading: {time.time() - pre_load:.3f}s")
         batch_start = time.time()
 
         inputs, targets = batch[0], batch[1]
@@ -75,17 +77,17 @@ def train_epoch(
         # Forward
         start = time.time()
         logits = model(x)
-        # print(f"Forward:  {time.time() - start:.3f}s")
+        print(f"Forward:  {time.time() - start:.3f}s")
         loss = criterion(logits, y, reduction='mean')
 
         # Backward
         optimizer.zero_grad()
         start = time.time()
         loss.backward()
-        # print(f"Backward: {time.time() - start:.3f}s")
+        print(f"Backward: {time.time() - start:.3f}s")
         start = time.time()
         optimizer.step()
-        # print(f"Optimization: {time.time() - start:.3f}s")
+        print(f"Optimization: {time.time() - start:.3f}s")
 
         # Track loss
         batch_loss = loss.data.item() if loss.data.ndim == 0 else loss.data.mean()
@@ -109,6 +111,7 @@ def train_epoch(
                 parts.append(f"{name}: {val*100:.2f}%")
             parts.append(f"{n / batch_time:.1f} img/s")
             print(f"    {' | '.join(parts)}")
+        pre_load = time.time()
 
     results = {'loss': total_loss / total_samples}
     for name in metrics:

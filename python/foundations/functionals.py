@@ -14,7 +14,7 @@ The Tensor class uses these Functions to build the computational graph.
 """
 
 import numpy as np
-np.seterr(all='raise')  # FloatingPointError on any overflow/invalid/divide
+np.seterr(all='raise', under='ignore')  # FloatingPointError on any overflow/invalid/divide
 from typing import List, Optional, Tuple, Union
 from abc import ABC, abstractmethod
 

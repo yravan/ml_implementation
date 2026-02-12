@@ -38,7 +38,6 @@ _c_lib = None  # loaded on first use
 _f32p = ctypes.POINTER(ctypes.c_float)
 _f64p = ctypes.POINTER(ctypes.c_double)
 _ci = ctypes.c_int
-
 def _load_c_extension():
     """Compile (if needed) and load the C im2col/col2im shared library."""
     global _c_lib
@@ -56,33 +55,54 @@ def _load_c_extension():
         )
         return None
 
-    # Recompile if source is newer than .so
     needs_compile = (
         not so.exists()
         or os.path.getmtime(src) > os.path.getmtime(so)
     )
 
     if needs_compile:
+        # Try OpenMP first, fall back to without
+        omp_prefix = None
+        for prefix in ["/opt/homebrew", "/usr/local"]:
+            if os.path.exists(f"{prefix}/opt/libomp/lib/libomp.dylib"):
+                omp_prefix = f"{prefix}/opt/libomp"
+                break
+
+        if omp_prefix:
+            cmd = [
+                "clang", "-O3", "-mcpu=native", "-ffast-math",
+                "-Xpreprocessor", "-fopenmp",
+                f"-I{omp_prefix}/include",
+                f"-L{omp_prefix}/lib", "-lomp",
+                "-shared", "-fPIC",
+                "-o", str(so), str(src),
+            ]
+        else:
+            warnings.warn(
+                "libomp not found — compiling without OpenMP. "
+                "Run 'brew install libomp' for multi-threaded im2col/col2im.",
+                RuntimeWarning, stacklevel=3,
+            )
+            cmd = [
+                "clang", "-O3", "-mcpu=native", "-ffast-math",
+                "-shared", "-fPIC",
+                "-o", str(so), str(src),
+            ]
+
         try:
             subprocess.check_call(
-                [
-                    "gcc", "-O3", "-march=native", "-ffast-math",
-                    "-shared", "-fPIC",
-                    "-o", str(so), str(src),
-                ],
+                cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
             warnings.warn(
-                "Failed to compile C extension — using pure-numpy fallback. "
-                "Install gcc for 2-5× speedup on im2col/col2im.",
+                "Failed to compile C extension — using pure-numpy fallback.",
                 RuntimeWarning, stacklevel=3,
             )
             return None
 
     lib = ctypes.CDLL(str(so))
-    # Declare signatures
     for suffix, ptr_t in [("f32", _f32p), ("f64", _f64p)]:
         for name in [f"im2col_{suffix}", f"col2im_{suffix}"]:
             fn = getattr(lib, name)
@@ -91,7 +111,6 @@ def _load_c_extension():
 
     _c_lib = lib
     return lib
-
 
 # =============================================================================
 # Helper Functions

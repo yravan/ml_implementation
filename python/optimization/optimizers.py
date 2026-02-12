@@ -68,6 +68,7 @@ Implementation Notes
 - Use float64 for optimizer states to avoid numerical issues
 - Weight decay should be handled explicitly, not through L2 loss
 """
+import time
 from abc import abstractmethod
 
 # Implementation Status: NOT STARTED
@@ -77,10 +78,81 @@ from abc import abstractmethod
 import numpy as np
 from typing import List, Tuple, Optional, Dict, Any, Iterator, Union
 
-from httplib2.auth import params
-from sympy.physics.units import momentum
-
 from python.foundations import Tensor
+
+import ctypes
+import subprocess
+import pathlib
+import os
+import warnings
+
+_optim_lib = None
+_f32p = ctypes.POINTER(ctypes.c_float)
+_ci = ctypes.c_int
+_cf = ctypes.c_float
+
+def _load_optim_c():
+    global _optim_lib
+    if _optim_lib is not None:
+        return _optim_lib
+
+    src = pathlib.Path(__file__).parent / "_optim_c.c"
+    so  = pathlib.Path(__file__).parent / "_optim_c.so"
+
+    if not src.exists():
+        return None
+
+    needs_compile = not so.exists() or os.path.getmtime(src) > os.path.getmtime(so)
+
+    if needs_compile:
+        omp_prefix = None
+        for prefix in ["/opt/homebrew", "/usr/local"]:
+            if os.path.exists(f"{prefix}/opt/libomp/lib/libomp.dylib"):
+                omp_prefix = f"{prefix}/opt/libomp"
+                break
+
+        if omp_prefix:
+            cmd = [
+                "clang", "-O3", "-mcpu=native", "-ffast-math",
+                "-Xpreprocessor", "-fopenmp",
+                f"-I{omp_prefix}/include", f"-L{omp_prefix}/lib", "-lomp",
+                "-shared", "-fPIC", "-o", str(so), str(src),
+            ]
+        else:
+            cmd = [
+                "clang", "-O3", "-mcpu=native", "-ffast-math",
+                "-shared", "-fPIC", "-o", str(so), str(src),
+            ]
+
+        try:
+            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return None
+
+    lib = ctypes.CDLL(str(so))
+    lib.adamw_step_f32.argtypes = [
+        _f32p, _f32p, _f32p, _f32p, _ci,
+        _cf, _cf, _cf, _cf, _cf, _cf, _cf,
+    ]
+    lib.adamw_step_f32.restype = None
+    lib.adam_step_f32.argtypes = [
+        _f32p, _f32p, _f32p, _f32p, _ci,
+        _cf, _cf, _cf, _cf, _cf, _cf, _cf,
+    ]
+    lib.adam_step_f32.restype = None
+    lib.sgd_step_f32.argtypes = [
+        _f32p, _f32p, _f32p, _ci,
+        _cf, _cf, _cf, _cf, _cf, _ci,
+    ]
+    lib.sgd_step_f32.restype = None
+    lib.sgdw_step_f32.argtypes = [
+        _f32p, _f32p, _f32p, _ci,
+        _cf, _cf, _cf, _cf, _cf, _ci,
+    ]
+    lib.sgdw_step_f32.restype = None
+
+    _optim_lib = lib
+    return lib
 
 
 # =============================================================================
@@ -188,71 +260,97 @@ class SGD(Optimizer):
         ...     optimizer.step(grads)
     """
 
-    def __init__(self, params: Union[List[Tensor], List[Dict[str, Any]]],
-                 lr: float = 0.01,
-                 momentum: float = 0.0,
-                 weight_decay: float = 0.0,
-                 dampening: float = 0.0,
-                 nesterov: bool = False) -> None:
-        """
-        Initialize SGD optimizer.
-
-        Args:
-            params: List of parameter arrays to optimize
-            lr: Learning rate (step size)
-            momentum: Momentum factor (0 = vanilla SGD, 0.9 typical)
-            weight_decay: L2 regularization coefficient
-            dampening: Dampening for momentum (usually 0)
-            nesterov: Enable Nesterov accelerated gradient
-        """
-        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay, dampening=dampening, nesterov=nesterov)
+    def __init__(
+        self,
+        params: Union[List[Tensor], List[Dict[str, Any]]],
+        lr: float = 0.01,
+        momentum: float = 0.0,
+        weight_decay: float = 0.0,
+        dampening: float = 0.0,
+        nesterov: bool = False,
+    ) -> None:
+        defaults = dict(
+            lr=lr,
+            momentum=momentum,
+            weight_decay=weight_decay,
+            dampening=dampening,
+            nesterov=nesterov,
+        )
         super().__init__(params, **defaults)
-        self._initialize_velocities()
+        self._initialize_state()
+
+    def _initialize_state(self) -> None:
+        self.flattened_params = {}
+        for i, group in enumerate(self.param_groups):
+            params = group["params"]
+
+            params_flat = np.concatenate([p.data.ravel() for p in params])
+            offset = 0
+            for p in params:
+                n = p.data.size
+                p.data = params_flat[offset : offset + n].reshape(p.data.shape)
+                offset += n
+
+            self.flattened_params[i] = dict(
+                lr=group.get("lr", self.defaults["lr"]),
+                momentum=group.get("momentum", self.defaults["momentum"]),
+                dampening=group.get("dampening", self.defaults["dampening"]),
+                nesterov=1.0
+                if group.get("nesterov", self.defaults["nesterov"])
+                else 0.0,
+                weight_decay=group.get("weight_decay", self.defaults["weight_decay"]),
+                params_flat=params_flat,
+                velocity=np.zeros_like(params_flat),
+            )
 
     def step(self) -> None:
-        """
-        Perform one SGD optimization step.
-        """
-        for group in self.param_groups:
-            params = group['params']
-            for p in params:
-                # compute the gradient with weight decay
-                weight_decay = group.get('weight_decay', self.defaults['weight_decay'])
-                if weight_decay > 1e-8:
-                    grad = p.grad + weight_decay * p.data
-                else:
-                    grad = p.grad
+        lib = _load_optim_c()
+        for key, value in self.flattened_params.items():
+            params = self.param_groups[key]["params"]
+            grads_flat = np.concatenate([p.grad.ravel() for p in params])
 
-                # update the velocity in place
-                momentum = group.get('momentum', self.defaults['momentum'])
-                dampening = group.get('dampening', self.defaults['dampening'])
-                if momentum > 1e-8:
-                    velocity = self.velocities[p]
-                    velocity *= momentum
+            if lib is not None and value["params_flat"].dtype == np.float32:
+                lib.sgd_step_f32(
+                    value["params_flat"].ctypes.data_as(_f32p),
+                    grads_flat.ctypes.data_as(_f32p),
+                    value["velocity"].ctypes.data_as(_f32p),
+                    _ci(len(value["params_flat"])),
+                    _cf(value["lr"]),
+                    _cf(value["momentum"]),
+                    _cf(value["dampening"]),
+                    _cf(value["nesterov"]),
+                    _cf(value["weight_decay"]),
+                    _ci(self._step_count),
+                )
+            else:
+                # numpy fallback
+                lr = value["lr"]
+                mu = value["momentum"]
+                dampening = value["dampening"]
+                wd = value["weight_decay"]
+                nesterov = value["nesterov"] > 0.5
+                vel = value["velocity"]
+
+                grad = grads_flat
+                if wd > 1e-8:
+                    grad = grad + wd * value["params_flat"]
+
+                if mu > 1e-8:
+                    vel *= mu
                     if self._step_count > 0:
-                        velocity += grad * (1 - dampening)
+                        vel += grad * (1 - dampening)
                     else:
-                        velocity += grad
+                        vel += grad
+                    if nesterov:
+                        descent = grad + mu * vel
+                    else:
+                        descent = vel
                 else:
-                    velocity = grad
+                    descent = grad
 
-                # perform gradient descent in place
-                nesterov = group.get('nesterov', self.defaults['nesterov'])
-                if nesterov:
-                    descent_vector = velocity * momentum + p.grad
-                else:
-                    descent_vector = velocity
-                lr = group.get('lr', self.defaults['lr'])
-                p.data -= descent_vector * lr
+                value["params_flat"] -= lr * descent
+
         self._step_count += 1
-
-    def _initialize_velocities(self) -> None:
-        self.velocities = {}
-        for group in self.param_groups:
-            momentum = group.get('momentum', self.defaults['momentum'])
-            if momentum > 1e-8:
-                for p in group['params']:
-                    self.velocities[p] = np.zeros_like(p.data)
 
 class SGDW(SGD):
     """
@@ -270,40 +368,52 @@ class SGDW(SGD):
     """
 
     def step(self) -> None:
-        """
-        Perform one SGD optimization step.
-        """
-        for group in self.param_groups:
-            params = group["params"]
-            for p in params:
-                # compute the gradient with weight decay
-                weight_decay = group.get("weight_decay", self.defaults["weight_decay"])
-                lr = group.get("lr", self.defaults["lr"])
-                if weight_decay > 1e-8:
-                    p.data *= 1 - lr * weight_decay
+        lib = _load_optim_c()
+        for key, value in self.flattened_params.items():
+            params = self.param_groups[key]["params"]
+            grads_flat = np.concatenate([p.grad.ravel() for p in params])
 
-                grad = p.grad
+            if lib is not None and value["params_flat"].dtype == np.float32:
+                lib.sgdw_step_f32(
+                    value["params_flat"].ctypes.data_as(_f32p),
+                    grads_flat.ctypes.data_as(_f32p),
+                    value["velocity"].ctypes.data_as(_f32p),
+                    _ci(len(value["params_flat"])),
+                    _cf(value["lr"]),
+                    _cf(value["momentum"]),
+                    _cf(value["dampening"]),
+                    _cf(value["nesterov"]),
+                    _cf(value["weight_decay"]),
+                    _ci(self._step_count),
+                )
+            else:
+                # numpy fallback
+                lr = value["lr"]
+                mu = value["momentum"]
+                dampening = value["dampening"]
+                wd = value["weight_decay"]
+                nesterov = value["nesterov"] > 0.5
+                vel = value["velocity"]
 
-                # update the velocity in place
-                momentum = group.get("momentum", self.defaults["momentum"])
-                dampening = group.get("dampening", self.defaults["dampening"])
-                if momentum > 1e-8:
-                    velocity = self.velocities[p]
-                    velocity *= momentum
+                grad = grads_flat
+                if wd > 1e-8:
+                    value['params_flat'] *= (1 - lr * wd)
+
+                if mu > 1e-8:
+                    vel *= mu
                     if self._step_count > 0:
-                        velocity += grad * (1 - dampening)
+                        vel += grad * (1 - dampening)
                     else:
-                        velocity += grad
+                        vel += grad
+                    if nesterov:
+                        descent = grad + mu * vel
+                    else:
+                        descent = vel
                 else:
-                    velocity = grad
+                    descent = grad
 
-                # perform gradient descent in place
-                nesterov = group.get("nesterov", self.defaults["nesterov"])
-                if nesterov:
-                    descent_vector = velocity * momentum + p.grad
-                else:
-                    descent_vector = velocity
-                p.data -= descent_vector * lr
+                value["params_flat"] -= lr * descent
+
         self._step_count += 1
 
 
@@ -644,53 +754,77 @@ class Adam(Optimizer):
             amsgrad: Use AMSGrad variant (maintains max of past v_t)
         """
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
+        if amsgrad:
+            raise NotImplementedError
         super().__init__(params, **defaults)
         self._initialize_state()
 
     def _initialize_state(self) -> None:
-        """Initialize first and second moment buffers for each parameter."""
-        self.exp_avg = {}
-        self.exp_avg_sq = {}
-        self.max_exp_avg_sq = {}
-        for group in self.param_groups:
-            amsgrad = group.get('amsgrad', self.defaults['amsgrad'])
-            for p in group['params']:
-                self.exp_avg[p] = np.zeros_like(p.data)
-                self.exp_avg_sq[p] = np.zeros_like(p.data)
-                if amsgrad:
-                    self.max_exp_avg_sq[p] = np.zeros_like(p.data)
+        self.flattened_params = {}
+        for i, group in enumerate(self.param_groups):
+            beta_1, beta_2 = group.get("betas", self.defaults["betas"])
+            params = group["params"]
+
+            # Build flat buffer and make p.data point into it
+            params_flat = np.concatenate([p.data.ravel() for p in params])
+            offset = 0
+            for p in params:
+                n = p.data.size
+                p.data = params_flat[offset : offset + n].reshape(p.data.shape)
+                offset += n
+
+            self.flattened_params[i] = dict(
+                lr=group.get("lr", self.defaults["lr"]),
+                beta_1=beta_1,
+                beta_2=beta_2,
+                eps=group.get("eps", self.defaults["eps"]),
+                weight_decay=group.get("weight_decay", self.defaults["weight_decay"]),
+                params_flat=params_flat,
+                exp_avg_flat=np.zeros_like(params_flat),
+                exp_avg_sq_flat=np.zeros_like(params_flat),
+            )
 
     def step(self) -> None:
-        """Perform one Adam optimization step."""
-        for group in self.param_groups:
-            beta_1, beta_2 = group.get('betas', self.defaults['betas'])
-            lr = group.get('lr', self.defaults['lr'])
-            eps = group.get('eps', self.defaults['eps'])
-            weight_decay = group.get('weight_decay', self.defaults['weight_decay'])
-            amsgrad = group.get('amsgrad', self.defaults['amsgrad'])
-            for p in group['params']:
-                grad = p.grad
-                if weight_decay > 1e-8:
-                    grad = grad + weight_decay * p.data
+        lib = _load_optim_c()
+        for key, value in self.flattened_params.items():
+            params = self.param_groups[key]["params"]
+            grads_flat = np.concatenate([p.grad.ravel() for p in params])
 
-                # update first moment
-                exp_avg = self.exp_avg[p]
-                exp_avg *= beta_1 ; exp_avg += grad * (1 - beta_1)
-                corrected_exp_avg = exp_avg / (1 - beta_1 ** (self._step_count + 1))
+            bc1 = 1 - value["beta_1"] ** (self._step_count + 1)
+            bc2 = 1 - value["beta_2"] ** (self._step_count + 1)
 
-                # update second moment
-                exp_avg_sq = self.exp_avg_sq[p]
-                exp_avg_sq *= beta_2 ; exp_avg_sq += grad**2 * (1 - beta_2)
-                if amsgrad:
-                    max_exp_avg_sq = self.max_exp_avg_sq[p]
-                    np.maximum(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
-                    corrected_exp_avg_sq = max_exp_avg_sq / (1 - beta_2**(self._step_count + 1))
-                else:
-                    corrected_exp_avg_sq = exp_avg_sq / (1 - beta_2 ** (self._step_count + 1))
+            if lib is not None and value["params_flat"].dtype == np.float32:
+                lib.adam_step_f32(
+                    value["params_flat"].ctypes.data_as(_f32p),
+                    grads_flat.ctypes.data_as(_f32p),
+                    value["exp_avg_flat"].ctypes.data_as(_f32p),
+                    value["exp_avg_sq_flat"].ctypes.data_as(_f32p),
+                    _ci(len(value["params_flat"])),
+                    _cf(value["lr"]),
+                    _cf(value["beta_1"]),
+                    _cf(value["beta_2"]),
+                    _cf(value["eps"]),
+                    _cf(value["weight_decay"]),
+                    _cf(bc1),
+                    _cf(bc2),
+                )
+            else:
+                # numpy fallback
+                if value["weight_decay"] > 1e-8:
+                    value["params_flat"] *= 1 - value["weight_decay"] * value["lr"]
+                exp_avg = value["exp_avg_flat"]
+                exp_avg_sq = value["exp_avg_sq_flat"]
+                exp_avg *= value["beta_1"]
+                exp_avg += (1 - value["beta_1"]) * grads_flat
+                exp_avg_sq *= value["beta_2"]
+                exp_avg_sq += (1 - value["beta_2"]) * grads_flat**2
+                value["params_flat"] -= (
+                    value["lr"]
+                    * (exp_avg / bc1)
+                    / (np.sqrt(exp_avg_sq / bc2) + value["eps"])
+                )
 
-                # update parameter
-                descent = corrected_exp_avg / (np.sqrt(corrected_exp_avg_sq) + eps)
-                p.data -= descent * lr
+
         self._step_count += 1
 
 class AdamW(Optimizer):
@@ -741,59 +875,76 @@ class AdamW(Optimizer):
         defaults = dict(
             lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad
         )
+        if amsgrad:
+            raise NotImplementedError
         super().__init__(params, **defaults)
         self._initialize_state()
 
     def _initialize_state(self) -> None:
-        """Initialize first and second moment buffers for each parameter."""
-        self.exp_avg = {}
-        self.exp_avg_sq = {}
-        self.max_exp_avg_sq = {}
-        for group in self.param_groups:
-            amsgrad = group.get("amsgrad", self.defaults["amsgrad"])
-            for p in group["params"]:
-                self.exp_avg[p] = np.zeros_like(p.data)
-                self.exp_avg_sq[p] = np.zeros_like(p.data)
-                if amsgrad:
-                    self.max_exp_avg_sq[p] = np.zeros_like(p.data)
+        self.flattened_params = {}
+        for i, group in enumerate(self.param_groups):
+            beta_1, beta_2 = group.get("betas", self.defaults["betas"])
+            params = group["params"]
+
+            # Build flat buffer and make p.data point into it
+            params_flat = np.concatenate([p.data.ravel() for p in params])
+            offset = 0
+            for p in params:
+                n = p.data.size
+                p.data = params_flat[offset : offset + n].reshape(p.data.shape)
+                offset += n
+
+            self.flattened_params[i] = dict(
+                lr=group.get("lr", self.defaults["lr"]),
+                beta_1=beta_1,
+                beta_2=beta_2,
+                eps=group.get("eps", self.defaults["eps"]),
+                weight_decay=group.get("weight_decay", self.defaults["weight_decay"]),
+                params_flat=params_flat,
+                exp_avg_flat=np.zeros_like(params_flat),
+                exp_avg_sq_flat=np.zeros_like(params_flat),
+            )
 
     def step(self) -> None:
-        """Perform one AdamW optimization step."""
-        for group in self.param_groups:
-            beta_1, beta_2 = group.get("betas", self.defaults["betas"])
-            lr = group.get("lr", self.defaults["lr"])
-            eps = group.get("eps", self.defaults["eps"])
-            weight_decay = group.get("weight_decay", self.defaults["weight_decay"])
-            amsgrad = group.get("amsgrad", self.defaults["amsgrad"])
-            for p in group["params"]:
-                grad = p.grad
-                if weight_decay > 1e-8:
-                    p.data *= (1 - weight_decay * lr)
+        lib = _load_optim_c()
+        for key, value in self.flattened_params.items():
+            params = self.param_groups[key]["params"]
+            grads_flat = np.concatenate([p.grad.ravel() for p in params])
 
-                # update first moment
-                exp_avg = self.exp_avg[p]
-                exp_avg *= beta_1
-                exp_avg += grad * (1 - beta_1)
-                corrected_exp_avg = exp_avg / (1 - beta_1 ** (self._step_count + 1))
+            bc1 = 1 - value["beta_1"] ** (self._step_count + 1)
+            bc2 = 1 - value["beta_2"] ** (self._step_count + 1)
 
-                # update second moment
-                exp_avg_sq = self.exp_avg_sq[p]
-                exp_avg_sq *= beta_2
-                exp_avg_sq += grad**2 * (1 - beta_2)
-                if amsgrad:
-                    max_exp_avg_sq = self.max_exp_avg_sq[p]
-                    np.maximum(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
-                    corrected_exp_avg_sq = max_exp_avg_sq / (
-                        1 - beta_2 ** (self._step_count + 1)
-                    )
-                else:
-                    corrected_exp_avg_sq = exp_avg_sq / (
-                        1 - beta_2 ** (self._step_count + 1)
-                    )
+            if lib is not None and value["params_flat"].dtype == np.float32:
+                lib.adamw_step_f32(
+                    value["params_flat"].ctypes.data_as(_f32p),
+                    grads_flat.ctypes.data_as(_f32p),
+                    value["exp_avg_flat"].ctypes.data_as(_f32p),
+                    value["exp_avg_sq_flat"].ctypes.data_as(_f32p),
+                    _ci(len(value["params_flat"])),
+                    _cf(value["lr"]),
+                    _cf(value["beta_1"]),
+                    _cf(value["beta_2"]),
+                    _cf(value["eps"]),
+                    _cf(value["weight_decay"]),
+                    _cf(bc1),
+                    _cf(bc2),
+                )
+            else:
+                # numpy fallback
+                if value["weight_decay"] > 1e-8:
+                    value["params_flat"] *= 1 - value["weight_decay"] * value["lr"]
+                exp_avg = value["exp_avg_flat"]
+                exp_avg_sq = value["exp_avg_sq_flat"]
+                exp_avg *= value["beta_1"]
+                exp_avg += (1 - value["beta_1"]) * grads_flat
+                exp_avg_sq *= value["beta_2"]
+                exp_avg_sq += (1 - value["beta_2"]) * grads_flat**2
+                value["params_flat"] -= (
+                    value["lr"]
+                    * (exp_avg / bc1)
+                    / (np.sqrt(exp_avg_sq / bc2) + value["eps"])
+                )
 
-                # update parameter
-                descent = corrected_exp_avg / (np.sqrt(corrected_exp_avg_sq) + eps)
-                p.data -= descent * lr
         self._step_count += 1
 
 

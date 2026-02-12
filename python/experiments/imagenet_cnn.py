@@ -330,7 +330,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=90)
     parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--optimizer', type=str, default='adamw',
+    parser.add_argument('--optimizer', type=str, default='sgd',
                         choices=['sgd', 'adam', 'adamw'])
     parser.add_argument('--model', type=str, default='resnet18',
                         choices=['resnet18', 'resnet34', 'resnet50'])

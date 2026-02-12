@@ -11,6 +11,7 @@
  * Build: gcc -O3 -march=native -ffast-math -shared -fPIC -o _conv_c.so _conv_c.c
  */
 #include <string.h>
+#include <omp.h>
 
 /* ================================================================
  * im2col: (B, C, H, W) -> (B, C*kh*kw, H_out*W_out)
@@ -29,16 +30,17 @@ void im2col_f32(
     const int CKK = C * kh * kw;
     const int CHW = C * H * W;
 
+    #pragma omp parallel for schedule(static)
     for (int b = 0; b < B; b++) {
         const float *xb = x + b * CHW;
         float *cb = cols + b * CKK * N;
 
-        int col_idx = 0;
         for (int c = 0; c < C; c++) {
             const float *xc = xb + c * H * W;
             for (int ki = 0; ki < kh; ki++) {
                 const int h_base = ki * dh;
                 for (int kj = 0; kj < kw; kj++) {
+                    int col_idx = c * kh * kw + ki * kw + kj;
                     float *col_row = cb + col_idx * N;
                     const int w_base = kj * dw;
 
@@ -58,7 +60,6 @@ void im2col_f32(
                             }
                         }
                     }
-                    col_idx++;
                 }
             }
         }
@@ -78,16 +79,17 @@ void im2col_f64(
     const int CKK = C * kh * kw;
     const int CHW = C * H * W;
 
+    #pragma omp parallel for schedule(static)
     for (int b = 0; b < B; b++) {
         const double *xb = x + b * CHW;
         double *cb = cols + b * CKK * N;
 
-        int col_idx = 0;
         for (int c = 0; c < C; c++) {
             const double *xc = xb + c * H * W;
             for (int ki = 0; ki < kh; ki++) {
                 const int h_base = ki * dh;
                 for (int kj = 0; kj < kw; kj++) {
+                    int col_idx = c * kh * kw + ki * kw + kj;
                     double *col_row = cb + col_idx * N;
                     const int w_base = kj * dw;
 
@@ -105,7 +107,6 @@ void im2col_f64(
                                 out[j] = xrow[j * sw];
                         }
                     }
-                    col_idx++;
                 }
             }
         }
@@ -131,16 +132,17 @@ void col2im_f32(
     const int CKK = C * kh * kw;
     const int CHW = C * H * W;
 
+    #pragma omp parallel for schedule(static)
     for (int b = 0; b < B; b++) {
         const float *cb = cols + b * CKK * N;
         float *xb = x + b * CHW;
 
-        int col_idx = 0;
         for (int c = 0; c < C; c++) {
             float *xc = xb + c * H * W;
             for (int ki = 0; ki < kh; ki++) {
                 const int h_base = ki * dh;
                 for (int kj = 0; kj < kw; kj++) {
+                    int col_idx = c * kh * kw + ki * kw + kj;
                     const float *col_row = cb + col_idx * N;
                     const int w_base = kj * dw;
 
@@ -155,7 +157,6 @@ void col2im_f32(
                                 xrow[j * sw] += src[j];
                         }
                     }
-                    col_idx++;
                 }
             }
         }
@@ -175,16 +176,17 @@ void col2im_f64(
     const int CKK = C * kh * kw;
     const int CHW = C * H * W;
 
+    #pragma omp parallel for schedule(static)
     for (int b = 0; b < B; b++) {
         const double *cb = cols + b * CKK * N;
         double *xb = x + b * CHW;
 
-        int col_idx = 0;
         for (int c = 0; c < C; c++) {
             double *xc = xb + c * H * W;
             for (int ki = 0; ki < kh; ki++) {
                 const int h_base = ki * dh;
                 for (int kj = 0; kj < kw; kj++) {
+                    int col_idx = c * kh * kw + ki * kw + kj;
                     const double *col_row = cb + col_idx * N;
                     const int w_base = kj * dw;
 
@@ -199,7 +201,6 @@ void col2im_f64(
                                 xrow[j * sw] += src[j];
                         }
                     }
-                    col_idx++;
                 }
             }
         }
