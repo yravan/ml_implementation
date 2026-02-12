@@ -73,13 +73,19 @@ def train_epoch(
         y = Tensor(targets)
 
         # Forward
+        start = time.time()
         logits = model(x)
+        # print(f"Forward:  {time.time() - start:.3f}s")
         loss = criterion(logits, y, reduction='mean')
 
         # Backward
         optimizer.zero_grad()
+        start = time.time()
         loss.backward()
+        # print(f"Backward: {time.time() - start:.3f}s")
+        start = time.time()
         optimizer.step()
+        # print(f"Optimization: {time.time() - start:.3f}s")
 
         # Track loss
         batch_loss = loss.data.item() if loss.data.ndim == 0 else loss.data.mean()

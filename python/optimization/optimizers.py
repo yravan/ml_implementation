@@ -793,7 +793,6 @@ class AdamW(Optimizer):
 
                 # update parameter
                 descent = corrected_exp_avg / (np.sqrt(corrected_exp_avg_sq) + eps)
-                print(descent * lr)
                 p.data -= descent * lr
         self._step_count += 1
 

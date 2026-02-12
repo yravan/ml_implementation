@@ -328,9 +328,9 @@ if __name__ == '__main__':
     parser.add_argument('--data-dir', type=str, default='./data/imagenet',
                         help='Path to ImageNet dataset')
     parser.add_argument('--epochs', type=int, default=90)
-    parser.add_argument('--batch-size', type=int, default=32)
-    parser.add_argument('--lr', type=float, default=0.1)
-    parser.add_argument('--optimizer', type=str, default='sgd',
+    parser.add_argument('--batch-size', type=int, default=128)
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--optimizer', type=str, default='adamw',
                         choices=['sgd', 'adam', 'adamw'])
     parser.add_argument('--model', type=str, default='resnet18',
                         choices=['resnet18', 'resnet34', 'resnet50'])
@@ -351,7 +351,7 @@ if __name__ == '__main__':
     if args.optimizer == 'sgd':
         optimizer_params = {'momentum': args.momentum, 'weight_decay': args.weight_decay}
     elif args.optimizer in ('adam', 'adamw'):
-        optimizer_params = {'weight_decay': args.weight_decay}
+        optimizer_params = {'weight_decay': args.weight_decay, 'betas': (0.9, 0.999)}
 
     results = train(
         data_dir=args.data_dir,
@@ -362,7 +362,7 @@ if __name__ == '__main__':
         optimizer_params=optimizer_params,
         model_type='alexnet',
         lr_schedule=args.lr_schedule,
-        log_interval=args.log_interval,
+        log_interval=10,
         seed=args.seed,
         save_plots=True,
         output_dir=args.output_dir,
