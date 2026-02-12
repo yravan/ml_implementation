@@ -25,6 +25,8 @@ from .functionals import (
     Sigmoid, Softmax,
     # Shape ops (stubs)
     Concat, Stack, Split, Slice, Mean, Var,
+
+    _no_grad,
 )
 
 # Autograd utilities

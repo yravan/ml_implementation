@@ -24,10 +24,8 @@ Helper Functions:
 import numpy as np
 from typing import Tuple, Union, Optional
 
-from python.foundations import Function, convert_to_function
+from python.foundations import Function, convert_to_function, _no_grad
 
-# Global flag for gradient tracking
-_no_grad = False
 
 
 # =============================================================================

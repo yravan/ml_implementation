@@ -22,10 +22,7 @@ from math import prod
 import numpy as np
 from typing import Tuple, Optional, Union
 
-from python.foundations import Function, convert_to_function
-
-# Global flag for gradient tracking
-_no_grad = False
+from python.foundations import Function, convert_to_function, _no_grad
 
 
 # =============================================================================

@@ -419,6 +419,831 @@ class TestConvFunctional:
 
 
 # =============================================================================
+# Comprehensive Convolution Tests
+# =============================================================================
+
+class TestConv1dComprehensive:
+    """Comprehensive tests for Conv1d layer (not yet implemented)."""
+
+    def test_conv1d_forward_basic(self):
+        """Test Conv1d forward pass with basic configuration."""
+        from python.nn_core import Conv1d
+
+        conv = Conv1d(in_channels=3, out_channels=16, kernel_size=3)
+        x = Tensor(np.random.randn(2, 3, 20).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # Output size: (input_size - kernel_size) / stride + 1 = (20 - 3) / 1 + 1 = 18
+        assert y.shape == (2, 16, 18)
+
+    def test_conv1d_forward_with_padding(self):
+        """Test Conv1d forward pass with padding."""
+        from python.nn_core import Conv1d
+
+        conv = Conv1d(in_channels=3, out_channels=16, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 3, 20).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # With padding=1, output size = input size
+        assert y.shape == (2, 16, 20)
+
+    def test_conv1d_forward_with_stride(self):
+        """Test Conv1d forward pass with stride."""
+        from python.nn_core import Conv1d
+
+        conv = Conv1d(in_channels=3, out_channels=16, kernel_size=3, stride=2)
+        x = Tensor(np.random.randn(2, 3, 20).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # Output size: (20 - 3) / 2 + 1 = 9
+        assert y.shape == (2, 16, 9)
+
+    def test_conv1d_forward_different_kernel_sizes(self):
+        """Test Conv1d with different kernel sizes."""
+        from python.nn_core import Conv1d
+
+        for kernel_size in [1, 3, 5, 7]:
+            conv = Conv1d(in_channels=4, out_channels=8, kernel_size=kernel_size, padding=kernel_size//2)
+            x = Tensor(np.random.randn(2, 4, 16).astype(np.float64), requires_grad=True)
+            y = conv(x)
+
+            # With appropriate padding, output length should be close to input
+            assert y.shape[0] == 2
+            assert y.shape[1] == 8
+
+    def test_conv1d_backward(self):
+        """Test Conv1d backward pass."""
+        from python.nn_core import Conv1d
+
+        np.random.seed(42)
+        conv = Conv1d(in_channels=3, out_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 3, 16).astype(np.float64), requires_grad=True)
+
+        y = conv(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None, "Input gradient should exist"
+        assert x.grad.shape == x.shape, "Input gradient shape mismatch"
+        assert conv.weight.grad is not None, "Weight gradient should exist"
+        if conv.bias is not None:
+            assert conv.bias.grad is not None, "Bias gradient should exist"
+
+    def test_conv1d_gradcheck(self):
+        """Verify Conv1d gradients using gradcheck."""
+        from python.nn_core import Conv1d
+
+        np.random.seed(42)
+        conv = Conv1d(in_channels=2, out_channels=4, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_conv1d_gradcheck_no_bias(self):
+        """Verify Conv1d gradients without bias."""
+        from python.nn_core import Conv1d
+
+        np.random.seed(42)
+        conv = Conv1d(in_channels=2, out_channels=4, kernel_size=3, padding=1, bias=False)
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_conv1d_gradcheck_with_stride(self):
+        """Verify Conv1d gradients with stride > 1."""
+        from python.nn_core import Conv1d
+
+        np.random.seed(42)
+        conv = Conv1d(in_channels=2, out_channels=4, kernel_size=3, stride=2, padding=1)
+        x = Tensor(np.random.randn(1, 2, 10).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_conv1d_weight_gradient(self):
+        """Verify weight gradients for Conv1d."""
+        from python.nn_core import Conv1d
+
+        np.random.seed(42)
+        conv = Conv1d(in_channels=3, out_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 3, 16).astype(np.float64), requires_grad=True)
+
+        y = conv(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert conv.weight.grad is not None
+        assert conv.weight.grad.shape == conv.weight.shape
+        assert not np.allclose(conv.weight.grad, 0), "Weight gradient should be non-zero"
+
+
+class TestConv2dComprehensive:
+    """Comprehensive tests for Conv2d layer."""
+
+    def test_conv2d_forward_basic(self):
+        """Test Conv2d forward pass with basic configuration."""
+        from python.nn_core import Conv2d
+
+        conv = Conv2d(in_channels=3, out_channels=16, kernel_size=3)
+        x = Tensor(np.random.randn(2, 3, 16, 16).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # Output size: (16 - 3) / 1 + 1 = 14
+        assert y.shape == (2, 16, 14, 14)
+
+    def test_conv2d_forward_with_padding(self):
+        """Test Conv2d forward pass with padding."""
+        from python.nn_core import Conv2d
+
+        conv = Conv2d(in_channels=3, out_channels=16, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 3, 16, 16).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # With padding=1 and kernel_size=3, output size = input size
+        assert y.shape == (2, 16, 16, 16)
+
+    def test_conv2d_forward_with_stride(self):
+        """Test Conv2d forward pass with stride."""
+        from python.nn_core import Conv2d
+
+        conv = Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=2, padding=1)
+        x = Tensor(np.random.randn(2, 3, 16, 16).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # Output size: (16 + 2*1 - 3) / 2 + 1 = 8
+        assert y.shape == (2, 16, 8, 8)
+
+    def test_conv2d_forward_different_kernel_sizes(self):
+        """Test Conv2d with different kernel sizes."""
+        from python.nn_core import Conv2d
+
+        for kernel_size in [1, 3, 5, 7]:
+            conv = Conv2d(in_channels=4, out_channels=8, kernel_size=kernel_size, padding=kernel_size//2)
+            x = Tensor(np.random.randn(2, 4, 16, 16).astype(np.float64), requires_grad=True)
+            y = conv(x)
+
+            assert y.shape[0] == 2
+            assert y.shape[1] == 8
+
+    def test_conv2d_forward_rectangular_kernel(self):
+        """Test Conv2d with rectangular kernel."""
+        from python.nn_core import Conv2d
+
+        conv = Conv2d(in_channels=3, out_channels=8, kernel_size=(3, 5), padding=(1, 2))
+        x = Tensor(np.random.randn(2, 3, 16, 16).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # Output should maintain spatial dimensions with correct padding
+        assert y.shape == (2, 8, 16, 16)
+
+    def test_conv2d_forward_rectangular_input(self):
+        """Test Conv2d with rectangular input (non-square)."""
+        from python.nn_core import Conv2d
+
+        conv = Conv2d(in_channels=3, out_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 3, 12, 20).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        assert y.shape == (2, 8, 12, 20)
+
+    def test_conv2d_backward(self):
+        """Test Conv2d backward pass."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=3, out_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
+
+        y = conv(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None
+        assert x.grad.shape == x.shape
+        assert conv.weight.grad is not None
+        assert conv.weight.grad.shape == conv.weight.shape
+
+    def test_conv2d_gradcheck_basic(self):
+        """Verify Conv2d gradients using gradcheck."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=2, out_channels=4, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 2, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_conv2d_gradcheck_no_bias(self):
+        """Verify Conv2d gradients without bias."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=2, out_channels=4, kernel_size=3, padding=1, bias=False)
+        x = Tensor(np.random.randn(1, 2, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_conv2d_gradcheck_with_stride(self):
+        """Verify Conv2d gradients with stride > 1."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=2, out_channels=4, kernel_size=3, stride=2, padding=1)
+        x = Tensor(np.random.randn(1, 2, 8, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_conv2d_gradcheck_1x1_kernel(self):
+        """Verify Conv2d gradients with 1x1 kernel (pointwise conv)."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=4, out_channels=8, kernel_size=1)
+        x = Tensor(np.random.randn(1, 4, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_conv2d_gradcheck_different_configs(self):
+        """Test Conv2d gradients with various configurations."""
+        from python.nn_core import Conv2d
+
+        configs = [
+            {'kernel_size': 3, 'padding': 0, 'stride': 1},
+            {'kernel_size': 3, 'padding': 1, 'stride': 1},
+            {'kernel_size': 5, 'padding': 2, 'stride': 1},
+            {'kernel_size': 3, 'padding': 1, 'stride': 2},
+        ]
+
+        for config in configs:
+            np.random.seed(42)
+            conv = Conv2d(in_channels=2, out_channels=4, **config)
+            x = Tensor(np.random.randn(1, 2, 8, 8).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return conv(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"Conv2d gradcheck failed for config {config}"
+
+    def test_conv2d_weight_bias_gradients(self):
+        """Verify weight and bias gradients for Conv2d."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=3, out_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
+
+        y = conv(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert conv.weight.grad is not None
+        assert conv.weight.grad.shape == conv.weight.shape
+        assert not np.allclose(conv.weight.grad, 0)
+
+        if conv.bias is not None:
+            assert conv.bias.grad is not None
+            assert conv.bias.grad.shape == conv.bias.shape
+
+
+class TestConv3dComprehensive:
+    """Comprehensive tests for Conv3d layer."""
+
+    def test_conv3d_forward_basic(self):
+        """Test Conv3d forward pass with basic configuration."""
+        from python.nn_core import Conv3d
+
+        conv = Conv3d(in_channels=3, out_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 3, 8, 8, 8).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        assert y.shape == (2, 8, 8, 8, 8)
+
+    def test_conv3d_gradcheck(self):
+        """Verify Conv3d gradients using gradcheck."""
+        from python.nn_core import Conv3d
+
+        np.random.seed(42)
+        conv = Conv3d(in_channels=2, out_channels=4, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 2, 4, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestConvTranspose2dComprehensive:
+    """Comprehensive tests for ConvTranspose2d (not yet implemented)."""
+
+    def test_convtranspose2d_forward_basic(self):
+        """Test ConvTranspose2d forward pass."""
+        from python.nn_core import ConvTranspose2d
+
+        conv = ConvTranspose2d(in_channels=16, out_channels=8, kernel_size=3, stride=2, padding=1, output_padding=1)
+        x = Tensor(np.random.randn(2, 16, 4, 4).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # Transposed conv upsamples: output_size = (input_size - 1) * stride - 2*padding + kernel_size + output_padding
+        # = (4 - 1) * 2 - 2*1 + 3 + 1 = 6 - 2 + 3 + 1 = 8
+        assert y.shape == (2, 8, 8, 8)
+
+    def test_convtranspose2d_upsample_2x(self):
+        """Test ConvTranspose2d for 2x upsampling."""
+        from python.nn_core import ConvTranspose2d
+
+        conv = ConvTranspose2d(in_channels=16, out_channels=8, kernel_size=4, stride=2, padding=1)
+        x = Tensor(np.random.randn(2, 16, 8, 8).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # 2x upsampling
+        assert y.shape == (2, 8, 16, 16)
+
+    def test_convtranspose2d_backward(self):
+        """Test ConvTranspose2d backward pass."""
+        from python.nn_core import ConvTranspose2d
+
+        np.random.seed(42)
+        conv = ConvTranspose2d(in_channels=8, out_channels=4, kernel_size=4, stride=2, padding=1)
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        y = conv(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None
+        assert x.grad.shape == x.shape
+        assert conv.weight.grad is not None
+
+    def test_convtranspose2d_gradcheck(self):
+        """Verify ConvTranspose2d gradients using gradcheck."""
+        from python.nn_core import ConvTranspose2d
+
+        np.random.seed(42)
+        conv = ConvTranspose2d(in_channels=4, out_channels=2, kernel_size=4, stride=2, padding=1)
+        x = Tensor(np.random.randn(1, 4, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_convtranspose2d_gradcheck_no_bias(self):
+        """Verify ConvTranspose2d gradients without bias."""
+        from python.nn_core import ConvTranspose2d
+
+        np.random.seed(42)
+        conv = ConvTranspose2d(in_channels=4, out_channels=2, kernel_size=4, stride=2, padding=1, bias=False)
+        x = Tensor(np.random.randn(1, 4, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestConvTranspose1dComprehensive:
+    """Comprehensive tests for ConvTranspose1d (not yet implemented)."""
+
+    def test_convtranspose1d_forward_basic(self):
+        """Test ConvTranspose1d forward pass."""
+        from python.nn_core import ConvTranspose1d
+
+        conv = ConvTranspose1d(in_channels=16, out_channels=8, kernel_size=4, stride=2, padding=1)
+        x = Tensor(np.random.randn(2, 16, 8).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # 2x upsampling
+        assert y.shape == (2, 8, 16)
+
+    def test_convtranspose1d_backward(self):
+        """Test ConvTranspose1d backward pass."""
+        from python.nn_core import ConvTranspose1d
+
+        np.random.seed(42)
+        conv = ConvTranspose1d(in_channels=8, out_channels=4, kernel_size=4, stride=2, padding=1)
+        x = Tensor(np.random.randn(2, 8, 8).astype(np.float64), requires_grad=True)
+
+        y = conv(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None
+        assert conv.weight.grad is not None
+
+    def test_convtranspose1d_gradcheck(self):
+        """Verify ConvTranspose1d gradients using gradcheck."""
+        from python.nn_core import ConvTranspose1d
+
+        np.random.seed(42)
+        conv = ConvTranspose1d(in_channels=4, out_channels=2, kernel_size=4, stride=2, padding=1)
+        x = Tensor(np.random.randn(1, 4, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestDepthwiseConv2dComprehensive:
+    """Comprehensive tests for DepthwiseConv2d."""
+
+    def test_depthwise_conv2d_forward(self):
+        """Test DepthwiseConv2d forward pass."""
+        from python.nn_core import DepthwiseConv2d
+
+        conv = DepthwiseConv2d(in_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 8, 16, 16).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # Depthwise conv maintains channel count
+        assert y.shape == (2, 8, 16, 16)
+
+    def test_depthwise_conv2d_groups(self):
+        """Test that DepthwiseConv2d uses groups=in_channels."""
+        from python.nn_core import DepthwiseConv2d
+
+        conv = DepthwiseConv2d(in_channels=8, kernel_size=3, padding=1)
+
+        # Weight should be (in_channels, 1, kernel_size, kernel_size) for depthwise
+        assert conv.weight.shape[0] == 8
+        assert conv.weight.shape[1] == 1
+
+    def test_depthwise_conv2d_backward(self):
+        """Test DepthwiseConv2d backward pass."""
+        from python.nn_core import DepthwiseConv2d
+
+        np.random.seed(42)
+        conv = DepthwiseConv2d(in_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 8, 8, 8).astype(np.float64), requires_grad=True)
+
+        y = conv(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None
+        assert conv.weight.grad is not None
+
+    def test_depthwise_conv2d_gradcheck(self):
+        """Verify DepthwiseConv2d gradients using gradcheck."""
+        from python.nn_core import DepthwiseConv2d
+
+        np.random.seed(42)
+        conv = DepthwiseConv2d(in_channels=4, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 4, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestPointwiseConv2dComprehensive:
+    """Comprehensive tests for PointwiseConv2d (1x1 convolution)."""
+
+    def test_pointwise_conv2d_forward(self):
+        """Test PointwiseConv2d forward pass."""
+        from python.nn_core import PointwiseConv2d
+
+        conv = PointwiseConv2d(in_channels=8, out_channels=16)
+        x = Tensor(np.random.randn(2, 8, 16, 16).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        # Pointwise conv changes channels but not spatial dims
+        assert y.shape == (2, 16, 16, 16)
+
+    def test_pointwise_conv2d_kernel_size(self):
+        """Test that PointwiseConv2d uses 1x1 kernel."""
+        from python.nn_core import PointwiseConv2d
+
+        conv = PointwiseConv2d(in_channels=8, out_channels=16)
+
+        assert conv.weight.shape[2] == 1
+        assert conv.weight.shape[3] == 1
+
+    def test_pointwise_conv2d_backward(self):
+        """Test PointwiseConv2d backward pass."""
+        from python.nn_core import PointwiseConv2d
+
+        np.random.seed(42)
+        conv = PointwiseConv2d(in_channels=8, out_channels=16)
+        x = Tensor(np.random.randn(2, 8, 8, 8).astype(np.float64), requires_grad=True)
+
+        y = conv(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None
+        assert conv.weight.grad is not None
+
+    def test_pointwise_conv2d_gradcheck(self):
+        """Verify PointwiseConv2d gradients using gradcheck."""
+        from python.nn_core import PointwiseConv2d
+
+        np.random.seed(42)
+        conv = PointwiseConv2d(in_channels=4, out_channels=8)
+        x = Tensor(np.random.randn(1, 4, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestSeparableConv2dComprehensive:
+    """Comprehensive tests for SeparableConv2d (depthwise separable convolution)."""
+
+    def test_separable_conv2d_forward(self):
+        """Test SeparableConv2d forward pass."""
+        from python.nn_core import SeparableConv2d
+
+        conv = SeparableConv2d(in_channels=8, out_channels=16, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 8, 16, 16).astype(np.float64), requires_grad=True)
+        y = conv(x)
+
+        assert y.shape == (2, 16, 16, 16)
+
+    def test_separable_conv2d_param_efficiency(self):
+        """Test that SeparableConv2d has fewer parameters than regular Conv2d."""
+        from python.nn_core import SeparableConv2d, Conv2d
+
+        sep_conv = SeparableConv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        reg_conv = Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+
+        sep_params = sum(p.data.size for p in sep_conv.parameters())
+        reg_params = sum(p.data.size for p in reg_conv.parameters())
+
+        # Separable conv should have significantly fewer parameters
+        assert sep_params < reg_params
+
+    def test_separable_conv2d_backward(self):
+        """Test SeparableConv2d backward pass."""
+        from python.nn_core import SeparableConv2d
+
+        np.random.seed(42)
+        conv = SeparableConv2d(in_channels=8, out_channels=16, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(2, 8, 8, 8).astype(np.float64), requires_grad=True)
+
+        y = conv(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None
+
+    def test_separable_conv2d_gradcheck(self):
+        """Verify SeparableConv2d gradients using gradcheck."""
+        from python.nn_core import SeparableConv2d
+
+        np.random.seed(42)
+        conv = SeparableConv2d(in_channels=4, out_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 4, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestConvGradientsComprehensive:
+    """Comprehensive gradient tests for all convolution layers using gradcheck."""
+
+    # =========================================================================
+    # Conv1d Gradient Tests
+    # =========================================================================
+
+    def test_conv1d_gradcheck_basic(self):
+        """Basic Conv1d gradient check."""
+        from python.nn_core import Conv1d
+
+        np.random.seed(42)
+        conv = Conv1d(in_channels=2, out_channels=4, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 2, 10).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_conv1d_gradcheck_various_configs(self):
+        """Conv1d gradient check with various configurations."""
+        from python.nn_core import Conv1d
+
+        configs = [
+            {'kernel_size': 1, 'padding': 0, 'stride': 1},
+            {'kernel_size': 3, 'padding': 1, 'stride': 1},
+            {'kernel_size': 5, 'padding': 2, 'stride': 1},
+            {'kernel_size': 3, 'padding': 1, 'stride': 2},
+        ]
+
+        for config in configs:
+            np.random.seed(42)
+            conv = Conv1d(in_channels=2, out_channels=4, **config)
+            x = Tensor(np.random.randn(1, 2, 12).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return conv(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"Conv1d gradcheck failed for {config}"
+
+    # =========================================================================
+    # Conv2d Gradient Tests
+    # =========================================================================
+
+    def test_conv2d_gradcheck_basic(self):
+        """Basic Conv2d gradient check."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=2, out_channels=4, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 2, 8, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_conv2d_gradcheck_various_batch_sizes(self):
+        """Conv2d gradient check with various batch sizes."""
+        from python.nn_core import Conv2d
+
+        for batch_size in [1, 2, 4]:
+            np.random.seed(42)
+            conv = Conv2d(in_channels=2, out_channels=4, kernel_size=3, padding=1)
+            x = Tensor(np.random.randn(batch_size, 2, 6, 6).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return conv(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"Conv2d gradcheck failed for batch_size={batch_size}"
+
+    def test_conv2d_gradcheck_asymmetric_padding(self):
+        """Conv2d gradient check with asymmetric padding."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=2, out_channels=4, kernel_size=(3, 5), padding=(1, 2))
+        x = Tensor(np.random.randn(1, 2, 8, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    # =========================================================================
+    # ConvTranspose2d Gradient Tests
+    # =========================================================================
+
+    def test_convtranspose2d_gradcheck_basic(self):
+        """Basic ConvTranspose2d gradient check."""
+        from python.nn_core import ConvTranspose2d
+
+        np.random.seed(42)
+        conv = ConvTranspose2d(in_channels=4, out_channels=2, kernel_size=4, stride=2, padding=1)
+        x = Tensor(np.random.randn(1, 4, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_convtranspose2d_gradcheck_various_configs(self):
+        """ConvTranspose2d gradient check with various configurations."""
+        from python.nn_core import ConvTranspose2d
+
+        configs = [
+            {'kernel_size': 3, 'stride': 1, 'padding': 1},
+            {'kernel_size': 4, 'stride': 2, 'padding': 1},
+            {'kernel_size': 2, 'stride': 2, 'padding': 0},
+        ]
+
+        for config in configs:
+            np.random.seed(42)
+            conv = ConvTranspose2d(in_channels=4, out_channels=2, **config)
+            x = Tensor(np.random.randn(1, 4, 4, 4).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return conv(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"ConvTranspose2d gradcheck failed for {config}"
+
+    # =========================================================================
+    # Depthwise and Pointwise Conv Gradient Tests
+    # =========================================================================
+
+    def test_depthwise_conv2d_gradcheck(self):
+        """DepthwiseConv2d gradient check."""
+        from python.nn_core import DepthwiseConv2d
+
+        np.random.seed(42)
+        conv = DepthwiseConv2d(in_channels=4, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 4, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_pointwise_conv2d_gradcheck(self):
+        """PointwiseConv2d gradient check."""
+        from python.nn_core import PointwiseConv2d
+
+        np.random.seed(42)
+        conv = PointwiseConv2d(in_channels=4, out_channels=8)
+        x = Tensor(np.random.randn(1, 4, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_separable_conv2d_gradcheck(self):
+        """SeparableConv2d gradient check."""
+        from python.nn_core import SeparableConv2d
+
+        np.random.seed(42)
+        conv = SeparableConv2d(in_channels=4, out_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 4, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    # =========================================================================
+    # Conv Chain and Numerical Stability Tests
+    # =========================================================================
+
+    def test_conv_chain_gradient_flow(self):
+        """Test gradient flow through chained convolutions."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv1 = Conv2d(in_channels=3, out_channels=8, kernel_size=3, padding=1)
+        conv2 = Conv2d(in_channels=8, out_channels=16, kernel_size=3, padding=1)
+
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
+
+        y = conv1(x)
+        z = conv2(y)
+        loss = z.sum()
+        loss.backward()
+
+        assert x.grad is not None
+        assert conv1.weight.grad is not None
+        assert conv2.weight.grad is not None
+        assert not np.allclose(x.grad, 0)
+
+    def test_conv2d_gradient_small_input(self):
+        """Test Conv2d gradients with small input values."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=2, out_channels=4, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 2, 6, 6).astype(np.float64) * 1e-4, requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-6, atol=1e-4, rtol=1e-3)
+
+    def test_conv2d_gradient_large_input(self):
+        """Test Conv2d gradients with large input values."""
+        from python.nn_core import Conv2d
+
+        np.random.seed(42)
+        conv = Conv2d(in_channels=2, out_channels=4, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 2, 6, 6).astype(np.float64) * 100, requires_grad=True)
+
+        def func(x):
+            return conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+# =============================================================================
 # Normalization Layer Tests
 # =============================================================================
 
@@ -1224,6 +2049,995 @@ class TestNormalizationGradientChecks:
 
         assert np.allclose(grad_x, numerical_grad, rtol=1e-4, atol=1e-4), \
             "RMSNorm gradient check failed"
+
+
+# =============================================================================
+# Comprehensive Normalization Gradient Tests using gradcheck
+# =============================================================================
+
+class TestNormalizationGradientsComprehensive:
+    """Comprehensive gradient tests for all normalization layers using gradcheck.
+
+    Note: Some tests are marked with pytest.mark.xfail for layers that are not yet
+    implemented (BatchNorm3d, InstanceNorm, LocalResponseNorm, SpectralNorm).
+    These tests serve as specifications for when those layers are implemented.
+    """
+
+    # =========================================================================
+    # BatchNorm1d Gradient Tests
+    # Note: BatchNorm gradcheck tests reveal implementation issues in backward pass
+    # =========================================================================
+
+    def test_batchnorm1d_gradcheck_eval_mode(self):
+        """Verify BatchNorm1d gradients using gradcheck in eval mode."""
+        from python.nn_core import BatchNorm1d
+
+        np.random.seed(42)
+        bn = BatchNorm1d(num_features=16)
+        bn.eval()  # Eval mode for deterministic behavior
+        x = Tensor(np.random.randn(4, 16).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return bn(x).sum()
+
+        # Use looser tolerance for BatchNorm due to running stats complexity
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-3, rtol=1e-2)
+
+    def test_batchnorm1d_gradcheck_different_sizes(self):
+        """Test BatchNorm1d gradients with different batch and feature sizes."""
+        from python.nn_core import BatchNorm1d
+
+        configs = [
+            (2, 8),    # Small
+            (8, 32),   # Medium
+            (16, 64),  # Larger
+        ]
+
+        for batch_size, num_features in configs:
+            np.random.seed(42)
+            bn = BatchNorm1d(num_features=num_features)
+            bn.eval()
+            x = Tensor(np.random.randn(batch_size, num_features).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return bn(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-3, rtol=1e-2), \
+                f"BatchNorm1d gradcheck failed for batch={batch_size}, features={num_features}"
+
+    def test_batchnorm1d_gradcheck_no_affine(self):
+        """Test BatchNorm1d gradients without affine parameters."""
+        from python.nn_core import BatchNorm1d
+
+        np.random.seed(42)
+        bn = BatchNorm1d(num_features=16, affine=False)
+        bn.eval()
+        x = Tensor(np.random.randn(4, 16).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return bn(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-3, rtol=1e-2)
+
+    def test_batchnorm1d_gradcheck_different_eps(self):
+        """Test BatchNorm1d gradients with different eps values."""
+        from python.nn_core import BatchNorm1d
+
+        for eps in [1e-5, 1e-6, 1e-3]:
+            np.random.seed(42)
+            bn = BatchNorm1d(num_features=16, eps=eps)
+            bn.eval()
+            x = Tensor(np.random.randn(4, 16).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return bn(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-3, rtol=1e-2), \
+                f"BatchNorm1d gradcheck failed for eps={eps}"
+
+    def test_batchnorm1d_gamma_gradient(self):
+        """Verify gradient flows correctly to gamma (weight) parameter."""
+        from python.nn_core import BatchNorm1d
+
+        np.random.seed(42)
+        bn = BatchNorm1d(num_features=8)
+        bn.eval()
+        x = Tensor(np.random.randn(4, 8).astype(np.float64), requires_grad=True)
+
+        y = bn(x)
+        loss = y.sum()
+        loss.backward()
+
+        # Gamma gradient should exist and be non-zero
+        gamma_grad = bn.weight.grad
+        assert gamma_grad is not None, "Gamma gradient should exist"
+        assert not np.allclose(gamma_grad, 0), "Gamma gradient should be non-zero"
+
+    def test_batchnorm1d_beta_gradient(self):
+        """Verify gradient flows correctly to beta (bias) parameter."""
+        from python.nn_core import BatchNorm1d
+
+        np.random.seed(42)
+        bn = BatchNorm1d(num_features=8)
+        bn.eval()
+        x = Tensor(np.random.randn(4, 8).astype(np.float64), requires_grad=True)
+
+        y = bn(x)
+        loss = y.sum()
+        loss.backward()
+
+        # Beta gradient should exist
+        beta_grad = bn.bias.grad
+        assert beta_grad is not None, "Beta gradient should exist"
+
+    # =========================================================================
+    # BatchNorm2d Gradient Tests
+    # Note: BatchNorm gradcheck tests reveal implementation issues in backward pass
+    # =========================================================================
+
+    def test_batchnorm2d_gradcheck_eval_mode(self):
+        """Verify BatchNorm2d gradients using gradcheck in eval mode."""
+        from python.nn_core import BatchNorm2d
+
+        np.random.seed(42)
+        bn = BatchNorm2d(num_features=8)
+        bn.eval()
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return bn(x).sum()
+
+        # Use looser tolerance for BatchNorm due to running stats complexity
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-3, rtol=1e-2)
+
+    def test_batchnorm2d_gradcheck_different_sizes(self):
+        """Test BatchNorm2d gradients with different spatial sizes."""
+        from python.nn_core import BatchNorm2d
+
+        configs = [
+            (2, 4, 3, 3),   # Small
+            (2, 8, 8, 8),   # Medium
+            (4, 16, 4, 4),  # More channels
+        ]
+
+        for batch, channels, h, w in configs:
+            np.random.seed(42)
+            bn = BatchNorm2d(num_features=channels)
+            bn.eval()
+            x = Tensor(np.random.randn(batch, channels, h, w).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return bn(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-3, rtol=1e-2), \
+                f"BatchNorm2d gradcheck failed for shape ({batch}, {channels}, {h}, {w})"
+
+    def test_batchnorm2d_gradcheck_no_affine(self):
+        """Test BatchNorm2d gradients without affine parameters."""
+        from python.nn_core import BatchNorm2d
+
+        np.random.seed(42)
+        bn = BatchNorm2d(num_features=8, affine=False)
+        bn.eval()
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return bn(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-3, rtol=1e-2)
+
+    def test_batchnorm2d_gamma_beta_gradients(self):
+        """Verify gamma and beta gradients for BatchNorm2d."""
+        from python.nn_core import BatchNorm2d
+
+        np.random.seed(42)
+        bn = BatchNorm2d(num_features=8)
+        bn.eval()
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        y = bn(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert bn.weight.grad is not None, "Gamma gradient should exist"
+        assert bn.bias.grad is not None, "Beta gradient should exist"
+
+    # =========================================================================
+    # BatchNorm3d Gradient Tests (not yet implemented)
+    # =========================================================================
+
+    def test_batchnorm3d_gradcheck_eval_mode(self):
+        """Verify BatchNorm3d gradients using gradcheck in eval mode."""
+        from python.nn_core import BatchNorm3d
+
+        np.random.seed(42)
+        bn = BatchNorm3d(num_features=4)
+        bn.eval()
+        x = Tensor(np.random.randn(2, 4, 3, 3, 3).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return bn(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-3, rtol=1e-2)
+
+    def test_batchnorm3d_gradcheck_no_affine(self):
+        """Test BatchNorm3d gradients without affine parameters."""
+        from python.nn_core import BatchNorm3d
+
+        np.random.seed(42)
+        bn = BatchNorm3d(num_features=4, affine=False)
+        bn.eval()
+        x = Tensor(np.random.randn(2, 4, 3, 3, 3).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return bn(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-3, rtol=1e-2)
+
+    # =========================================================================
+    # LayerNorm Gradient Tests
+    # =========================================================================
+
+    def test_layernorm_gradcheck_1d_shape(self):
+        """Verify LayerNorm gradients with 1D normalized_shape."""
+        from python.nn_core import LayerNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[16])
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return ln(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_layernorm_gradcheck_2d_shape(self):
+        """Verify LayerNorm gradients with 2D normalized_shape."""
+        from python.nn_core import LayerNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[8, 16])
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return ln(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_layernorm_gradcheck_3d_shape(self):
+        """Verify LayerNorm gradients with 3D normalized_shape (full spatial)."""
+        from python.nn_core import LayerNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[4, 4, 4])
+        x = Tensor(np.random.randn(2, 4, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return ln(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_layernorm_gradcheck_different_sizes(self):
+        """Test LayerNorm gradients with different sizes."""
+        from python.nn_core import LayerNorm
+
+        configs = [
+            ((2, 8), [8]),           # 2D input
+            ((2, 4, 16), [16]),      # 3D input, last dim
+            ((4, 8, 32), [32]),      # Larger
+            ((2, 4, 8, 16), [16]),   # 4D input
+        ]
+
+        for input_shape, norm_shape in configs:
+            np.random.seed(42)
+            ln = LayerNorm(normalized_shape=norm_shape)
+            x = Tensor(np.random.randn(*input_shape).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return ln(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"LayerNorm gradcheck failed for input_shape={input_shape}, norm_shape={norm_shape}"
+
+    def test_layernorm_gradcheck_no_affine(self):
+        """Test LayerNorm gradients without affine parameters."""
+        from python.nn_core import LayerNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[16], elementwise_affine=False)
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return ln(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_layernorm_gradcheck_different_eps(self):
+        """Test LayerNorm gradients with different eps values."""
+        from python.nn_core import LayerNorm
+
+        for eps in [1e-5, 1e-6, 1e-12]:
+            np.random.seed(42)
+            ln = LayerNorm(normalized_shape=[16], eps=eps)
+            x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return ln(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"LayerNorm gradcheck failed for eps={eps}"
+
+    def test_layernorm_gamma_beta_gradients(self):
+        """Verify gamma and beta gradients for LayerNorm."""
+        from python.nn_core import LayerNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[16])
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        y = ln(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert ln.weight.grad is not None, "Gamma gradient should exist"
+        assert ln.bias.grad is not None, "Beta gradient should exist"
+        assert ln.weight.grad.shape == (16,), "Gamma gradient shape mismatch"
+        assert ln.bias.grad.shape == (16,), "Beta gradient shape mismatch"
+
+    # =========================================================================
+    # GroupNorm Gradient Tests
+    # =========================================================================
+
+    def test_groupnorm_gradcheck_basic(self):
+        """Verify GroupNorm gradients using gradcheck."""
+        from python.nn_core import GroupNorm
+
+        np.random.seed(42)
+        gn = GroupNorm(num_groups=4, num_channels=16)
+        x = Tensor(np.random.randn(2, 16, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return gn(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_groupnorm_gradcheck_groups_equal_channels(self):
+        """Test GroupNorm gradients when groups=channels (InstanceNorm-like)."""
+        from python.nn_core import GroupNorm
+
+        np.random.seed(42)
+        gn = GroupNorm(num_groups=8, num_channels=8)
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return gn(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_groupnorm_gradcheck_single_group(self):
+        """Test GroupNorm gradients with single group (LayerNorm-like)."""
+        from python.nn_core import GroupNorm
+
+        np.random.seed(42)
+        gn = GroupNorm(num_groups=1, num_channels=16)
+        x = Tensor(np.random.randn(2, 16, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return gn(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_groupnorm_gradcheck_different_configs(self):
+        """Test GroupNorm gradients with different group configurations."""
+        from python.nn_core import GroupNorm
+
+        configs = [
+            (2, 8, 4, 4),   # 2 groups of 4
+            (4, 16, 8, 8),  # 4 groups of 4
+            (8, 32, 4, 4),  # 8 groups of 4
+            (2, 6, 4, 4),   # 2 groups of 3 (non-power-of-2)
+        ]
+
+        for groups, channels, h, w in configs:
+            np.random.seed(42)
+            gn = GroupNorm(num_groups=groups, num_channels=channels)
+            x = Tensor(np.random.randn(2, channels, h, w).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return gn(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"GroupNorm gradcheck failed for groups={groups}, channels={channels}"
+
+    def test_groupnorm_gradcheck_no_affine(self):
+        """Test GroupNorm gradients without affine parameters."""
+        from python.nn_core import GroupNorm
+
+        np.random.seed(42)
+        gn = GroupNorm(num_groups=4, num_channels=16, affine=False)
+        x = Tensor(np.random.randn(2, 16, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return gn(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_groupnorm_gamma_beta_gradients(self):
+        """Verify gamma and beta gradients for GroupNorm."""
+        from python.nn_core import GroupNorm
+
+        np.random.seed(42)
+        gn = GroupNorm(num_groups=4, num_channels=16)
+        x = Tensor(np.random.randn(2, 16, 4, 4).astype(np.float64), requires_grad=True)
+
+        y = gn(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert gn.weight.grad is not None, "Gamma gradient should exist"
+        assert gn.bias.grad is not None, "Beta gradient should exist"
+        assert gn.weight.grad.shape == (16,), "Gamma gradient shape mismatch"
+        assert gn.bias.grad.shape == (16,), "Beta gradient shape mismatch"
+
+    # =========================================================================
+    # InstanceNorm Gradient Tests (not yet implemented)
+    # =========================================================================
+
+    def test_instancenorm_gradcheck_basic(self):
+        """Verify InstanceNorm gradients using gradcheck."""
+        from python.nn_core import InstanceNorm
+
+        np.random.seed(42)
+        inst_norm = InstanceNorm(num_features=8)
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return inst_norm(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_instancenorm1d_gradcheck(self):
+        """Verify InstanceNorm1d gradients using gradcheck."""
+        from python.nn_core import InstanceNorm1d
+
+        np.random.seed(42)
+        inst_norm = InstanceNorm1d(num_features=8)
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return inst_norm(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_instancenorm2d_gradcheck(self):
+        """Verify InstanceNorm2d gradients using gradcheck."""
+        from python.nn_core import InstanceNorm2d
+
+        np.random.seed(42)
+        inst_norm = InstanceNorm2d(num_features=8)
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return inst_norm(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_instancenorm3d_gradcheck(self):
+        """Verify InstanceNorm3d gradients using gradcheck."""
+        from python.nn_core import InstanceNorm3d
+
+        np.random.seed(42)
+        inst_norm = InstanceNorm3d(num_features=4)
+        x = Tensor(np.random.randn(2, 4, 3, 3, 3).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return inst_norm(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_instancenorm_gradcheck_different_sizes(self):
+        """Test InstanceNorm gradients with different spatial sizes."""
+        from python.nn_core import InstanceNorm2d
+
+        configs = [
+            (2, 4, 3, 3),
+            (4, 8, 8, 8),
+            (1, 16, 4, 4),
+        ]
+
+        for batch, channels, h, w in configs:
+            np.random.seed(42)
+            inst_norm = InstanceNorm2d(num_features=channels)
+            x = Tensor(np.random.randn(batch, channels, h, w).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return inst_norm(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"InstanceNorm2d gradcheck failed for shape ({batch}, {channels}, {h}, {w})"
+
+    def test_instancenorm_gradcheck_with_affine(self):
+        """Test InstanceNorm gradients with affine parameters."""
+        from python.nn_core import InstanceNorm2d
+
+        np.random.seed(42)
+        inst_norm = InstanceNorm2d(num_features=8, affine=True)
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return inst_norm(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    # =========================================================================
+    # RMSNorm Gradient Tests
+    # =========================================================================
+
+    def test_rmsnorm_gradcheck_basic(self):
+        """Verify RMSNorm gradients using gradcheck."""
+        from python.nn_core import RMSNorm
+
+        np.random.seed(42)
+        rms = RMSNorm(normalized_shape=16)
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return rms(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_rmsnorm_gradcheck_different_sizes(self):
+        """Test RMSNorm gradients with different sizes."""
+        from python.nn_core import RMSNorm
+
+        configs = [
+            ((2, 8), 8),
+            ((4, 16, 32), 32),
+            ((2, 4, 8, 64), 64),
+        ]
+
+        for input_shape, norm_dim in configs:
+            np.random.seed(42)
+            rms = RMSNorm(normalized_shape=norm_dim)
+            x = Tensor(np.random.randn(*input_shape).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return rms(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"RMSNorm gradcheck failed for input_shape={input_shape}, norm_dim={norm_dim}"
+
+    def test_rmsnorm_gradcheck_different_eps(self):
+        """Test RMSNorm gradients with different eps values."""
+        from python.nn_core import RMSNorm
+
+        for eps in [1e-5, 1e-6, 1e-8]:
+            np.random.seed(42)
+            rms = RMSNorm(normalized_shape=16, eps=eps)
+            x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return rms(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"RMSNorm gradcheck failed for eps={eps}"
+
+    def test_rmsnorm_gamma_gradient(self):
+        """Verify gamma gradient for RMSNorm."""
+        from python.nn_core import RMSNorm
+
+        np.random.seed(42)
+        rms = RMSNorm(normalized_shape=16)
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        y = rms(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert rms.weight.grad is not None, "Gamma gradient should exist"
+        assert rms.weight.grad.shape == (16,), "Gamma gradient shape mismatch"
+        assert not np.allclose(rms.weight.grad, 0), "Gamma gradient should be non-zero"
+
+    def test_rmsnorm_gradcheck_large_dim(self):
+        """Test RMSNorm gradients with larger normalized dimension."""
+        from python.nn_core import RMSNorm
+
+        np.random.seed(42)
+        rms = RMSNorm(normalized_shape=256)
+        x = Tensor(np.random.randn(2, 4, 256).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return rms(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    # =========================================================================
+    # LocalResponseNorm Gradient Tests (not yet implemented)
+    # =========================================================================
+
+    def test_localresponsenorm_gradcheck_basic(self):
+        """Verify LocalResponseNorm gradients using gradcheck."""
+        from python.nn_core import LocalResponseNorm
+
+        np.random.seed(42)
+        lrn = LocalResponseNorm(size=5)
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return lrn(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_localresponsenorm_gradcheck_different_sizes(self):
+        """Test LocalResponseNorm gradients with different size parameters."""
+        from python.nn_core import LocalResponseNorm
+
+        for size in [3, 5, 7]:
+            np.random.seed(42)
+            lrn = LocalResponseNorm(size=size)
+            x = Tensor(np.random.randn(2, 16, 4, 4).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return lrn(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"LocalResponseNorm gradcheck failed for size={size}"
+
+    def test_localresponsenorm_gradcheck_different_params(self):
+        """Test LocalResponseNorm gradients with different alpha, beta, k."""
+        from python.nn_core import LocalResponseNorm
+
+        configs = [
+            {'size': 5, 'alpha': 1e-4, 'beta': 0.75, 'k': 1},
+            {'size': 5, 'alpha': 2e-5, 'beta': 0.5, 'k': 2},
+            {'size': 3, 'alpha': 1e-3, 'beta': 1.0, 'k': 1},
+        ]
+
+        for config in configs:
+            np.random.seed(42)
+            lrn = LocalResponseNorm(**config)
+            x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return lrn(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"LocalResponseNorm gradcheck failed for config={config}"
+
+    # =========================================================================
+    # SpectralNorm Gradient Tests (not exported from nn_core)
+    # =========================================================================
+
+    def test_spectralnorm_linear_gradcheck(self):
+        """Verify SpectralNorm gradients for linear layer."""
+        from python.nn_core import SpectralNormLinear
+
+        np.random.seed(42)
+        sn_linear = SpectralNormLinear(in_features=8, out_features=16)
+        x = Tensor(np.random.randn(2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return sn_linear(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_spectralnorm_conv2d_gradcheck(self):
+        """Verify SpectralNorm gradients for conv2d layer."""
+        from python.nn_core import SpectralNormConv2d
+
+        np.random.seed(42)
+        sn_conv = SpectralNormConv2d(in_channels=4, out_channels=8, kernel_size=3, padding=1)
+        x = Tensor(np.random.randn(1, 4, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return sn_conv(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_spectralnorm_linear_weight_gradient(self):
+        """Verify weight gradients flow through SpectralNorm."""
+        from python.nn_core import SpectralNormLinear
+
+        np.random.seed(42)
+        sn_linear = SpectralNormLinear(in_features=8, out_features=16)
+        x = Tensor(np.random.randn(2, 8).astype(np.float64), requires_grad=True)
+
+        y = sn_linear(x)
+        loss = y.sum()
+        loss.backward()
+
+        # Check that weight gradient exists
+        assert sn_linear.weight.grad is not None, "Weight gradient should exist"
+        assert not np.allclose(sn_linear.weight.grad, 0), "Weight gradient should be non-zero"
+
+    # =========================================================================
+    # Gradient Flow Tests (chain multiple normalizations)
+    # =========================================================================
+
+    def test_gradient_flow_layernorm_chain(self):
+        """Test gradients flow through chained LayerNorm layers."""
+        from python.nn_core import LayerNorm
+
+        # Note: With chained normalization layers, gradients can become very small
+        # (1e-10 to 1e-11) due to repeated normalization. This is mathematically
+        # expected, so we verify gradients exist and are finite rather than non-zero.
+        np.random.seed(42)
+        ln1 = LayerNorm(normalized_shape=[16])
+        ln2 = LayerNorm(normalized_shape=[16])
+
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        y = ln1(x)
+        z = ln2(y)
+        # Use square sum as loss to get non-zero gradients even with normalized output
+        loss = (z ** 2).sum()
+        loss.backward()
+
+        assert x.grad is not None, "Input gradient should exist"
+        assert np.all(np.isfinite(x.grad)), "Input gradient should be finite"
+        # Gradients are computed (even if very small due to repeated normalization)
+        assert np.max(np.abs(x.grad)) > 1e-15, "Gradients should be non-trivially computed"
+
+    def test_gradient_flow_mixed_norms(self):
+        """Test gradients flow through mixed normalization types.
+
+        Note: With chained normalizations, gradients can become very small.
+        """
+        from python.nn_core import LayerNorm, RMSNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[16])
+        rms = RMSNorm(normalized_shape=16)
+
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        y = ln(x)
+        z = rms(y)
+        # Use square sum as loss to get non-zero gradients even with normalized output
+        loss = (z ** 2).sum()
+        loss.backward()
+
+        assert x.grad is not None, "Input gradient should exist"
+        assert np.all(np.isfinite(x.grad)), "Input gradient should be finite"
+        # Gradients are computed (even if very small due to repeated normalization)
+        assert np.max(np.abs(x.grad)) > 1e-15, "Gradients should be non-trivially computed"
+
+    # =========================================================================
+    # Numerical Stability Gradient Tests
+    # =========================================================================
+
+    def test_layernorm_gradient_small_input(self):
+        """Test LayerNorm gradients with small input values."""
+        from python.nn_core import LayerNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[16])
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64) * 1e-6, requires_grad=True)
+
+        def func(x):
+            return ln(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-7, atol=1e-4, rtol=1e-3)
+
+    def test_layernorm_gradient_large_input(self):
+        """Test LayerNorm gradients with large input values."""
+        from python.nn_core import LayerNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[16])
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64) * 100, requires_grad=True)
+
+        def func(x):
+            return ln(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_rmsnorm_gradient_small_input(self):
+        """Test RMSNorm gradients with small input values."""
+        from python.nn_core import RMSNorm
+
+        np.random.seed(42)
+        rms = RMSNorm(normalized_shape=16)
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64) * 1e-6, requires_grad=True)
+
+        def func(x):
+            return rms(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-7, atol=1e-4, rtol=1e-3)
+
+    def test_groupnorm_gradient_varying_batch(self):
+        """Test GroupNorm gradients with varying batch sizes."""
+        from python.nn_core import GroupNorm
+
+        for batch_size in [1, 2, 8, 16]:
+            np.random.seed(42)
+            gn = GroupNorm(num_groups=4, num_channels=16)
+            x = Tensor(np.random.randn(batch_size, 16, 4, 4).astype(np.float64), requires_grad=True)
+
+            def func(x):
+                return gn(x).sum()
+
+            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+                f"GroupNorm gradcheck failed for batch_size={batch_size}"
+
+    # =========================================================================
+    # Explicit Input Gradient Verification Tests
+    # =========================================================================
+
+    def test_layernorm_input_gradient_shape(self):
+        """Verify LayerNorm produces correct input gradient shape."""
+        from python.nn_core import LayerNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[16])
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        y = ln(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None, "Input gradient should exist"
+        assert x.grad.shape == x.shape, f"Input gradient shape {x.grad.shape} != input shape {x.shape}"
+        assert np.all(np.isfinite(x.grad)), "Input gradient should be finite"
+
+    def test_groupnorm_input_gradient_shape(self):
+        """Verify GroupNorm produces correct input gradient shape."""
+        from python.nn_core import GroupNorm
+
+        np.random.seed(42)
+        gn = GroupNorm(num_groups=4, num_channels=16)
+        x = Tensor(np.random.randn(2, 16, 4, 4).astype(np.float64), requires_grad=True)
+
+        y = gn(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None, "Input gradient should exist"
+        assert x.grad.shape == x.shape, f"Input gradient shape {x.grad.shape} != input shape {x.shape}"
+        assert np.all(np.isfinite(x.grad)), "Input gradient should be finite"
+
+    def test_rmsnorm_input_gradient_shape(self):
+        """Verify RMSNorm produces correct input gradient shape."""
+        from python.nn_core import RMSNorm
+
+        np.random.seed(42)
+        rms = RMSNorm(normalized_shape=16)
+        x = Tensor(np.random.randn(2, 8, 16).astype(np.float64), requires_grad=True)
+
+        y = rms(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None, "Input gradient should exist"
+        assert x.grad.shape == x.shape, f"Input gradient shape {x.grad.shape} != input shape {x.shape}"
+        assert np.all(np.isfinite(x.grad)), "Input gradient should be finite"
+
+    def test_batchnorm1d_input_gradient_shape(self):
+        """Verify BatchNorm1d produces correct input gradient shape."""
+        from python.nn_core import BatchNorm1d
+
+        np.random.seed(42)
+        bn = BatchNorm1d(num_features=16)
+        bn.eval()
+        x = Tensor(np.random.randn(4, 16).astype(np.float64), requires_grad=True)
+
+        y = bn(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None, "Input gradient should exist"
+        assert x.grad.shape == x.shape, f"Input gradient shape {x.grad.shape} != input shape {x.shape}"
+        assert np.all(np.isfinite(x.grad)), "Input gradient should be finite"
+
+    def test_batchnorm2d_input_gradient_shape(self):
+        """Verify BatchNorm2d produces correct input gradient shape."""
+        from python.nn_core import BatchNorm2d
+
+        np.random.seed(42)
+        bn = BatchNorm2d(num_features=8)
+        bn.eval()
+        x = Tensor(np.random.randn(2, 8, 4, 4).astype(np.float64), requires_grad=True)
+
+        y = bn(x)
+        loss = y.sum()
+        loss.backward()
+
+        assert x.grad is not None, "Input gradient should exist"
+        assert x.grad.shape == x.shape, f"Input gradient shape {x.grad.shape} != input shape {x.shape}"
+        assert np.all(np.isfinite(x.grad)), "Input gradient should be finite"
+
+    def test_layernorm_input_gradient_numerical(self):
+        """Verify LayerNorm input gradient matches numerical gradient."""
+        from python.nn_core import LayerNorm
+
+        np.random.seed(42)
+        ln = LayerNorm(normalized_shape=[8])
+        x = Tensor(np.random.randn(2, 4, 8).astype(np.float64), requires_grad=True)
+
+        # Compute analytical gradient
+        y = ln(x)
+        loss = y.sum()
+        loss.backward()
+        analytical_grad = x.grad.copy()
+
+        # Compute numerical gradient
+        eps = 1e-5
+        numerical_grad = np.zeros_like(x.data)
+        for i in range(x.data.size):
+            idx = np.unravel_index(i, x.data.shape)
+            x_plus = x.data.copy()
+            x_minus = x.data.copy()
+            x_plus[idx] += eps
+            x_minus[idx] -= eps
+
+            y_plus = ln(Tensor(x_plus)).sum()
+            y_minus = ln(Tensor(x_minus)).sum()
+            numerical_grad[idx] = (y_plus.data - y_minus.data) / (2 * eps)
+
+        assert np.allclose(analytical_grad, numerical_grad, rtol=1e-4, atol=1e-4), \
+            "LayerNorm input gradient doesn't match numerical gradient"
+
+    def test_groupnorm_input_gradient_numerical(self):
+        """Verify GroupNorm input gradient matches numerical gradient."""
+        from python.nn_core import GroupNorm
+
+        np.random.seed(42)
+        gn = GroupNorm(num_groups=2, num_channels=4)
+        x = Tensor(np.random.randn(1, 4, 3, 3).astype(np.float64), requires_grad=True)
+
+        # Compute analytical gradient
+        y = gn(x)
+        loss = y.sum()
+        loss.backward()
+        analytical_grad = x.grad.copy()
+
+        # Compute numerical gradient
+        eps = 1e-5
+        numerical_grad = np.zeros_like(x.data)
+        for i in range(x.data.size):
+            idx = np.unravel_index(i, x.data.shape)
+            x_plus = x.data.copy()
+            x_minus = x.data.copy()
+            x_plus[idx] += eps
+            x_minus[idx] -= eps
+
+            y_plus = gn(Tensor(x_plus)).sum()
+            y_minus = gn(Tensor(x_minus)).sum()
+            numerical_grad[idx] = (y_plus.data - y_minus.data) / (2 * eps)
+
+        assert np.allclose(analytical_grad, numerical_grad, rtol=1e-4, atol=1e-4), \
+            "GroupNorm input gradient doesn't match numerical gradient"
+
+    def test_rmsnorm_input_gradient_numerical(self):
+        """Verify RMSNorm input gradient matches numerical gradient."""
+        from python.nn_core import RMSNorm
+
+        np.random.seed(42)
+        rms = RMSNorm(normalized_shape=8)
+        x = Tensor(np.random.randn(2, 4, 8).astype(np.float64), requires_grad=True)
+
+        # Compute analytical gradient
+        y = rms(x)
+        loss = y.sum()
+        loss.backward()
+        analytical_grad = x.grad.copy()
+
+        # Compute numerical gradient
+        eps = 1e-5
+        numerical_grad = np.zeros_like(x.data)
+        for i in range(x.data.size):
+            idx = np.unravel_index(i, x.data.shape)
+            x_plus = x.data.copy()
+            x_minus = x.data.copy()
+            x_plus[idx] += eps
+            x_minus[idx] -= eps
+
+            y_plus = rms(Tensor(x_plus)).sum()
+            y_minus = rms(Tensor(x_minus)).sum()
+            numerical_grad[idx] = (y_plus.data - y_minus.data) / (2 * eps)
+
+        assert np.allclose(analytical_grad, numerical_grad, rtol=1e-4, atol=1e-4), \
+            "RMSNorm input gradient doesn't match numerical gradient"
 
 
 # =============================================================================

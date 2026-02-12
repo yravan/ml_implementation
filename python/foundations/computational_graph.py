@@ -120,6 +120,7 @@ from .functionals import (
 )
 
 
+
 def convert_to_function(cls):
     def f(*class_args, **class_kwargs):
         fn = cls()

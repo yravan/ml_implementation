@@ -19,6 +19,8 @@ from abc import ABC, abstractmethod
 
 from python.utils.math_utils import sigmoid, softmax, log_sigmoid, softplus, log_softmax
 
+# Global flag for disabling gradient computation
+_no_grad = False
 
 class Function(ABC):
     """
@@ -95,9 +97,6 @@ def _unbroadcast(grad: np.ndarray, target_shape: Tuple[int, ...], func: str = "s
             grad = grad.mean(axis=broadcast_dims, keepdims=True)
     return grad.reshape(target_shape).copy()
 
-
-# Global flag for disabling gradient computation
-_no_grad = False
 
 
 # ==================== Basic Arithmetic Operations (IMPLEMENTED) ====================

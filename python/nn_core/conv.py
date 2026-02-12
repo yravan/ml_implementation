@@ -38,8 +38,9 @@ References
 import numpy as np
 from typing import Tuple, Union, Optional, List
 
+from .conv_functional import conv2d, conv1d
 from .module import Module, Parameter
-from python.foundations import Tensor
+from python.foundations import Tensor, _no_grad
 from python.foundations.functionals import Function
 
 
@@ -108,15 +109,7 @@ class Conv1d(Module):
         Returns:
             Output Tensor (batch_size, out_channels, output_length)
         """
-        raise NotImplementedError(
-            "TODO: Implement Conv1d forward\n"
-            "Hint: Use Conv1dFunction.apply(x, self.weight, self.bias, ...)\n"
-            "Or use im2col approach:\n"
-            "  1. Extract all patches from input using sliding window\n"
-            "  2. Reshape to (batch*output_size, kernel_size*in_channels)\n"
-            "  3. Perform matrix multiply: output = patches @ weight.T + bias\n"
-            "  4. Reshape to (batch_size, out_channels, output_length)"
-        )
+        return conv1d(x, self.weight, self.bias, self.stride, self.padding, self.dilation)
 
     def extra_repr(self) -> str:
         return (
@@ -209,15 +202,7 @@ class Conv2d(Module):
         Returns:
             Output Tensor (batch_size, out_channels, height_out, width_out)
         """
-        raise NotImplementedError(
-            "TODO: Implement Conv2d forward\n"
-            "Hint: Use Conv2dFunction.apply(x, self.weight, self.bias, ...)\n"
-            "Or use im2col approach:\n"
-            "  1. Extract all K_h × K_w patches from input via sliding window\n"
-            "  2. Reshape to (batch*h_out*w_out, in_channels*k_h*k_w)\n"
-            "  3. Perform matrix multiplication: output = patches @ weight.T + bias\n"
-            "  4. Reshape to (batch_size, out_channels, h_out, w_out)"
-        )
+        return conv2d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
     def extra_repr(self) -> str:
         return (
@@ -738,182 +723,6 @@ class ConvTranspose2dFunction(Function):
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """Compute gradients for transposed 2D convolution."""
         raise NotImplementedError("TODO: Implement ConvTranspose2dFunction backward")
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def im2col_2d(
-    x: np.ndarray,
-    kernel_h: int,
-    kernel_w: int,
-    stride: Tuple[int, int],
-    dilation: Tuple[int, int]
-) -> np.ndarray:
-    """
-    Convert image patches to columns for efficient convolution.
-
-    Takes sliding windows from input and arranges them as columns.
-    This converts convolution into matrix multiplication.
-
-    Args:
-        x: Input tensor (batch, channels, height, width)
-        kernel_h: Kernel height
-        kernel_w: Kernel width
-        stride: (stride_h, stride_w)
-        dilation: (dilation_h, dilation_w)
-
-    Returns:
-        cols: Column matrix (batch, channels*kernel_h*kernel_w, out_h*out_w)
-    """
-    raise NotImplementedError("TODO: Implement im2col_2d")
-
-
-def col2im_2d(
-    cols: np.ndarray,
-    x_shape: Tuple[int, ...],
-    kernel_h: int,
-    kernel_w: int,
-    stride: Tuple[int, int],
-    dilation: Tuple[int, int]
-) -> np.ndarray:
-    """
-    Convert columns back to image (inverse of im2col).
-
-    Used in backward pass to convert gradient columns to gradient image.
-
-    Args:
-        cols: Column matrix (batch, channels*kernel_h*kernel_w, out_h*out_w)
-        x_shape: Original input shape (batch, channels, height, width)
-        kernel_h: Kernel height
-        kernel_w: Kernel width
-        stride: (stride_h, stride_w)
-        dilation: (dilation_h, dilation_w)
-
-    Returns:
-        x: Reconstructed tensor (batch, channels, height, width)
-    """
-    raise NotImplementedError("TODO: Implement col2im_2d")
-
-
-def calculate_output_shape(
-    input_shape: Tuple[int, int],
-    kernel_size: Tuple[int, int],
-    stride: Tuple[int, int] = (1, 1),
-    padding: Tuple[int, int] = (0, 0),
-    dilation: Tuple[int, int] = (1, 1)
-) -> Tuple[int, int]:
-    """
-    Calculate output spatial dimensions for 2D convolution.
-
-    Formula:
-        H_out = floor((H_in + 2*pad_h - dil_h*(K_h - 1) - 1) / stride_h) + 1
-        W_out = floor((W_in + 2*pad_w - dil_w*(K_w - 1) - 1) / stride_w) + 1
-    """
-    h_in, w_in = input_shape
-    k_h, k_w = kernel_size
-    s_h, s_w = stride
-    p_h, p_w = padding
-    d_h, d_w = dilation
-
-    h_out = ((h_in + 2*p_h - d_h*(k_h - 1) - 1) // s_h) + 1
-    w_out = ((w_in + 2*p_w - d_w*(k_w - 1) - 1) // s_w) + 1
-
-    return (h_out, w_out)
-
-
-def calculate_transposed_output_shape(
-    input_shape: Tuple[int, int],
-    kernel_size: Tuple[int, int],
-    stride: Tuple[int, int] = (1, 1),
-    padding: Tuple[int, int] = (0, 0),
-    output_padding: Tuple[int, int] = (0, 0),
-    dilation: Tuple[int, int] = (1, 1)
-) -> Tuple[int, int]:
-    """
-    Calculate output shape for transposed convolution.
-
-    Formula:
-        H_out = (H_in - 1)*stride_h - 2*pad_h + dil_h*(K_h - 1) + out_pad_h + 1
-    """
-    h_in, w_in = input_shape
-    k_h, k_w = kernel_size
-    s_h, s_w = stride
-    p_h, p_w = padding
-    op_h, op_w = output_padding
-    d_h, d_w = dilation
-
-    h_out = (h_in - 1)*s_h - 2*p_h + d_h*(k_h - 1) + op_h + 1
-    w_out = (w_in - 1)*s_w - 2*p_w + d_w*(k_w - 1) + op_w + 1
-
-    return (h_out, w_out)
-
-
-def calculate_receptive_field(layer_configs: List[dict]) -> int:
-    """
-    Calculate cumulative receptive field for stacked conv layers.
-
-    Args:
-        layer_configs: List of dicts with keys: kernel_size, stride, dilation
-
-    Returns:
-        Total receptive field size
-    """
-    rf = 1
-    for config in layer_configs:
-        k = config.get('kernel_size', 3)
-        s = config.get('stride', 1)
-        d = config.get('dilation', 1)
-        rf += (k - 1) * s * d
-    return rf
-
-
-def count_conv_parameters(
-    in_channels: int,
-    out_channels: int,
-    kernel_size: Tuple[int, int],
-    groups: int = 1,
-    bias: bool = True
-) -> int:
-    """Count learnable parameters in a Conv2d layer."""
-    k_h, k_w = kernel_size
-    num_weights = out_channels * (in_channels // groups) * k_h * k_w
-    num_bias = out_channels if bias else 0
-    return num_weights + num_bias
-
-
-def count_depthwise_separable_parameters(
-    in_channels: int,
-    out_channels: int,
-    kernel_size: Tuple[int, int] = (3, 3),
-    bias: bool = True
-) -> Tuple[int, int, float]:
-    """
-    Compare parameters: standard conv vs depthwise separable.
-
-    Returns:
-        (standard_params, depthwise_sep_params, reduction_factor)
-    """
-    k_h, k_w = kernel_size
-
-    # Standard convolution
-    standard = out_channels * in_channels * k_h * k_w
-    if bias:
-        standard += out_channels
-
-    # Depthwise separable
-    depthwise = in_channels * k_h * k_w
-    if bias:
-        depthwise += in_channels
-    pointwise = in_channels * out_channels
-    if bias:
-        pointwise += out_channels
-    depthwise_sep = depthwise + pointwise
-
-    reduction = standard / depthwise_sep if depthwise_sep > 0 else 1.0
-
-    return standard, depthwise_sep, reduction
 
 
 # =============================================================================
