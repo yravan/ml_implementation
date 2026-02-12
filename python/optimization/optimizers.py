@@ -280,7 +280,7 @@ class SGDW(SGD):
                 weight_decay = group.get("weight_decay", self.defaults["weight_decay"])
                 lr = group.get("lr", self.defaults["lr"])
                 if weight_decay > 1e-8:
-                    p.data *= 1- lr * weight_decay
+                    p.data *= 1 - lr * weight_decay
 
                 grad = p.grad
 
@@ -568,7 +568,28 @@ class Adadelta(Optimizer):
 
     def step(self) -> None:
         """Perform one Adadelta optimization step."""
-        raise NotImplementedError("TODO: Implement Adadelta step")
+        for group in self.param_groups:
+            lr = group.get("lr", self.defaults["lr"])
+            rho = group.get("rho", self.defaults["rho"])
+            eps = group.get("eps", self.defaults["eps"])
+            weight_decay = group.get("weight_decay", self.defaults["weight_decay"])
+            for p in group['params']:
+                grad = p.grad
+                if weight_decay > 1e-8:
+                    grad = grad + weight_decay * p.data
+
+                # update expected value of grad squared
+                square_avg = self.square_avg[p]
+                square_avg *= rho ; square_avg += grad ** 2 * (1 - rho)
+
+                # update expected value of delta
+                acc_delta = self.acc_delta[p]
+                descent =  np.sqrt(acc_delta + eps) / np.sqrt(square_avg + eps) * grad
+                acc_delta *= rho ; acc_delta += descent ** 2 * (1 - rho)
+
+                # update parameter
+                p.data -= descent * lr
+        self._step_count += 1
 
 
 # =============================================================================
@@ -641,8 +662,36 @@ class Adam(Optimizer):
 
     def step(self) -> None:
         """Perform one Adam optimization step."""
-        raise NotImplementedError("TODO: Implement Adam step")
+        for group in self.param_groups:
+            beta_1, beta_2 = group.get('betas', self.defaults['betas'])
+            lr = group.get('lr', self.defaults['lr'])
+            eps = group.get('eps', self.defaults['eps'])
+            weight_decay = group.get('weight_decay', self.defaults['weight_decay'])
+            amsgrad = group.get('amsgrad', self.defaults['amsgrad'])
+            for p in group['params']:
+                grad = p.grad
+                if weight_decay > 1e-8:
+                    grad = grad + weight_decay * p.data
 
+                # update first moment
+                exp_avg = self.exp_avg[p]
+                exp_avg *= beta_1 ; exp_avg += grad * (1 - beta_1)
+                corrected_exp_avg = exp_avg / (1 - beta_1 ** (self._step_count + 1))
+
+                # update second moment
+                exp_avg_sq = self.exp_avg_sq[p]
+                exp_avg_sq *= beta_2 ; exp_avg_sq += grad**2 * (1 - beta_2)
+                if amsgrad:
+                    max_exp_avg_sq = self.max_exp_avg_sq[p]
+                    np.maximum(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    corrected_exp_avg_sq = max_exp_avg_sq / (1 - beta_2**(self._step_count + 1))
+                else:
+                    corrected_exp_avg_sq = exp_avg_sq / (1 - beta_2 ** (self._step_count + 1))
+
+                # update parameter
+                descent = corrected_exp_avg / (np.sqrt(corrected_exp_avg_sq) + eps)
+                p.data -= descent * lr
+        self._step_count += 1
 
 class AdamW(Optimizer):
     """
@@ -669,23 +718,29 @@ class AdamW(Optimizer):
         - Used in BERT, GPT, and virtually all modern Transformers
     """
 
-    def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
-                 lr: float = 0.001,
-                 betas: Tuple[float, float] = (0.9, 0.999),
-                 eps: float = 1e-8,
-                 weight_decay: float = 0.01):
+    def __init__(
+        self,
+        params: Union[List[Tensor], List[Dict[str, ...]]],
+        lr: float = 0.001,
+        betas: Tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+        amsgrad: bool = False,
+    ):
         """
-        Initialize AdamW optimizer.
+        Initialize Adam optimizer.
 
         Args:
             params: List of Tensor parameters or param groups
             lr: Learning rate
-            betas: (β₁, β₂) for moment estimates
-            eps: Numerical stability term
-            weight_decay: Decoupled weight decay coefficient
+            betas: (β₁, β₂) coefficients for moment estimates
+            eps: Term for numerical stability
+            weight_decay: L2 penalty (NOT recommended, use AdamW instead)
+            amsgrad: Use AMSGrad variant (maintains max of past v_t)
         """
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        defaults = dict(
+            lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad
+        )
         super().__init__(params, **defaults)
         self._initialize_state()
 
@@ -693,14 +748,54 @@ class AdamW(Optimizer):
         """Initialize first and second moment buffers for each parameter."""
         self.exp_avg = {}
         self.exp_avg_sq = {}
+        self.max_exp_avg_sq = {}
         for group in self.param_groups:
-            for p in group['params']:
+            amsgrad = group.get("amsgrad", self.defaults["amsgrad"])
+            for p in group["params"]:
                 self.exp_avg[p] = np.zeros_like(p.data)
                 self.exp_avg_sq[p] = np.zeros_like(p.data)
+                if amsgrad:
+                    self.max_exp_avg_sq[p] = np.zeros_like(p.data)
 
     def step(self) -> None:
         """Perform one AdamW optimization step."""
-        raise NotImplementedError("TODO: Implement AdamW step")
+        for group in self.param_groups:
+            beta_1, beta_2 = group.get("betas", self.defaults["betas"])
+            lr = group.get("lr", self.defaults["lr"])
+            eps = group.get("eps", self.defaults["eps"])
+            weight_decay = group.get("weight_decay", self.defaults["weight_decay"])
+            amsgrad = group.get("amsgrad", self.defaults["amsgrad"])
+            for p in group["params"]:
+                grad = p.grad
+                if weight_decay > 1e-8:
+                    p.data *= (1 - weight_decay * lr)
+
+                # update first moment
+                exp_avg = self.exp_avg[p]
+                exp_avg *= beta_1
+                exp_avg += grad * (1 - beta_1)
+                corrected_exp_avg = exp_avg / (1 - beta_1 ** (self._step_count + 1))
+
+                # update second moment
+                exp_avg_sq = self.exp_avg_sq[p]
+                exp_avg_sq *= beta_2
+                exp_avg_sq += grad**2 * (1 - beta_2)
+                if amsgrad:
+                    max_exp_avg_sq = self.max_exp_avg_sq[p]
+                    np.maximum(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    corrected_exp_avg_sq = max_exp_avg_sq / (
+                        1 - beta_2 ** (self._step_count + 1)
+                    )
+                else:
+                    corrected_exp_avg_sq = exp_avg_sq / (
+                        1 - beta_2 ** (self._step_count + 1)
+                    )
+
+                # update parameter
+                descent = corrected_exp_avg / (np.sqrt(corrected_exp_avg_sq) + eps)
+                print(descent * lr)
+                p.data -= descent * lr
+        self._step_count += 1
 
 
 class NAdam(Optimizer):
@@ -1159,57 +1254,3 @@ class Muon(Optimizer):
         """Perform one Muon optimization step."""
         raise NotImplementedError("TODO: Implement Muon step")
 
-
-# =============================================================================
-# Functional Interfaces
-# =============================================================================
-
-def sgd_step(param: np.ndarray, grad: np.ndarray, velocity: np.ndarray,
-             lr: float, momentum: float = 0.0, weight_decay: float = 0.0,
-             dampening: float = 0.0, nesterov: bool = False
-             ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Functional SGD update for a single parameter.
-
-    Args:
-        param: Parameter array
-        grad: Gradient array
-        velocity: Momentum buffer
-        lr: Learning rate
-        momentum: Momentum factor
-        weight_decay: L2 penalty
-        dampening: Dampening for momentum
-        nesterov: Use Nesterov momentum
-
-    Returns:
-        Tuple of (updated_param, new_velocity)
-    """
-    raise NotImplementedError("TODO: Implement functional SGD")
-
-
-def adam_step(param: np.ndarray, grad: np.ndarray,
-              exp_avg: np.ndarray, exp_avg_sq: np.ndarray, step: int,
-              lr: float = 0.001, beta1: float = 0.9, beta2: float = 0.999,
-              eps: float = 1e-8, weight_decay: float = 0.0
-              ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Functional Adam update for a single parameter.
-
-    Returns:
-        Tuple of (updated_param, new_exp_avg, new_exp_avg_sq)
-    """
-    raise NotImplementedError("TODO: Implement functional Adam")
-
-
-def adamw_step(param: np.ndarray, grad: np.ndarray,
-               exp_avg: np.ndarray, exp_avg_sq: np.ndarray, step: int,
-               lr: float = 0.001, beta1: float = 0.9, beta2: float = 0.999,
-               eps: float = 1e-8, weight_decay: float = 0.01
-               ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Functional AdamW update for a single parameter.
-
-    Returns:
-        Tuple of (updated_param, new_exp_avg, new_exp_avg_sq)
-    """
-    raise NotImplementedError("TODO: Implement functional AdamW")

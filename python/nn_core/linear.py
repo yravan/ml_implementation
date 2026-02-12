@@ -54,9 +54,8 @@ References
 # Prerequisites: foundations/computational_graph, foundations/functionals
 
 import numpy as np
-from typing import Optional, Tuple, Union
 
-from .init import normal_
+from .init import xavier_normal_, kaiming_normal_, zeros_, normal_
 from .module import Module, Parameter
 from python.foundations import Tensor
 
@@ -110,14 +109,13 @@ class Linear(Module):
         else:
             self.bias = None
         if init == 'xavier':
-            raise NotImplementedError
+            self._init_parameters(xavier_normal_)
         elif init == 'kaiming':
-            raise NotImplementedError
+            self._init_parameters(kaiming_normal_)
         elif init == 'normal':
-            normal_(self.weight, std=0.01)
-            normal_(self.bias, std=0.01)
+            self._init_parameters(normal_)
         elif init == 'zeros':
-            pass
+            self._init_parameters(zeros_)
         else:
             raise ValueError(f"Unknown init method: {init}")
 
@@ -193,13 +191,13 @@ class Bilinear(Module):
         else:
             self.bias = None
         if init == 'xavier':
-            raise NotImplementedError
+            self._init_parameters(xavier_normal_)
         elif init == 'kaiming':
-            raise NotImplementedError
+            self._init_parameters(kaiming_normal_)
         elif init == 'normal':
-            raise NotImplementedError
+            self._init_parameters(normal_)
         elif init == 'zeros':
-            pass
+            self._init_parameters(zeros_)
         else:
             raise ValueError(f"Unknown init method: {init}")
 
@@ -276,13 +274,13 @@ class LazyLinear(Module):
         """Initialize weight and bias after in_features is known."""
         self.weight = Parameter(np.zeros((self.out_features, self.in_features)))
         if self.init == 'xavier':
-            raise NotImplementedError
+            self._init_parameters(xavier_normal_)
         elif self.init == 'kaiming':
-            raise NotImplementedError
+            self._init_parameters(kaiming_normal_)
         elif self.init == 'normal':
-            raise NotImplementedError
+            self._init_parameters(normal_)
         elif self.init == 'zeros':
-            pass
+            self._init_parameters(zeros_)
         else:
             raise ValueError(f"Unknown init method: {self.init}")
 

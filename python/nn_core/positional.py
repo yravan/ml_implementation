@@ -89,32 +89,22 @@ class SinusoidalPositionalEncoding(Module):
         Args:
             d_model: Embedding dimension (typically 512, 768, etc.)
             max_seq_length: Maximum sequence length to pre-compute encodings for
-                          (can use longer sequences with interpolation if needed)
 
         Raises:
             ValueError: If d_model is not positive
         """
-        super().__init__()
-
-        if d_model <= 0:
-            raise ValueError(f"d_model must be positive, got {d_model}")
-
-        self.d_model = d_model
-        self.max_seq_length = max_seq_length
-
-        # Create positional encoding matrix
-        pe = np.zeros((max_seq_length, d_model), dtype=np.float32)
-        position = np.arange(0, max_seq_length, dtype=np.float32)[:, np.newaxis]
-        div_term = np.exp(np.arange(0, d_model, 2, dtype=np.float32) * -(math.log(10000.0) / d_model))
-
-        pe[:, 0::2] = np.sin(position * div_term)
-        if d_model % 2 == 1:
-            pe[:, 1::2] = np.cos(position * div_term[:-1])
-        else:
-            pe[:, 1::2] = np.cos(position * div_term)
-
-        # Register as buffer (not trainable)
-        self.register_buffer('pe', pe)
+        raise NotImplementedError(
+            "TODO: Initialize sinusoidal positional encoding\n"
+            "1. Call super().__init__()\n"
+            "2. Validate d_model > 0\n"
+            "3. Store d_model and max_seq_length\n"
+            "4. Create PE matrix of shape (max_seq_length, d_model):\n"
+            "   - position = np.arange(max_seq_length)[:, np.newaxis]\n"
+            "   - div_term = np.exp(np.arange(0, d_model, 2) * -(log(10000) / d_model))\n"
+            "   - pe[:, 0::2] = sin(position * div_term)\n"
+            "   - pe[:, 1::2] = cos(position * div_term)\n"
+            "5. Register pe as buffer using self.register_buffer('pe', pe)"
+        )
 
     def get_encoding(self, seq_length: int) -> np.ndarray:
         """
@@ -129,12 +119,11 @@ class SinusoidalPositionalEncoding(Module):
         Raises:
             ValueError: If seq_length > max_seq_length
         """
-        if seq_length > self.max_seq_length:
-            raise ValueError(
-                f"seq_length ({seq_length}) exceeds max_seq_length ({self.max_seq_length})"
-            )
-
-        return self.pe[:seq_length]
+        raise NotImplementedError(
+            "TODO: Return positional encoding slice\n"
+            "1. Validate seq_length <= max_seq_length\n"
+            "2. Return self.pe[:seq_length]"
+        )
 
     def forward(self, x: np.ndarray) -> np.ndarray:
         """
@@ -150,15 +139,13 @@ class SinusoidalPositionalEncoding(Module):
             ValueError: If x.shape[-1] != d_model
             ValueError: If seq_length > max_seq_length
         """
-        if x.shape[-1] != self.d_model:
-            raise ValueError(
-                f"Last dimension of x ({x.shape[-1]}) must match d_model ({self.d_model})"
-            )
-
-        seq_length = x.shape[1]
-        pe = self.get_encoding(seq_length)
-
-        return x + pe[np.newaxis, :, :]
+        raise NotImplementedError(
+            "TODO: Add positional encoding to input\n"
+            "1. Validate x.shape[-1] == d_model\n"
+            "2. Get seq_length from x.shape[1]\n"
+            "3. Get encoding via get_encoding(seq_length)\n"
+            "4. Return x + pe[np.newaxis, :, :]  # broadcast over batch"
+        )
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
@@ -168,8 +155,6 @@ class SinusoidalPositionalEncoding(Module):
     def compute_pe(d_model: int, seq_length: int) -> np.ndarray:
         """
         Static method to compute positional encoding matrix.
-
-        Useful for understanding the computation step-by-step.
 
         Args:
             d_model: Embedding dimension
@@ -182,17 +167,16 @@ class SinusoidalPositionalEncoding(Module):
             PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
             PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
         """
-        pe = np.zeros((seq_length, d_model), dtype=np.float32)
-        position = np.arange(0, seq_length, dtype=np.float32)[:, np.newaxis]
-        div_term = np.exp(np.arange(0, d_model, 2, dtype=np.float32) * -(math.log(10000.0) / d_model))
-
-        pe[:, 0::2] = np.sin(position * div_term)
-        if d_model % 2 == 1:
-            pe[:, 1::2] = np.cos(position * div_term[:-1])
-        else:
-            pe[:, 1::2] = np.cos(position * div_term)
-
-        return pe
+        raise NotImplementedError(
+            "TODO: Compute sinusoidal positional encoding\n"
+            "1. Create pe = np.zeros((seq_length, d_model))\n"
+            "2. position = np.arange(seq_length)[:, np.newaxis]\n"
+            "3. div_term = np.exp(np.arange(0, d_model, 2) * -(log(10000) / d_model))\n"
+            "4. pe[:, 0::2] = np.sin(position * div_term)\n"
+            "5. pe[:, 1::2] = np.cos(position * div_term)\n"
+            "   (handle odd d_model: pe[:, 1::2] = cos(position * div_term[:-1]))\n"
+            "6. Return pe"
+        )
 
 
 def create_sinusoidal_encoding(seq_length: int, d_model: int) -> np.ndarray:
@@ -223,7 +207,6 @@ class LearnedPositionalEmbedding(Module):
     Learned positional embeddings as in BERT.
 
     Positions are treated as a lookup table that is learned during training.
-    Can be applied additively (like sinusoidal) or as a replacement for word embeddings.
 
     Example:
         >>> pos_embed = LearnedPositionalEmbedding(seq_length=512, d_model=768)
@@ -251,43 +234,24 @@ class LearnedPositionalEmbedding(Module):
             d_model: Embedding dimension
             padding_idx: Optional padding index (treated as zero vector)
             initialization: Initialization scheme - 'normal', 'uniform', 'xavier'
-                          (default: 'normal' with std=0.02)
 
         Raises:
             ValueError: If seq_length or d_model are not positive
             ValueError: If padding_idx is out of range
         """
-        super().__init__()
-
-        if seq_length <= 0:
-            raise ValueError(f"seq_length must be positive, got {seq_length}")
-        if d_model <= 0:
-            raise ValueError(f"d_model must be positive, got {d_model}")
-        if padding_idx is not None and (padding_idx < 0 or padding_idx >= seq_length):
-            raise ValueError(f"padding_idx must be in [0, {seq_length}), got {padding_idx}")
-
-        self.seq_length = seq_length
-        self.d_model = d_model
-        self.padding_idx = padding_idx
-        self.initialization = initialization
-
-        # Initialize embedding weights
-        if initialization == "normal":
-            weight = np.random.normal(0, 0.02, (seq_length, d_model))
-        elif initialization == "uniform":
-            weight = np.random.uniform(-0.02, 0.02, (seq_length, d_model))
-        elif initialization == "xavier":
-            limit = np.sqrt(6.0 / (seq_length + d_model))
-            weight = np.random.uniform(-limit, limit, (seq_length, d_model))
-        else:
-            raise ValueError(f"Unknown initialization: {initialization}")
-
-        # Convert to Parameter
-        self.pe = Parameter(weight.astype(np.float32))
-
-        # Zero out padding index if specified
-        if padding_idx is not None:
-            self.pe.data[padding_idx] = 0.0
+        raise NotImplementedError(
+            "TODO: Initialize learned positional embeddings\n"
+            "1. Call super().__init__()\n"
+            "2. Validate seq_length > 0, d_model > 0\n"
+            "3. Validate padding_idx in range if provided\n"
+            "4. Store attributes\n"
+            "5. Initialize weights based on initialization scheme:\n"
+            "   - 'normal': np.random.normal(0, 0.02, (seq_length, d_model))\n"
+            "   - 'uniform': np.random.uniform(-0.02, 0.02, ...)\n"
+            "   - 'xavier': limit = sqrt(6/(seq_length+d_model)), uniform(-limit, limit)\n"
+            "6. Create self.pe = Parameter(weight)\n"
+            "7. Zero out padding_idx if specified"
+        )
 
     def forward(self, position_ids: np.ndarray) -> np.ndarray:
         """
@@ -308,66 +272,28 @@ class LearnedPositionalEmbedding(Module):
             >>> pos_ids = np.array([0, 1, 2, 3, 4])  # shape (5,)
             >>> embeddings = pos_embed(pos_ids)  # shape (5, 768)
         """
-        # Validate range
-        if np.any(position_ids < 0):
-            raise ValueError("position_ids must be non-negative")
-        if np.any(position_ids >= self.seq_length):
-            raise ValueError(f"position_ids must be < {self.seq_length}")
-
-        # Look up embeddings
-        return self.pe.data[position_ids]
+        raise NotImplementedError(
+            "TODO: Look up positional embeddings\n"
+            "1. Validate position_ids >= 0\n"
+            "2. Validate position_ids < seq_length\n"
+            "3. Return self.pe.data[position_ids]"
+        )
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
-        return f"seq_length={self.seq_length}, d_model={self.d_model}, initialization={self.initialization}"
+        return f"seq_length={self.seq_length}, d_model={self.d_model}"
 
-    @staticmethod
-    def from_pretrained(
-        weights: np.ndarray,
-        padding_idx: Optional[int] = None,
-        freeze: bool = False,
-    ) -> "LearnedPositionalEmbedding":
-        """
-        Create from pretrained weights.
 
-        Useful for loading from checkpoint or transfer learning.
-
-        Args:
-            weights: Pretrained embedding weights of shape (seq_length, d_model)
-            padding_idx: Optional padding index
-            freeze: If True, don't allow gradient updates
-
-        Returns:
-            LearnedPositionalEmbedding initialized with given weights
-        """
-        seq_length, d_model = weights.shape
-
-        # Create instance with dummy initialization
-        instance = LearnedPositionalEmbedding(
-            seq_length=seq_length,
-            d_model=d_model,
-            padding_idx=padding_idx,
-            initialization="normal"
-        )
-
-        # Replace with pretrained weights
-        instance.pe.data = weights.astype(np.float32)
-
-        # Freeze if requested
-        if freeze:
-            instance.pe.requires_grad = False
-
-        return instance
-
+# =============================================================================
+# Relative Positional Embeddings
+# =============================================================================
 
 class RelativePositionalEmbedding(Module):
     """
     Relative position embeddings for self-attention.
 
-    Instead of absolute positions, some models (e.g., Transformer-XL, DeBERTa)
-    use relative position biases between query and key positions.
-
-    This is more suitable for longer sequences as relative positions are bounded.
+    Instead of absolute positions, uses relative position biases between
+    query and key positions (Transformer-XL, DeBERTa style).
 
     Attention(Q, K, V) = softmax((QK^T + Relative_Position_Bias) / sqrt(d_k)) V
 
@@ -390,30 +316,21 @@ class RelativePositionalEmbedding(Module):
         Args:
             num_buckets: Number of relative position buckets (typically 32)
             d_model: Embedding dimension
-            max_distance: Maximum distance to bucket (beyond is assigned to max bucket)
+            max_distance: Maximum distance to bucket
             bidirectional: If True, use separate embeddings for ±relative_pos
 
         Raises:
             ValueError: If num_buckets or d_model not positive
         """
-        super().__init__()
-
-        if num_buckets <= 0:
-            raise ValueError(f"num_buckets must be positive, got {num_buckets}")
-        if d_model <= 0:
-            raise ValueError(f"d_model must be positive, got {d_model}")
-
-        self.num_buckets = num_buckets
-        self.d_model = d_model
-        self.max_distance = max_distance
-        self.bidirectional = bidirectional
-
-        vocab_size = 2 * num_buckets if bidirectional else num_buckets
-
-        # Initialize embedding weights
-        std = d_model ** -0.5
-        weight = np.random.normal(0, std, (vocab_size, d_model))
-        self.embedding = Parameter(weight.astype(np.float32))
+        raise NotImplementedError(
+            "TODO: Initialize relative positional embeddings\n"
+            "1. Call super().__init__()\n"
+            "2. Validate num_buckets > 0, d_model > 0\n"
+            "3. Store attributes\n"
+            "4. vocab_size = 2*num_buckets if bidirectional else num_buckets\n"
+            "5. Initialize embedding weights with normal(0, d_model^-0.5)\n"
+            "6. Create self.embedding = Parameter(weight)"
+        )
 
     def forward(self, seq_length: int) -> np.ndarray:
         """
@@ -431,24 +348,14 @@ class RelativePositionalEmbedding(Module):
             >>> pos_matrix = rel_pos(seq_length=128)
             >>> assert pos_matrix.shape == (128, 128, 64)
         """
-        # Create position indices
-        query_pos = np.arange(seq_length)[:, None]
-        key_pos = np.arange(seq_length)[None, :]
-
-        # Compute relative distances
-        relative_pos = key_pos - query_pos
-
-        # Get bucket indices
-        bucket_ids = self._get_position_buckets(
-            relative_pos, self.num_buckets, self.max_distance, self.bidirectional
+        raise NotImplementedError(
+            "TODO: Compute relative position embeddings\n"
+            "1. query_pos = np.arange(seq_length)[:, None]\n"
+            "2. key_pos = np.arange(seq_length)[None, :]\n"
+            "3. relative_pos = key_pos - query_pos\n"
+            "4. bucket_ids = _get_position_buckets(relative_pos, ...)\n"
+            "5. Return self.embedding.data[bucket_ids]"
         )
-
-        # Look up embeddings
-        return self.embedding.data[bucket_ids]
-
-    def extra_repr(self) -> str:
-        """Return extra representation string."""
-        return f"num_buckets={self.num_buckets}, d_model={self.d_model}, max_distance={self.max_distance}, bidirectional={self.bidirectional}"
 
     @staticmethod
     def _get_position_buckets(
@@ -460,8 +367,6 @@ class RelativePositionalEmbedding(Module):
         """
         Map relative positions to bucket indices.
 
-        Positions far apart are mapped to same bucket for memory efficiency.
-
         Args:
             relative_pos: Relative positions (can be negative)
             num_buckets: Number of buckets
@@ -471,27 +376,21 @@ class RelativePositionalEmbedding(Module):
         Returns:
             Array of bucket indices (same shape as relative_pos)
         """
-        relative_pos = np.array(relative_pos, dtype=np.int32)
-        buckets = np.zeros_like(relative_pos, dtype=np.int32)
+        raise NotImplementedError(
+            "TODO: Map relative positions to bucket indices\n"
+            "1. Create buckets array of zeros\n"
+            "2. If bidirectional:\n"
+            "   - Handle negative positions: bucket = num_buckets//2 - 1 - dist\n"
+            "   - Handle positive positions: bucket = num_buckets//2 + dist\n"
+            "3. If not bidirectional:\n"
+            "   - bucket = min(abs(relative_pos), max_distance-1)\n"
+            "4. Clip buckets to valid range\n"
+            "5. Return buckets"
+        )
 
-        if bidirectional:
-            # Handle negative positions
-            neg_mask = relative_pos < 0
-            neg_dist = np.minimum(np.abs(relative_pos[neg_mask]) - 1, max_distance - 1)
-            buckets[neg_mask] = num_buckets // 2 - 1 - neg_dist
-
-            # Handle positive positions
-            pos_mask = relative_pos >= 0
-            pos_dist = np.minimum(relative_pos[pos_mask], max_distance - 1)
-            buckets[pos_mask] = num_buckets // 2 + pos_dist
-        else:
-            # Unidirectional: only positive positions
-            pos_dist = np.minimum(np.abs(relative_pos), max_distance - 1)
-            buckets = pos_dist
-
-        # Ensure buckets are in valid range
-        buckets = np.clip(buckets, 0, num_buckets - 1)
-        return buckets
+    def extra_repr(self) -> str:
+        """Return extra representation string."""
+        return f"num_buckets={self.num_buckets}, d_model={self.d_model}"
 
 
 # =============================================================================
@@ -502,12 +401,8 @@ class RotaryPositionalEmbedding(Module):
     """
     Rotary Position Embedding (RoPE) for modern LLMs.
 
-    RoPE applies rotation matrices to embedding space to encode position information.
-    It's the standard for modern large language models due to excellent extrapolation
-    properties and relative position awareness.
-
-    Key insight: dot product of rotated vectors naturally encodes relative position:
-    ⟨f(q, m), f(k, n)⟩ = ⟨f(q), f(k)⟩ + g(|m-n|)
+    RoPE applies rotation matrices to encode position. Key insight:
+    dot product of rotated vectors naturally encodes relative position.
 
     Example:
         >>> rope = RotaryPositionalEmbedding(d_model=128)
@@ -518,7 +413,7 @@ class RotaryPositionalEmbedding(Module):
     Attributes:
         d_model (int): Embedding dimension (must be even)
         base (float): Frequency base (10000.0 is standard)
-        max_seq_length (int): Max sequence length to pre-compute for efficiency
+        max_seq_length (int): Max sequence length to pre-compute
     """
 
     def __init__(
@@ -532,27 +427,26 @@ class RotaryPositionalEmbedding(Module):
 
         Args:
             d_model: Embedding dimension (must be even)
-            base: Frequency base (10000.0 is standard from Transformer)
+            base: Frequency base (10000.0 is standard)
             max_seq_length: Maximum sequence length to cache rotations
 
         Raises:
             ValueError: If d_model is odd
             ValueError: If base <= 0
         """
-        super().__init__()
-
-        if d_model % 2 != 0:
-            raise ValueError(f"d_model must be even, got {d_model}")
-        if base <= 0:
-            raise ValueError(f"base must be positive, got {base}")
-
-        self.d_model = d_model
-        self.base = base
-        self.max_seq_length = max_seq_length
-
-        # Compute inverse frequencies
-        inv_freq = 1.0 / (base ** (np.arange(0, d_model, 2) / d_model))
-        self.register_buffer('inv_freq', inv_freq.astype(np.float32))
+        raise NotImplementedError(
+            "TODO: Initialize RoPE\n"
+            "1. Call super().__init__()\n"
+            "2. Validate d_model is even\n"
+            "3. Validate base > 0\n"
+            "4. Store attributes\n"
+            "5. Compute inverse frequencies:\n"
+            "   inv_freq = 1.0 / (base ** (np.arange(0, d_model, 2) / d_model))\n"
+            "6. Pre-compute cos/sin tables for efficiency:\n"
+            "   t = np.arange(max_seq_length)\n"
+            "   freqs = np.outer(t, inv_freq)  # (seq_len, d_model/2)\n"
+            "   Register cos_cached = np.cos(freqs), sin_cached = np.sin(freqs)"
+        )
 
     def forward(
         self,
@@ -567,177 +461,66 @@ class RotaryPositionalEmbedding(Module):
         Args:
             q: Query array of shape (..., seq_length, d_model)
             k: Key array of shape (..., seq_length, d_model)
-            seq_length: Sequence length (typically q.shape[-2])
-            offset: Position offset for non-causal attention or batched inference
+            seq_length: Sequence length
+            offset: Position offset for batched inference
 
         Returns:
-            Tuple of (q_rotated, k_rotated) with same shapes as inputs
-
-        Raises:
-            ValueError: If q.shape[-1] != d_model
-            ValueError: If k.shape[-1] != d_model
-            ValueError: If q.shape[-2] != k.shape[-2]
-
-        Example:
-            >>> rope = RotaryPositionalEmbedding(d_model=128)
-            >>> batch_size, seq_len = 32, 1024
-            >>> q = np.random.randn(batch_size, seq_len, 128)
-            >>> k = np.random.randn(batch_size, seq_len, 128)
-            >>> q_rot, k_rot = rope(q, k, seq_len)
-            >>> assert q_rot.shape == q.shape
-            >>> assert k_rot.shape == k.shape
+            Tuple of (rotated_q, rotated_k) with same shapes
         """
-        if q.shape[-1] != self.d_model:
-            raise ValueError(f"q last dimension {q.shape[-1]} != d_model {self.d_model}")
-        if k.shape[-1] != self.d_model:
-            raise ValueError(f"k last dimension {k.shape[-1]} != d_model {self.d_model}")
-        if q.shape[-2] != k.shape[-2]:
-            raise ValueError(f"q and k seq_length mismatch: {q.shape[-2]} != {k.shape[-2]}")
+        raise NotImplementedError(
+            "TODO: Apply RoPE to query and key\n"
+            "1. Get cos/sin for positions [offset : offset+seq_length]\n"
+            "2. Reshape q and k to pair adjacent dimensions:\n"
+            "   q_reshaped = q.reshape(..., seq_length, d_model//2, 2)\n"
+            "3. Apply rotation:\n"
+            "   q_rotated[..., 0] = q[..., 0] * cos - q[..., 1] * sin\n"
+            "   q_rotated[..., 1] = q[..., 0] * sin + q[..., 1] * cos\n"
+            "4. Reshape back to original shape\n"
+            "5. Return (q_rotated, k_rotated)"
+        )
 
-        # Create position indices
-        m = np.arange(seq_length, dtype=np.float32) + offset
+    @staticmethod
+    def rotate_half(x: np.ndarray) -> np.ndarray:
+        """
+        Rotate half the hidden dims of x.
 
-        # Compute angles: outer product of positions and inverse frequencies
-        angles = np.outer(m, self.inv_freq)
-
-        # Compute cos and sin
-        cos_angles = np.cos(angles)
-        sin_angles = np.sin(angles)
-
-        # Apply rotations
-        q_rotated = self._apply_rotations(q, cos_angles, sin_angles)
-        k_rotated = self._apply_rotations(k, cos_angles, sin_angles)
-
-        return q_rotated, k_rotated
+        Splits x into two halves and rotates:
+        [x1, x2] -> [-x2, x1]
+        """
+        raise NotImplementedError(
+            "TODO: Rotate half dimensions\n"
+            "x1, x2 = x[..., :d//2], x[..., d//2:]\n"
+            "return np.concatenate([-x2, x1], axis=-1)"
+        )
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
-        return f"d_model={self.d_model}, base={self.base}, max_seq_length={self.max_seq_length}"
-
-    @staticmethod
-    def _apply_rotations(
-        x: np.ndarray,
-        cos_angles: np.ndarray,
-        sin_angles: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Apply rotation matrices to embeddings.
-
-        Helper function to apply 2D rotations to each dimension pair.
-
-        Args:
-            x: Array of shape (..., seq_length, d_model)
-            cos_angles: Array of shape (seq_length, d_model//2) - cosines
-            sin_angles: Array of shape (seq_length, d_model//2) - sines
-
-        Returns:
-            Rotated array of shape (..., seq_length, d_model)
-
-        Note:
-            Operates on dimension pairs:
-            (x[..., 2i], x[..., 2i+1]) -> rotated pair
-        """
-        # Get original shape
-        *batch_dims, seq_length, d_model = x.shape
-
-        # Reshape to group pairs
-        x_reshaped = x.reshape(*batch_dims, seq_length, d_model // 2, 2)
-
-        # Extract even and odd dimensions
-        x_even = x_reshaped[..., 0]
-        x_odd = x_reshaped[..., 1]
-
-        # Apply rotation
-        x_rot_even = x_even * cos_angles - x_odd * sin_angles
-        x_rot_odd = x_even * sin_angles + x_odd * cos_angles
-
-        # Stack back together
-        x_rotated = np.stack([x_rot_even, x_rot_odd], axis=-1)
-
-        # Reshape back to original shape
-        x_rotated = x_rotated.reshape(*batch_dims, seq_length, d_model)
-
-        return x_rotated
-
-    @staticmethod
-    def compute_inverse_frequencies(
-        d_model: int, base: float = 10000.0
-    ) -> np.ndarray:
-        """
-        Compute inverse frequencies for RoPE.
-
-        Static method for understanding the frequency computation.
-
-        Args:
-            d_model: Embedding dimension (must be even)
-            base: Frequency base (10000.0 standard)
-
-        Returns:
-            Array of shape (d_model // 2,) with inverse frequencies
-
-        Formula:
-            inv_freq[i] = 1 / (base^(2i / d_model)) for i = 0, 1, ..., d_model/2 - 1
-        """
-        dim_indices = np.arange(0, d_model, 2, dtype=np.float32)
-        exponents = 2 * dim_indices / d_model
-        frequencies = base ** exponents
-        inv_freq = 1.0 / frequencies
-
-        return inv_freq
-
-    def interpolate_for_longer_sequences(
-        self, new_max_seq_length: int, scaling_factor: Optional[float] = None
-    ) -> None:
-        """
-        Extend RoPE to support longer sequences via interpolation.
-
-        For models trained on seq_len=2048 that need seq_len=8192,
-        can use linear interpolation by scaling positions.
-
-        Args:
-            new_max_seq_length: New maximum sequence length to support
-            scaling_factor: Linear scaling factor. If None, computed automatically
-
-        Note:
-            Simple linear interpolation works surprisingly well!
-            position_scaled = position * (training_seq_len / inference_seq_len)
-        """
-        if scaling_factor is None:
-            scaling_factor = new_max_seq_length / self.max_seq_length
-
-        self.max_seq_length = new_max_seq_length
-        self.scaling_factor = scaling_factor
+        return f"d_model={self.d_model}, base={self.base}"
 
 
 def create_rope_encoding(
     seq_length: int,
     d_model: int,
-    base: float = 10000.0,
+    base: float = 10000.0
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Convenience function to create RoPE cos/sin tables.
+    Create RoPE cos/sin tables.
 
     Args:
         seq_length: Sequence length
-        d_model: Embedding dimension (must be even)
+        d_model: Embedding dimension
         base: Frequency base
 
     Returns:
-        Tuple of (cos_angles, sin_angles) arrays
-        - cos_angles: shape (seq_length, d_model // 2)
-        - sin_angles: shape (seq_length, d_model // 2)
-
-    Example:
-        >>> cos_t, sin_t = create_rope_encoding(seq_length=512, d_model=128)
-        >>> assert cos_t.shape == (512, 64)
+        Tuple of (cos_table, sin_table), each of shape (seq_length, d_model//2)
     """
-    inv_freq = RotaryPositionalEmbedding.compute_inverse_frequencies(d_model, base)
-    positions = np.arange(seq_length, dtype=np.float32)
-    angles = np.outer(positions, inv_freq)
-    cos_angles = np.cos(angles)
-    sin_angles = np.sin(angles)
-
-    return cos_angles, sin_angles
+    raise NotImplementedError(
+        "TODO: Create RoPE encoding tables\n"
+        "1. inv_freq = 1.0 / (base ** (np.arange(0, d_model, 2) / d_model))\n"
+        "2. t = np.arange(seq_length)\n"
+        "3. freqs = np.outer(t, inv_freq)\n"
+        "4. Return (np.cos(freqs), np.sin(freqs))"
+    )
 
 
 # =============================================================================
@@ -746,65 +529,44 @@ def create_rope_encoding(
 
 class ALiBiPositionalBias(Module):
     """
-    Attention with Linear Biases (ALiBi) positional encoding.
+    Attention with Linear Biases (ALiBi).
 
-    Adds linear position-dependent biases to attention logits to encode position.
-    Extremely effective for long context and length extrapolation.
+    Adds position-dependent linear biases to attention scores:
+    bias(i, j) = -m × |i - j|
 
-    Formula:
-        bias(i, j) = -m × |i - j|
-
-    Where m is a scalar bias slope (one per attention head).
-
-    The paper proposes:
-        m_h = 1 / (8^(2h / num_heads))
+    Very simple yet effective for long context with minimal parameters.
 
     Example:
         >>> alibi = ALiBiPositionalBias(num_heads=8)
-        >>> q = np.random.randn(batch_size, 8, seq_len, 64)  # 8 heads
-        >>> k = np.random.randn(batch_size, 8, seq_len, 64)
-        >>> scores = q @ k.transpose(0, 1, 3, 2)  # (batch, 8, seq, seq)
-        >>> scores = alibi(scores, seq_len)  # Apply ALiBi biases
+        >>> attn_scores = np.random.randn(batch, 8, seq_len, seq_len)
+        >>> biased_scores = alibi(attn_scores, seq_length=seq_len)
 
     Attributes:
         num_heads (int): Number of attention heads
-        slopes (np.ndarray): Per-head bias slopes, shape (num_heads,)
+        slopes (np.ndarray): Per-head slope values
     """
 
-    def __init__(
-        self,
-        num_heads: int,
-        learnable_slopes: bool = False,
-        max_seq_length: int = 8192,
-    ):
+    def __init__(self, num_heads: int):
         """
-        Initialize ALiBi positional bias.
+        Initialize ALiBi.
 
         Args:
             num_heads: Number of attention heads
-            learnable_slopes: If True, make bias slopes learnable parameters
-                            Default False: slopes are fixed
-            max_seq_length: Maximum sequence length (for caching bias matrices)
 
         Raises:
-            ValueError: If num_heads <= 0
+            ValueError: If num_heads is not positive
         """
-        super().__init__()
-
-        if num_heads <= 0:
-            raise ValueError(f"num_heads must be positive, got {num_heads}")
-
-        self.num_heads = num_heads
-        self.max_seq_length = max_seq_length
-        self.learnable_slopes = learnable_slopes
-
-        # Compute bias slopes
-        slopes = self.compute_bias_slopes(num_heads)
-
-        if learnable_slopes:
-            self.slopes = Parameter(slopes)
-        else:
-            self.register_buffer('slopes', slopes)
+        raise NotImplementedError(
+            "TODO: Initialize ALiBi\n"
+            "1. Call super().__init__()\n"
+            "2. Validate num_heads > 0\n"
+            "3. Store num_heads\n"
+            "4. Compute slopes for each head:\n"
+            "   - Slopes are geometric sequence: 2^(-8/n), 2^(-16/n), ...\n"
+            "   - ratio = 2 ** (-8 / num_heads)\n"
+            "   - slopes = ratio ** np.arange(1, num_heads + 1)\n"
+            "5. Register slopes as buffer"
+        )
 
     def forward(
         self,
@@ -816,174 +578,116 @@ class ALiBiPositionalBias(Module):
         Apply ALiBi biases to attention scores.
 
         Args:
-            attention_scores: Array of shape (batch_size, num_heads, seq_length, seq_length)
-                            or (batch_size, seq_length, seq_length) if single-head
-            seq_length: Sequence length (usually attention_scores.shape[-1])
-            offset: Position offset (useful for KV cache in generation)
+            attention_scores: Shape (batch, num_heads, seq_len, seq_len)
+            seq_length: Sequence length
+            offset: Position offset for KV cache
 
         Returns:
-            Array with same shape as input, with ALiBi biases applied
-
-        Raises:
-            ValueError: If attention_scores doesn't match expected shape
-            ValueError: If seq_length differs from actual input size
-
-        Note:
-            ALiBi biases are ADDED to attention scores before softmax:
-            scores[i, j] -= bias_slope × |i - j|
-
-            The negative sign penalizes tokens farther apart.
+            Attention scores with ALiBi biases added
         """
-        # Get slopes
-        if isinstance(self.slopes, Parameter):
-            slopes = self.slopes.data
-        else:
-            slopes = self.slopes
-
-        # Compute bias matrix
-        bias_matrix = self.compute_bias_matrix(seq_length, slopes, offset)
-
-        # Handle different input shapes
-        if attention_scores.ndim == 4:
-            # Shape: (batch_size, num_heads, seq_length, seq_length)
-            bias_matrix = bias_matrix[np.newaxis, :, :, :]  # Add batch dimension
-        elif attention_scores.ndim == 3:
-            # Shape: (batch_size, seq_length, seq_length) - single head
-            bias_matrix = bias_matrix[0, np.newaxis, :, :]  # Use first head's bias
-
-        return attention_scores + bias_matrix
+        raise NotImplementedError(
+            "TODO: Apply ALiBi biases\n"
+            "1. Create position indices:\n"
+            "   query_pos = np.arange(seq_length) + offset\n"
+            "   key_pos = np.arange(seq_length) + offset\n"
+            "2. Compute distances: dist = |query_pos[:, None] - key_pos[None, :]|\n"
+            "3. Compute biases: bias = -slopes[:, None, None] * dist\n"
+            "4. Return attention_scores + bias"
+        )
 
     @staticmethod
-    def compute_bias_slopes(num_heads: int) -> np.ndarray:
+    def get_slopes(num_heads: int) -> np.ndarray:
         """
-        Compute ALiBi bias slopes for each attention head.
+        Compute ALiBi slopes for given number of heads.
 
-        Static method for understanding slope computation.
+        The slopes follow a geometric sequence that works well empirically.
 
         Args:
             num_heads: Number of attention heads
 
         Returns:
-            Array of shape (num_heads,) with bias slopes
-
-        Formula (from paper):
-            m_h = 1 / (8^(2h / num_heads)) for h = 0, 1, ..., num_heads-1
-
-        Note:
-            This creates a geometric progression of slopes:
-            - Head 0 has largest slope (most position-sensitive)
-            - Head num_heads-1 has smallest slope (least position-sensitive)
+            Array of shape (num_heads,) with slope values
         """
-        head_indices = np.arange(num_heads, dtype=np.float32)
-        exponents = 2 * head_indices / num_heads
-        bases = 8 ** exponents
-        slopes = 1.0 / bases
-
-        return slopes.astype(np.float32)
-
-    @staticmethod
-    def compute_bias_matrix(
-        seq_length: int,
-        slopes: np.ndarray,
-        offset: int = 0,
-    ) -> np.ndarray:
-        """
-        Compute full ALiBi bias matrix.
-
-        Args:
-            seq_length: Sequence length
-            slopes: Array of shape (num_heads,) with per-head bias slopes
-            offset: Position offset for batched inference with KV cache
-
-        Returns:
-            Array of shape (num_heads, seq_length, seq_length)
-            result[h, i, j] = -slopes[h] × |i - j|
-
-        Note:
-            Can be precomputed and cached for efficiency.
-            Only needs to be recomputed if seq_length changes.
-        """
-        # Create position indices
-        query_pos = np.arange(seq_length, dtype=np.float32) + offset
-        key_pos = np.arange(seq_length, dtype=np.float32)
-
-        # Compute distance matrix: |query_pos[:, None] - key_pos[None, :]|
-        distances = np.abs(query_pos[:, np.newaxis] - key_pos[np.newaxis, :])
-
-        # Apply slopes: -slopes[h] * distances for each head
-        num_heads = slopes.shape[0]
-        bias_matrix = -slopes[:, np.newaxis, np.newaxis] * distances[np.newaxis, :, :]
-
-        return bias_matrix.astype(np.float32)
-
-    def get_bias_for_head(
-        self, head_idx: int, seq_length: int
-    ) -> np.ndarray:
-        """
-        Get ALiBi bias matrix for a specific attention head.
-
-        Args:
-            head_idx: Head index
-            seq_length: Sequence length
-
-        Returns:
-            Bias matrix for that head, shape (seq_length, seq_length)
-        """
-        if isinstance(self.slopes, Parameter):
-            slopes = self.slopes.data
-        else:
-            slopes = self.slopes
-
-        bias_matrix = self.compute_bias_matrix(seq_length, slopes)
-        return bias_matrix[head_idx]
+        raise NotImplementedError(
+            "TODO: Compute ALiBi slopes\n"
+            "1. ratio = 2 ** (-8 / num_heads)\n"
+            "2. slopes = ratio ** np.arange(1, num_heads + 1)\n"
+            "3. Return slopes"
+        )
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
-        return f"num_heads={self.num_heads}, learnable_slopes={self.learnable_slopes}, max_seq_length={self.max_seq_length}"
+        return f"num_heads={self.num_heads}"
 
 
 # =============================================================================
-# Comparison Utilities
+# Comparison Utility
 # =============================================================================
 
 def compare_positional_encodings():
     """
-    Comparison utility for different positional encoding methods.
+    Compare different positional encoding methods.
 
-    Returns a summary of characteristics:
-    - Memory usage
-    - Extrapolation capability
-    - Position awareness
-    - Implementation complexity
+    Returns a summary of pros/cons for each method.
     """
     comparison = {
-        "SinusoidalPositionalEncoding": {
-            "memory": "O(1) - no parameters",
-            "extrapolation": "Good - deterministic formula",
-            "position_awareness": "Moderate - absolute positions",
-            "complexity": "Low",
-            "best_for": "Transformer baseline, academic models",
+        "Sinusoidal": {
+            "pros": [
+                "No learnable parameters",
+                "Can extrapolate to longer sequences",
+                "Deterministic"
+            ],
+            "cons": [
+                "May be less expressive than learned",
+                "Fixed pattern"
+            ],
+            "use_cases": ["Original Transformer", "When extrapolation needed"]
         },
-        "LearnedPositionalEmbedding": {
-            "memory": "O(seq_length × d_model) - large",
-            "extrapolation": "Poor - fixed max length",
-            "position_awareness": "Good - task-specific",
-            "complexity": "Very Low",
-            "best_for": "BERT, fixed-length sequences",
+        "Learned": {
+            "pros": [
+                "More expressive",
+                "Can learn task-specific patterns"
+            ],
+            "cons": [
+                "Cannot extrapolate beyond training length",
+                "Requires more parameters"
+            ],
+            "use_cases": ["BERT", "GPT-2", "Fixed-length tasks"]
         },
-        "RotaryPositionalEmbedding (RoPE)": {
-            "memory": "O(d_model) - very small",
-            "extrapolation": "Excellent - via interpolation",
-            "position_awareness": "Excellent - relative positions",
-            "complexity": "Medium - rotation matrices",
-            "best_for": "Modern LLMs (GPT-3.5, Claude, PaLM)",
+        "Relative": {
+            "pros": [
+                "Captures relative positions",
+                "Better for variable-length sequences"
+            ],
+            "cons": [
+                "More complex implementation",
+                "Needs bucketing for efficiency"
+            ],
+            "use_cases": ["Transformer-XL", "DeBERTa"]
         },
-        "ALiBiPositionalBias": {
-            "memory": "O(num_heads) - minimal",
-            "extrapolation": "Excellent - linear bias generalizes",
-            "position_awareness": "Good - head-specific slopes",
-            "complexity": "Low - simple subtraction",
-            "best_for": "Long context, length extrapolation",
+        "RoPE": {
+            "pros": [
+                "Excellent extrapolation",
+                "Naturally encodes relative positions",
+                "Works well with long context"
+            ],
+            "cons": [
+                "More complex than sinusoidal",
+                "Requires even dimensions"
+            ],
+            "use_cases": ["Modern LLMs (GPT-3.5, Claude, LLaMA)"]
         },
+        "ALiBi": {
+            "pros": [
+                "Very simple",
+                "Good extrapolation",
+                "Minimal parameters"
+            ],
+            "cons": [
+                "Linear bias may be limiting",
+                "Less expressive"
+            ],
+            "use_cases": ["BLOOM", "MPT", "When simplicity matters"]
+        }
     }
     return comparison

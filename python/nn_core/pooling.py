@@ -16,6 +16,16 @@ Backward passes are handled by Function classes in functional.py via autograd.
 from typing import Optional, Union, Tuple, List
 from python.foundations import Tensor
 from .module import Module, Parameter
+from .pooling_functional import (
+    global_avg_pool1d,
+    global_max_pool1d,
+    avg_pool1d,
+    avg_pool2d,
+    max_pool1d,
+    max_pool2d,
+    global_max_pool2d,
+    global_avg_pool2d,
+)
 
 
 # ============================================================================
@@ -88,42 +98,8 @@ class MaxPool1d(Module):
         Raises:
             ValueError: If x is not 3D (batch, channels, length)
         """
-        raise NotImplementedError(
-            "TODO: Implement forward pass\n"
-            "1. Validate input is 3D: (batch, channels, length)\n"
-            "2. Use torch.nn.functional.max_pool1d with appropriate parameters:\n"
-            "   F.max_pool1d(x, kernel_size, stride, padding, dilation,\n"
-            "                ceil_mode, return_indices)\n"
-            "3. If return_indices=False: return output\n"
-            "4. If return_indices=True: return (output, indices)\n"
-            "\n"
-            "HINT: torch.nn.functional has max_pool1d ready to use"
-        )
+        return max_pool1d(x, self.kernel_size, self.stride, self.padding, self.dilation, self.ceil_mode)
 
-    def compute_output_size(
-        self, input_size: Union[int, Tuple[int]]
-    ) -> Union[int, Tuple[int]]:
-        """
-        Compute output spatial size given input size.
-
-        Args:
-            input_size: Input spatial size(s)
-
-        Returns:
-            Output spatial size(s)
-
-        Formula:
-            output = floor((input + 2*padding - dilation*(kernel-1) - 1) / stride) + 1
-            OR if ceil_mode: use ceil instead of floor
-        """
-        raise NotImplementedError(
-            "TODO: Compute output size\n"
-            "1. If input_size is int, handle single dimension\n"
-            "2. Use formula:\n"
-            "   output = (input + 2*padding - dilation*(kernel-1) - 1) / stride + 1\n"
-            "3. Apply floor or ceil based on self.ceil_mode\n"
-            "4. Return output size"
-        )
 
     def extra_repr(self) -> str:
         """Return string representation with parameters."""
@@ -209,48 +185,7 @@ class MaxPool2d(Module):
             >>> output = pool(x)
             >>> assert output.shape == (2, 64, 28, 28)  # Same spatial size with padding
         """
-        raise NotImplementedError(
-            "TODO: Implement forward pass\n"
-            "1. Validate input is 4D: (batch, channels, height, width)\n"
-            "2. Use torch.nn.functional.max_pool2d with appropriate parameters:\n"
-            "   F.max_pool2d(x, kernel_size, stride, padding, dilation,\n"
-            "                ceil_mode, return_indices)\n"
-            "3. If return_indices=False: return output\n"
-            "4. If return_indices=True: return (output, indices)\n"
-            "\n"
-            "HINT: torch.nn.functional has max_pool2d ready to use"
-        )
-
-    def compute_output_size(
-        self, input_size: Union[int, Tuple[int, int]]
-    ) -> Union[int, Tuple[int, int]]:
-        """
-        Compute output spatial size given input size.
-
-        Args:
-            input_size: Input spatial size(s)
-
-        Returns:
-            Output spatial size(s)
-
-        Formula:
-            output = floor((input + 2*padding - dilation*(kernel-1) - 1) / stride) + 1
-            OR if ceil_mode: use ceil instead of floor
-
-        Example:
-            >>> pool = MaxPool2d(kernel_size=3, stride=1, padding=1)
-            >>> out_size = pool.compute_output_size(input_size=28)
-            >>> assert out_size == 28  # Same size due to padding
-        """
-        raise NotImplementedError(
-            "TODO: Compute output size\n"
-            "1. If input_size is int, handle single dimension\n"
-            "2. If input_size is tuple, apply formula to each dimension\n"
-            "3. Use formula:\n"
-            "   output = (input + 2*padding - dilation*(kernel-1) - 1) / stride + 1\n"
-            "4. Apply floor or ceil based on self.ceil_mode\n"
-            "5. Return output size(s) as same type as input"
-        )
+        return max_pool2d(x, self.kernel_size, self.stride, self.padding, self.dilation, self.ceil_mode)
 
     def extra_repr(self) -> str:
         """Return string representation with parameters."""
@@ -568,35 +503,7 @@ class AvgPool1d(Module):
         Raises:
             ValueError: If x is not 3D (batch, channels, length)
         """
-        raise NotImplementedError(
-            "TODO: Implement forward pass\n"
-            "1. Validate input is 3D: (batch, channels, length)\n"
-            "2. Use torch.nn.functional.avg_pool1d with parameters:\n"
-            "   F.avg_pool1d(x, kernel_size, stride, padding,\n"
-            "                ceil_mode, count_include_pad)\n"
-            "3. Return output"
-        )
-
-    def compute_output_size(
-        self, input_size: Union[int, Tuple[int]]
-    ) -> Union[int, Tuple[int]]:
-        """
-        Compute output spatial size given input size.
-
-        Args:
-            input_size: Input spatial size(s)
-
-        Returns:
-            Output spatial size(s)
-
-        Formula:
-            output = floor((input + 2*padding - kernel_size) / stride) + 1
-            OR if ceil_mode: use ceil instead of floor
-        """
-        raise NotImplementedError(
-            "TODO: Compute output size\n"
-            "Apply pooling size formula"
-        )
+        return avg_pool1d(x, self.kernel_size, self.stride, self.padding, self.count_include_pad)
 
     def extra_repr(self) -> str:
         """Return string representation with parameters."""
@@ -677,40 +584,7 @@ class AvgPool2d(Module):
             >>> output = pool(x)
             >>> assert output.shape == (2, 64, 28, 28)
         """
-        raise NotImplementedError(
-            "TODO: Implement forward pass\n"
-            "1. Validate input is 4D: (batch, channels, height, width)\n"
-            "2. Use torch.nn.functional.avg_pool2d with parameters:\n"
-            "   F.avg_pool2d(x, kernel_size, stride, padding,\n"
-            "                ceil_mode, count_include_pad)\n"
-            "3. Return output"
-        )
-
-    def compute_output_size(
-        self, input_size: Union[int, Tuple[int, int]]
-    ) -> Union[int, Tuple[int, int]]:
-        """
-        Compute output spatial size given input size.
-
-        Args:
-            input_size: Input spatial size(s)
-
-        Returns:
-            Output spatial size(s)
-
-        Formula:
-            output = floor((input + 2*padding - kernel_size) / stride) + 1
-            OR if ceil_mode: use ceil instead of floor
-
-        Example:
-            >>> pool = AvgPool2d(kernel_size=2, stride=2)
-            >>> out_size = pool.compute_output_size(input_size=224)
-            >>> assert out_size == 112
-        """
-        raise NotImplementedError(
-            "TODO: Compute output size\n"
-            "Apply pooling size formula"
-        )
+        return avg_pool2d(x, self.kernel_size, self.stride, self.padding, self.count_include_pad)
 
     def extra_repr(self) -> str:
         """Return string representation with parameters."""
@@ -978,12 +852,7 @@ class GlobalAvgPool1d(Module):
         Returns:
             Output tensor of shape (batch_size, channels)
         """
-        raise NotImplementedError(
-            "TODO: Implement global average pooling 1D\n"
-            "1. Validate input is 3D: (batch, channels, length)\n"
-            "2. Compute mean over dimension 2\n"
-            "3. Return output of shape (batch, channels)"
-        )
+        return global_avg_pool1d(x)
 
 
 class GlobalMaxPool1d(Module):
@@ -998,11 +867,6 @@ class GlobalMaxPool1d(Module):
         >>> output = pool(x)
         >>> assert output.shape == (batch_size, channels)
     """
-
-    def __init__(self):
-        """Initialize global max pooling 1D."""
-        super().__init__()
-
     def forward(self, x: Tensor) -> Tensor:
         """
         Apply global max pooling.
@@ -1013,12 +877,7 @@ class GlobalMaxPool1d(Module):
         Returns:
             Output tensor of shape (batch_size, channels)
         """
-        raise NotImplementedError(
-            "TODO: Implement global max pooling 1D\n"
-            "1. Validate input is 3D\n"
-            "2. Compute max over dimension 2\n"
-            "3. Return output of shape (batch, channels)"
-        )
+        return global_max_pool1d(x)
 
 
 class GlobalAvgPool2d(Module):
@@ -1076,16 +935,7 @@ class GlobalAvgPool2d(Module):
             >>> output = pool(x)
             >>> assert output.shape == (32, 2048)
         """
-        raise NotImplementedError(
-            "TODO: Implement global average pooling\n"
-            "1. Validate input is 4D: (batch, channels, height, width)\n"
-            "2. Compute mean over spatial dimensions (dims 2, 3)\n"
-            "   Option 1: x.mean(dim=(2, 3))\n"
-            "   Option 2: F.adaptive_avg_pool2d(x, 1).squeeze(-1).squeeze(-1)\n"
-            "3. Return output of shape (batch, channels)\n"
-            "\n"
-            "Note: x.mean(dim=(2, 3)) is simpler and more direct"
-        )
+        return global_avg_pool2d(x)
 
 
 class GlobalMaxPool2d(Module):
@@ -1110,10 +960,6 @@ class GlobalMaxPool2d(Module):
         >>> assert output.shape == (batch_size, 2048)
     """
 
-    def __init__(self):
-        """Initialize global max pooling."""
-        super().__init__()
-
     def forward(self, x: Tensor) -> Tensor:
         """
         Apply global max pooling.
@@ -1133,13 +979,7 @@ class GlobalMaxPool2d(Module):
             >>> output = pool(x)
             >>> assert output.shape == (32, 2048)
         """
-        raise NotImplementedError(
-            "TODO: Implement global max pooling\n"
-            "1. Validate input is 4D\n"
-            "2. Compute max over spatial dimensions (dims 2, 3)\n"
-            "   x.amax(dim=(2, 3))\n"
-            "3. Return output of shape (batch, channels)"
-        )
+        return global_max_pool2d(x)
 
 
 class LPPool2d(Module):
@@ -1651,273 +1491,3 @@ class StochasticAdaptivePooling(Module):
             "During eval: use max pooling (deterministic)"
         )
 
-
-# ============================================================================
-# Functional Interfaces
-# ============================================================================
-
-def max_pool1d(
-    input: Tensor,
-    kernel_size: Union[int, Tuple[int]],
-    stride: Optional[Union[int, Tuple[int]]] = None,
-    padding: Union[int, Tuple[int]] = 0,
-    dilation: Union[int, Tuple[int]] = 1,
-    ceil_mode: bool = False,
-    return_indices: bool = False,
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-    """
-    Functional interface for max pooling 1D.
-
-    Args:
-        input: Input tensor of shape (batch, channels, length)
-        kernel_size: Pooling window size
-        stride: Stride (defaults to kernel_size)
-        padding: Zero-padding
-        dilation: Dilation factor
-        ceil_mode: Use ceiling for size calculation
-        return_indices: Return indices of max values
-
-    Returns:
-        Pooled tensor, or (pooled, indices) if return_indices=True
-    """
-    raise NotImplementedError(
-        "TODO: Functional max pooling 1D wrapper\n"
-        "Use torch.nn.functional.max_pool1d directly"
-    )
-
-
-def max_pool2d(
-    input: Tensor,
-    kernel_size: Union[int, Tuple[int, int]],
-    stride: Optional[Union[int, Tuple[int, int]]] = None,
-    padding: Union[int, Tuple[int, int]] = 0,
-    dilation: Union[int, Tuple[int, int]] = 1,
-    ceil_mode: bool = False,
-    return_indices: bool = False,
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-    """
-    Functional interface for max pooling 2D.
-
-    Args:
-        input: Input tensor of shape (batch, channels, height, width)
-        kernel_size: Pooling window size
-        stride: Stride (defaults to kernel_size)
-        padding: Zero-padding
-        dilation: Dilation factor
-        ceil_mode: Use ceiling for size calculation
-        return_indices: Return indices of max values
-
-    Returns:
-        Pooled tensor, or (pooled, indices) if return_indices=True
-    """
-    raise NotImplementedError(
-        "TODO: Functional max pooling 2D wrapper\n"
-        "Use torch.nn.functional.max_pool2d directly"
-    )
-
-
-def avg_pool1d(
-    input: Tensor,
-    kernel_size: Union[int, Tuple[int]],
-    stride: Optional[Union[int, Tuple[int]]] = None,
-    padding: Union[int, Tuple[int]] = 0,
-    ceil_mode: bool = False,
-    count_include_pad: bool = True,
-) -> Tensor:
-    """
-    Functional interface for average pooling 1D.
-
-    Args:
-        input: Input tensor of shape (batch, channels, length)
-        kernel_size: Pooling window size
-        stride: Stride (defaults to kernel_size)
-        padding: Zero-padding
-        ceil_mode: Use ceiling for size calculation
-        count_include_pad: Include padded positions in average
-
-    Returns:
-        Pooled tensor
-    """
-    raise NotImplementedError(
-        "TODO: Functional average pooling 1D wrapper\n"
-        "Use torch.nn.functional.avg_pool1d directly"
-    )
-
-
-def avg_pool2d(
-    input: Tensor,
-    kernel_size: Union[int, Tuple[int, int]],
-    stride: Optional[Union[int, Tuple[int, int]]] = None,
-    padding: Union[int, Tuple[int, int]] = 0,
-    ceil_mode: bool = False,
-    count_include_pad: bool = True,
-) -> Tensor:
-    """
-    Functional interface for average pooling 2D.
-
-    Args:
-        input: Input tensor of shape (batch, channels, height, width)
-        kernel_size: Pooling window size
-        stride: Stride (defaults to kernel_size)
-        padding: Zero-padding
-        ceil_mode: Use ceiling for size calculation
-        count_include_pad: Include padded positions in average
-
-    Returns:
-        Pooled tensor
-    """
-    raise NotImplementedError(
-        "TODO: Functional average pooling 2D wrapper\n"
-        "Use torch.nn.functional.avg_pool2d directly"
-    )
-
-
-def adaptive_max_pool2d(
-    x: Tensor,
-    output_size: Union[int, Tuple[int, int]],
-    return_indices: bool = False,
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-    """
-    Functional interface for adaptive max pooling.
-
-    Args:
-        x: Input tensor of shape (batch, channels, height, width)
-        output_size: Target output spatial size
-        return_indices: Return indices of max values
-
-    Returns:
-        Pooled tensor, or (pooled, indices) if return_indices=True
-    """
-    raise NotImplementedError(
-        "TODO: Functional adaptive max pooling\n"
-        "Use F.adaptive_max_pool2d directly"
-    )
-
-
-def adaptive_avg_pool2d(
-    x: Tensor,
-    output_size: Union[int, Tuple[int, int]],
-) -> Tensor:
-    """
-    Functional interface for adaptive average pooling.
-
-    Args:
-        x: Input tensor of shape (batch, channels, height, width)
-        output_size: Target output spatial size
-
-    Returns:
-        Pooled tensor
-    """
-    raise NotImplementedError(
-        "TODO: Functional adaptive avg pooling\n"
-        "Use F.adaptive_avg_pool2d directly"
-    )
-
-
-def global_avg_pool2d(x: Tensor) -> Tensor:
-    """
-    Apply global average pooling (average over spatial dimensions).
-
-    Reduces spatial dimensions to 1x1 while preserving channels.
-
-    Args:
-        x: Input tensor of shape (batch, channels, height, width)
-
-    Returns:
-        Output tensor of shape (batch, channels, 1, 1)
-
-    Example:
-        >>> x = torch.randn(32, 2048, 7, 7)
-        >>> output = global_avg_pool2d(x)
-        >>> assert output.shape == (32, 2048, 1, 1)
-
-    Note:
-        Equivalent to:
-        - F.adaptive_avg_pool2d(x, 1)
-        - x.mean(dim=(-2, -1), keepdim=True)
-    """
-    raise NotImplementedError(
-        "TODO: Implement global average pooling\n"
-        "1. Use F.adaptive_avg_pool2d(x, 1)\n"
-        "2. Return result"
-    )
-
-
-def global_max_pool2d(x: Tensor) -> Tensor:
-    """
-    Apply global max pooling (max over spatial dimensions).
-
-    Reduces spatial dimensions to 1x1 while preserving channels.
-
-    Args:
-        x: Input tensor of shape (batch, channels, height, width)
-
-    Returns:
-        Output tensor of shape (batch, channels, 1, 1)
-
-    Example:
-        >>> x = torch.randn(32, 2048, 7, 7)
-        >>> output = global_max_pool2d(x)
-        >>> assert output.shape == (32, 2048, 1, 1)
-
-    Note:
-        Equivalent to:
-        - F.adaptive_max_pool2d(x, 1)
-        - x.amax(dim=(-2, -1), keepdim=True)
-    """
-    raise NotImplementedError(
-        "TODO: Implement global max pooling\n"
-        "1. Use F.adaptive_max_pool2d(x, 1)\n"
-        "2. Return result"
-    )
-
-
-def global_pool2d(
-    x: Tensor,
-    method: str = "avg",
-) -> Tensor:
-    """
-    Functional interface for flexible global pooling.
-
-    Args:
-        x: Input tensor of shape (batch, channels, height, width)
-        method: 'avg' or 'max'
-
-    Returns:
-        Output tensor of shape (batch, channels, 1, 1)
-    """
-    raise NotImplementedError(
-        "TODO: Implement flexible global pooling\n"
-        "Dispatch to global_avg_pool2d or global_max_pool2d based on method"
-    )
-
-
-def compute_pooling_output_size(
-    input_size: int,
-    kernel_size: int,
-    stride: int,
-    padding: int = 0,
-    dilation: int = 1,
-    ceil_mode: bool = False,
-) -> int:
-    """
-    Compute output size for pooling.
-
-    Args:
-        input_size: Input spatial size
-        kernel_size: Pooling window size
-        stride: Stride between windows
-        padding: Zero-padding
-        dilation: Kernel dilation
-        ceil_mode: Use ceiling or floor
-
-    Returns:
-        Output spatial size
-
-    Formula:
-        output = floor((input + 2*padding - dilation*(kernel-1) - 1) / stride) + 1
-    """
-    raise NotImplementedError(
-        "TODO: Compute output size\n"
-        "Implement pooling size formula"
-    )

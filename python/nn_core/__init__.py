@@ -115,21 +115,14 @@ from .recurrent import (
 # Recurrent functional
 from . import recurrent_functional
 
-# Initialization
+# Initialization (all functions take Tensor as first argument)
 from .init import (
     xavier_uniform_, xavier_normal_,
     kaiming_uniform_, kaiming_normal_,
     normal_, uniform_, zeros_, ones_, constant_,
     orthogonal_,
-    XavierInitializer, KaimingInitializer,
-    NormalInitializer, UniformInitializer,
-    OrthogonalInitializer,
     GainConfig, ActivationConfig,
     calculate_fan_in_fan_out,
-    init_xavier_uniform, init_xavier_normal,
-    init_kaiming_uniform, init_kaiming_normal,
-    init_normal, init_uniform, init_orthogonal,
-    LSTM_OrthogonalInit,
 )
 
 # Positional encodings
@@ -213,20 +206,13 @@ __all__ = [
     'regularization_functional',
     'recurrent_functional',
 
-    # Initialization
+    # Initialization (all functions take Tensor as first argument)
     'xavier_uniform_', 'xavier_normal_',
     'kaiming_uniform_', 'kaiming_normal_',
     'normal_', 'uniform_', 'zeros_', 'ones_', 'constant_',
     'orthogonal_',
-    'XavierInitializer', 'KaimingInitializer',
-    'NormalInitializer', 'UniformInitializer',
-    'OrthogonalInitializer',
     'GainConfig', 'ActivationConfig',
     'calculate_fan_in_fan_out',
-    'init_xavier_uniform', 'init_xavier_normal',
-    'init_kaiming_uniform', 'init_kaiming_normal',
-    'init_normal', 'init_uniform', 'init_orthogonal',
-    'LSTM_OrthogonalInit',
 
     # Positional encodings
     'SinusoidalPositionalEncoding',

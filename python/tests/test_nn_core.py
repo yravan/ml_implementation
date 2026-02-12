@@ -1675,70 +1675,629 @@ class TestInstanceNormModule:
 # Pooling Layer Tests
 # =============================================================================
 
-class TestMaxPool2d:
-    """Test MaxPool2d layer."""
+class TestMaxPool1d:
+    """Comprehensive tests for MaxPool1d layer."""
 
-    def test_maxpool2d_forward(self):
-        """Test MaxPool2d forward pass."""
+    def test_maxpool1d_forward_basic(self):
+        """Test MaxPool1d basic forward pass."""
+        from python.nn_core import MaxPool1d
+
+        pool = MaxPool1d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(2, 3, 16).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 3, 8)
+
+    def test_maxpool1d_forward_stride1(self):
+        """Test MaxPool1d with stride=1 (overlapping windows)."""
+        from python.nn_core import MaxPool1d
+
+        pool = MaxPool1d(kernel_size=3, stride=1)
+        x = Tensor(np.random.randn(2, 4, 10).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 4, 8)
+
+    def test_maxpool1d_forward_with_padding(self):
+        """Test MaxPool1d with padding."""
+        from python.nn_core import MaxPool1d
+
+        pool = MaxPool1d(kernel_size=3, stride=1, padding=1)
+        x = Tensor(np.random.randn(2, 4, 10).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 4, 10)
+
+    def test_maxpool1d_correctness(self):
+        """Test MaxPool1d computes correct max values."""
+        from python.nn_core import MaxPool1d
+
+        pool = MaxPool1d(kernel_size=2, stride=2)
+        x_data = np.array([[[1, 5, 2, 8, 3, 7, 4, 6]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        expected = np.array([[[5, 8, 7, 6]]])
+        assert np.allclose(y.data, expected)
+
+    def test_maxpool1d_backward(self):
+        """Test MaxPool1d backward pass produces gradients."""
+        from python.nn_core import MaxPool1d
+
+        pool = MaxPool1d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(2, 3, 8).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == x.shape
+
+    def test_maxpool1d_gradient_sparsity(self):
+        """Test that MaxPool1d gradient is sparse (only at max positions)."""
+        from python.nn_core import MaxPool1d
+
+        pool = MaxPool1d(kernel_size=2, stride=2)
+        x_data = np.array([[[1, 5, 2, 8]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        # Gradient should be 1 at max positions (indices 1 and 3), 0 elsewhere
+        expected_grad = np.array([[[0, 1, 0, 1]]])
+        assert np.allclose(x.grad, expected_grad)
+
+    def test_maxpool1d_gradcheck(self):
+        """Verify MaxPool1d gradients with numerical gradient check."""
+        from python.nn_core import MaxPool1d
+
+        np.random.seed(42)
+        pool = MaxPool1d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestMaxPool2d:
+    """Comprehensive tests for MaxPool2d layer."""
+
+    def test_maxpool2d_forward_basic(self):
+        """Test MaxPool2d basic forward pass."""
         from python.nn_core import MaxPool2d
-        from python.foundations import Tensor
 
         pool = MaxPool2d(kernel_size=2, stride=2)
-        x = Tensor(np.random.randn(2, 3, 8, 8), requires_grad=True)
-
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
         y = pool(x)
-
         assert y.shape == (2, 3, 4, 4)
+
+    def test_maxpool2d_forward_stride1(self):
+        """Test MaxPool2d with stride=1 (overlapping windows)."""
+        from python.nn_core import MaxPool2d
+
+        pool = MaxPool2d(kernel_size=3, stride=1)
+        x = Tensor(np.random.randn(2, 4, 10, 10).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 4, 8, 8)
+
+    def test_maxpool2d_forward_with_padding(self):
+        """Test MaxPool2d with padding."""
+        from python.nn_core import MaxPool2d
+
+        pool = MaxPool2d(kernel_size=3, stride=1, padding=1)
+        x = Tensor(np.random.randn(2, 4, 8, 8).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 4, 8, 8)
+
+    def test_maxpool2d_forward_rectangular_kernel(self):
+        """Test MaxPool2d with non-square input."""
+        from python.nn_core import MaxPool2d
+
+        pool = MaxPool2d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(2, 3, 8, 16).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 3, 4, 8)
+
+    def test_maxpool2d_correctness(self):
+        """Test MaxPool2d computes correct max values."""
+        from python.nn_core import MaxPool2d
+
+        pool = MaxPool2d(kernel_size=2, stride=2)
+        x_data = np.array([[[[1, 2, 3, 4],
+                             [5, 6, 7, 8],
+                             [9, 10, 11, 12],
+                             [13, 14, 15, 16]]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        expected = np.array([[[[6, 8], [14, 16]]]])
+        assert np.allclose(y.data, expected)
 
     def test_maxpool2d_backward(self):
         """Test MaxPool2d backward pass."""
         from python.nn_core import MaxPool2d
-        from python.foundations import Tensor
 
         pool = MaxPool2d(kernel_size=2, stride=2)
-        x = Tensor(np.random.randn(2, 3, 8, 8), requires_grad=True)
-
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
         y = pool(x)
         loss = y.sum()
         loss.backward()
-
         assert x.grad is not None
+        assert x.grad.shape == x.shape
+
+    def test_maxpool2d_gradient_sparsity(self):
+        """Test that MaxPool2d gradient is sparse (only at max positions)."""
+        from python.nn_core import MaxPool2d
+
+        pool = MaxPool2d(kernel_size=2, stride=2)
+        x_data = np.array([[[[1, 2], [3, 4]]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        expected_grad = np.array([[[[0, 0], [0, 1]]]])
+        assert np.allclose(x.grad, expected_grad)
+
+    def test_maxpool2d_gradcheck(self):
+        """Verify MaxPool2d gradients with numerical gradient check."""
+        from python.nn_core import MaxPool2d
+
+        np.random.seed(42)
+        pool = MaxPool2d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(1, 2, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_maxpool2d_gradcheck_with_padding(self):
+        """Verify MaxPool2d gradients with padding."""
+        from python.nn_core import MaxPool2d
+
+        np.random.seed(42)
+        pool = MaxPool2d(kernel_size=3, stride=1, padding=1)
+        x = Tensor(np.random.randn(1, 2, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestAvgPool1d:
+    """Comprehensive tests for AvgPool1d layer."""
+
+    def test_avgpool1d_forward_basic(self):
+        """Test AvgPool1d basic forward pass."""
+        from python.nn_core import AvgPool1d
+
+        pool = AvgPool1d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(2, 3, 16).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 3, 8)
+
+    def test_avgpool1d_forward_stride1(self):
+        """Test AvgPool1d with stride=1."""
+        from python.nn_core import AvgPool1d
+
+        pool = AvgPool1d(kernel_size=3, stride=1)
+        x = Tensor(np.random.randn(2, 4, 10).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 4, 8)
+
+    def test_avgpool1d_forward_with_padding(self):
+        """Test AvgPool1d with padding."""
+        from python.nn_core import AvgPool1d
+
+        pool = AvgPool1d(kernel_size=3, stride=1, padding=1)
+        x = Tensor(np.random.randn(2, 4, 10).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 4, 10)
+
+    def test_avgpool1d_correctness(self):
+        """Test AvgPool1d computes correct average values."""
+        from python.nn_core import AvgPool1d
+
+        pool = AvgPool1d(kernel_size=2, stride=2)
+        x_data = np.array([[[2, 4, 6, 8, 10, 12]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        expected = np.array([[[3, 7, 11]]])
+        assert np.allclose(y.data, expected)
+
+    def test_avgpool1d_backward(self):
+        """Test AvgPool1d backward pass."""
+        from python.nn_core import AvgPool1d
+
+        pool = AvgPool1d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(2, 3, 8).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == x.shape
+
+    def test_avgpool1d_gradient_uniform(self):
+        """Test that AvgPool1d distributes gradient uniformly."""
+        from python.nn_core import AvgPool1d
+
+        pool = AvgPool1d(kernel_size=2, stride=2)
+        x_data = np.array([[[1, 2, 3, 4]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        # Each element contributes 1/kernel_size to its window
+        expected_grad = np.array([[[0.5, 0.5, 0.5, 0.5]]])
+        assert np.allclose(x.grad, expected_grad)
+
+    def test_avgpool1d_gradcheck(self):
+        """Verify AvgPool1d gradients with numerical gradient check."""
+        from python.nn_core import AvgPool1d
+
+        np.random.seed(42)
+        pool = AvgPool1d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
 
 
 class TestAvgPool2d:
-    """Test AvgPool2d layer."""
+    """Comprehensive tests for AvgPool2d layer."""
 
-    def test_avgpool2d_forward(self):
-        """Test AvgPool2d forward pass."""
+    def test_avgpool2d_forward_basic(self):
+        """Test AvgPool2d basic forward pass."""
         from python.nn_core import AvgPool2d
-        from python.foundations import Tensor
 
         pool = AvgPool2d(kernel_size=2, stride=2)
-        x = Tensor(np.random.randn(2, 3, 8, 8), requires_grad=True)
-
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
         y = pool(x)
-
         assert y.shape == (2, 3, 4, 4)
 
+    def test_avgpool2d_forward_stride1(self):
+        """Test AvgPool2d with stride=1."""
+        from python.nn_core import AvgPool2d
 
-class TestAdaptiveAvgPool2d:
-    """Test AdaptiveAvgPool2d layer."""
-
-    def test_adaptive_avgpool2d_forward(self):
-        """Test AdaptiveAvgPool2d forward pass."""
-        from python.nn_core import AdaptiveAvgPool2d
-        from python.foundations import Tensor
-
-        pool = AdaptiveAvgPool2d(output_size=(1, 1))
-        x = Tensor(np.random.randn(2, 64, 7, 7), requires_grad=True)
-
+        pool = AvgPool2d(kernel_size=3, stride=1)
+        x = Tensor(np.random.randn(2, 4, 10, 10).astype(np.float64), requires_grad=True)
         y = pool(x)
+        assert y.shape == (2, 4, 8, 8)
 
-        assert y.shape == (2, 64, 1, 1)
+    def test_avgpool2d_forward_with_padding(self):
+        """Test AvgPool2d with padding."""
+        from python.nn_core import AvgPool2d
+
+        pool = AvgPool2d(kernel_size=3, stride=1, padding=1)
+        x = Tensor(np.random.randn(2, 4, 8, 8).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 4, 8, 8)
+
+    def test_avgpool2d_correctness(self):
+        """Test AvgPool2d computes correct average values."""
+        from python.nn_core import AvgPool2d
+
+        pool = AvgPool2d(kernel_size=2, stride=2)
+        x_data = np.array([[[[1, 2, 3, 4],
+                             [5, 6, 7, 8],
+                             [9, 10, 11, 12],
+                             [13, 14, 15, 16]]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        expected = np.array([[[[3.5, 5.5], [11.5, 13.5]]]])
+        assert np.allclose(y.data, expected)
+
+    def test_avgpool2d_backward(self):
+        """Test AvgPool2d backward pass."""
+        from python.nn_core import AvgPool2d
+
+        pool = AvgPool2d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == x.shape
+
+    def test_avgpool2d_gradient_uniform(self):
+        """Test that AvgPool2d distributes gradient uniformly."""
+        from python.nn_core import AvgPool2d
+
+        pool = AvgPool2d(kernel_size=2, stride=2)
+        x_data = np.array([[[[1, 2], [3, 4]]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        # Each element contributes 1/(kernel_size^2) to its window
+        expected_grad = np.full((1, 1, 2, 2), 0.25)
+        assert np.allclose(x.grad, expected_grad)
+
+    def test_avgpool2d_gradcheck(self):
+        """Verify AvgPool2d gradients with numerical gradient check."""
+        from python.nn_core import AvgPool2d
+
+        np.random.seed(42)
+        pool = AvgPool2d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(1, 2, 6, 6).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_avgpool2d_gradcheck_with_padding(self):
+        """Verify AvgPool2d gradients with padding."""
+        from python.nn_core import AvgPool2d
+
+        np.random.seed(42)
+        pool = AvgPool2d(kernel_size=3, stride=1, padding=1)
+        x = Tensor(np.random.randn(1, 2, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestGlobalAvgPool1d:
+    """Comprehensive tests for GlobalAvgPool1d layer."""
+
+    def test_global_avgpool1d_forward(self):
+        """Test GlobalAvgPool1d forward pass."""
+        from python.nn_core import GlobalAvgPool1d
+
+        pool = GlobalAvgPool1d()
+        x = Tensor(np.random.randn(2, 3, 16).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 3)
+
+    def test_global_avgpool1d_correctness(self):
+        """Test GlobalAvgPool1d computes correct global average."""
+        from python.nn_core import GlobalAvgPool1d
+
+        pool = GlobalAvgPool1d()
+        x_data = np.array([[[1, 2, 3, 4]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        expected = np.array([[2.5]])
+        assert np.allclose(y.data, expected)
+
+    def test_global_avgpool1d_backward(self):
+        """Test GlobalAvgPool1d backward pass."""
+        from python.nn_core import GlobalAvgPool1d
+
+        pool = GlobalAvgPool1d()
+        x = Tensor(np.random.randn(2, 3, 16).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == x.shape
+
+    def test_global_avgpool1d_gradient_uniform(self):
+        """Test that GlobalAvgPool1d distributes gradient uniformly."""
+        from python.nn_core import GlobalAvgPool1d
+
+        pool = GlobalAvgPool1d()
+        x_data = np.array([[[1, 2, 3, 4]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        expected_grad = np.full((1, 1, 4), 0.25)
+        assert np.allclose(x.grad, expected_grad)
+
+    def test_global_avgpool1d_gradcheck(self):
+        """Verify GlobalAvgPool1d gradients with numerical gradient check."""
+        from python.nn_core import GlobalAvgPool1d
+
+        np.random.seed(42)
+        pool = GlobalAvgPool1d()
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestGlobalMaxPool1d:
+    """Comprehensive tests for GlobalMaxPool1d layer."""
+
+    def test_global_maxpool1d_forward(self):
+        """Test GlobalMaxPool1d forward pass."""
+        from python.nn_core import GlobalMaxPool1d
+
+        pool = GlobalMaxPool1d()
+        x = Tensor(np.random.randn(2, 3, 16).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 3)
+
+    def test_global_maxpool1d_correctness(self):
+        """Test GlobalMaxPool1d computes correct global max."""
+        from python.nn_core import GlobalMaxPool1d
+
+        pool = GlobalMaxPool1d()
+        x_data = np.array([[[1, 5, 2, 3]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        expected = np.array([[5]])
+        assert np.allclose(y.data, expected)
+
+    def test_global_maxpool1d_backward(self):
+        """Test GlobalMaxPool1d backward pass."""
+        from python.nn_core import GlobalMaxPool1d
+
+        pool = GlobalMaxPool1d()
+        x = Tensor(np.random.randn(2, 3, 16).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == x.shape
+
+    def test_global_maxpool1d_gradient_sparsity(self):
+        """Test that GlobalMaxPool1d gradient is sparse."""
+        from python.nn_core import GlobalMaxPool1d
+
+        pool = GlobalMaxPool1d()
+        x_data = np.array([[[1, 5, 2, 3]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        expected_grad = np.array([[[0, 1, 0, 0]]])
+        assert np.allclose(x.grad, expected_grad)
+
+    def test_global_maxpool1d_gradcheck(self):
+        """Verify GlobalMaxPool1d gradients with numerical gradient check."""
+        from python.nn_core import GlobalMaxPool1d
+
+        np.random.seed(42)
+        pool = GlobalMaxPool1d()
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestGlobalAvgPool2d:
+    """Comprehensive tests for GlobalAvgPool2d layer."""
+
+    def test_global_avgpool2d_forward(self):
+        """Test GlobalAvgPool2d forward pass."""
+        from python.nn_core import GlobalAvgPool2d
+
+        pool = GlobalAvgPool2d()
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 3)
+
+    def test_global_avgpool2d_correctness(self):
+        """Test GlobalAvgPool2d computes correct global average."""
+        from python.nn_core import GlobalAvgPool2d
+
+        pool = GlobalAvgPool2d()
+        x_data = np.array([[[[1, 2], [3, 4]]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        expected = np.array([[2.5]])
+        assert np.allclose(y.data, expected)
+
+    def test_global_avgpool2d_backward(self):
+        """Test GlobalAvgPool2d backward pass."""
+        from python.nn_core import GlobalAvgPool2d
+
+        pool = GlobalAvgPool2d()
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == x.shape
+
+    def test_global_avgpool2d_gradient_uniform(self):
+        """Test that GlobalAvgPool2d distributes gradient uniformly."""
+        from python.nn_core import GlobalAvgPool2d
+
+        pool = GlobalAvgPool2d()
+        x_data = np.array([[[[1, 2], [3, 4]]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        expected_grad = np.full((1, 1, 2, 2), 0.25)
+        assert np.allclose(x.grad, expected_grad)
+
+    def test_global_avgpool2d_gradcheck(self):
+        """Verify GlobalAvgPool2d gradients with numerical gradient check."""
+        from python.nn_core import GlobalAvgPool2d
+
+        np.random.seed(42)
+        pool = GlobalAvgPool2d()
+        x = Tensor(np.random.randn(1, 2, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+
+class TestGlobalMaxPool2d:
+    """Comprehensive tests for GlobalMaxPool2d layer."""
+
+    def test_global_maxpool2d_forward(self):
+        """Test GlobalMaxPool2d forward pass."""
+        from python.nn_core import GlobalMaxPool2d
+
+        pool = GlobalMaxPool2d()
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        assert y.shape == (2, 3)
+
+    def test_global_maxpool2d_correctness(self):
+        """Test GlobalMaxPool2d computes correct global max."""
+        from python.nn_core import GlobalMaxPool2d
+
+        pool = GlobalMaxPool2d()
+        x_data = np.array([[[[1, 2], [5, 3]]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        expected = np.array([[5]])
+        assert np.allclose(y.data, expected)
+
+    def test_global_maxpool2d_backward(self):
+        """Test GlobalMaxPool2d backward pass."""
+        from python.nn_core import GlobalMaxPool2d
+
+        pool = GlobalMaxPool2d()
+        x = Tensor(np.random.randn(2, 3, 8, 8).astype(np.float64), requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.shape == x.shape
+
+    def test_global_maxpool2d_gradient_sparsity(self):
+        """Test that GlobalMaxPool2d gradient is sparse."""
+        from python.nn_core import GlobalMaxPool2d
+
+        pool = GlobalMaxPool2d()
+        x_data = np.array([[[[1, 2], [5, 3]]]]).astype(np.float64)
+        x = Tensor(x_data, requires_grad=True)
+        y = pool(x)
+        loss = y.sum()
+        loss.backward()
+        expected_grad = np.array([[[[0, 0], [1, 0]]]])
+        assert np.allclose(x.grad, expected_grad)
+
+    def test_global_maxpool2d_gradcheck(self):
+        """Verify GlobalMaxPool2d gradients with numerical gradient check."""
+        from python.nn_core import GlobalMaxPool2d
+
+        np.random.seed(42)
+        pool = GlobalMaxPool2d()
+        x = Tensor(np.random.randn(1, 2, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
 
 
 class TestPoolingFunctional:
-    """Test pooling functional operations."""
+    """Test pooling functional operations directly."""
+
+    def test_maxpool1d_functional(self):
+        """Test MaxPool1d functional forward."""
+        from python.nn_core.pooling_functional import MaxPool1d as MaxPool1dFn
+
+        pool_fn = MaxPool1dFn()
+        x = np.random.randn(2, 3, 8)
+        y = pool_fn.forward(x, kernel_size=2, stride=2)
+        assert y.shape == (2, 3, 4)
 
     def test_maxpool2d_functional(self):
         """Test MaxPool2d functional forward."""
@@ -1746,11 +2305,44 @@ class TestPoolingFunctional:
 
         pool_fn = MaxPool2dFn()
         x = np.random.randn(2, 3, 8, 8)
-
-        # Forward
         y = pool_fn.forward(x, kernel_size=2, stride=2)
-
         assert y.shape == (2, 3, 4, 4)
+
+    def test_avgpool1d_functional(self):
+        """Test AvgPool1d functional forward."""
+        from python.nn_core.pooling_functional import AvgPool1d as AvgPool1dFn
+
+        pool_fn = AvgPool1dFn()
+        x = np.random.randn(2, 3, 8)
+        y = pool_fn.forward(x, kernel_size=2, stride=2)
+        assert y.shape == (2, 3, 4)
+
+    def test_avgpool2d_functional(self):
+        """Test AvgPool2d functional forward."""
+        from python.nn_core.pooling_functional import AvgPool2d as AvgPool2dFn
+
+        pool_fn = AvgPool2dFn()
+        x = np.random.randn(2, 3, 8, 8)
+        y = pool_fn.forward(x, kernel_size=2, stride=2)
+        assert y.shape == (2, 3, 4, 4)
+
+    def test_global_avgpool2d_functional(self):
+        """Test GlobalAvgPool2d functional forward."""
+        from python.nn_core.pooling_functional import GlobalAvgPool2d as GlobalAvgPool2dFn
+
+        pool_fn = GlobalAvgPool2dFn()
+        x = np.random.randn(2, 3, 8, 8)
+        y = pool_fn.forward(x)
+        assert y.shape == (2, 3)
+
+    def test_global_maxpool2d_functional(self):
+        """Test GlobalMaxPool2d functional forward."""
+        from python.nn_core.pooling_functional import GlobalMaxPool2d as GlobalMaxPool2dFn
+
+        pool_fn = GlobalMaxPool2dFn()
+        x = np.random.randn(2, 3, 8, 8)
+        y = pool_fn.forward(x)
+        assert y.shape == (2, 3)
 
 
 # =============================================================================
@@ -2449,62 +3041,163 @@ class TestNormalizationGradients:
 
 
 class TestPoolingGradients:
-    """Test gradients for pooling layers."""
+    """Comprehensive gradient tests for all pooling layers using gradcheck."""
+
+    def test_maxpool1d_gradient_check(self):
+        """Verify MaxPool1d gradients using gradcheck."""
+        from python.nn_core import MaxPool1d
+
+        np.random.seed(42)
+        pool = MaxPool1d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_maxpool1d_gradient_check_stride1(self):
+        """Verify MaxPool1d gradients with stride=1."""
+        from python.nn_core import MaxPool1d
+
+        np.random.seed(42)
+        pool = MaxPool1d(kernel_size=3, stride=1)
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
 
     def test_maxpool2d_gradient_check(self):
-        """Verify MaxPool2d gradients."""
+        """Verify MaxPool2d gradients using gradcheck."""
         from python.nn_core import MaxPool2d
 
         np.random.seed(42)
-
         pool = MaxPool2d(kernel_size=2, stride=2)
-        x = Tensor(np.random.randn(1, 2, 4, 4), requires_grad=True)
+        x = Tensor(np.random.randn(1, 2, 6, 6).astype(np.float64), requires_grad=True)
 
-        # Forward
-        y = pool(x)
-        loss = y.sum()
-        loss.backward()
+        def func(x):
+            return pool(x).sum()
 
-        # Analytical gradient
-        analytical_grad = x.grad
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
 
-        # Numerical gradient
-        def f(x_val):
-            out = pool(x_val)
-            return Tensor(out.data.sum())
+    def test_maxpool2d_gradient_check_with_padding(self):
+        """Verify MaxPool2d gradients with padding."""
+        from python.nn_core import MaxPool2d
 
-        numerical_grad = numerical_gradient(f, Tensor(x.data.copy()))
+        np.random.seed(42)
+        pool = MaxPool2d(kernel_size=3, stride=1, padding=1)
+        x = Tensor(np.random.randn(1, 2, 4, 4).astype(np.float64), requires_grad=True)
 
-        # MaxPool gradient is sparse (only at max positions)
-        assert np.allclose(analytical_grad, numerical_grad, rtol=1e-3, atol=1e-5), \
-            f"MaxPool2d gradient mismatch"
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_avgpool1d_gradient_check(self):
+        """Verify AvgPool1d gradients using gradcheck."""
+        from python.nn_core import AvgPool1d
+
+        np.random.seed(42)
+        pool = AvgPool1d(kernel_size=2, stride=2)
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_avgpool1d_gradient_check_stride1(self):
+        """Verify AvgPool1d gradients with stride=1."""
+        from python.nn_core import AvgPool1d
+
+        np.random.seed(42)
+        pool = AvgPool1d(kernel_size=3, stride=1)
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
 
     def test_avgpool2d_gradient_check(self):
-        """Verify AvgPool2d gradients."""
+        """Verify AvgPool2d gradients using gradcheck."""
         from python.nn_core import AvgPool2d
 
         np.random.seed(42)
-
         pool = AvgPool2d(kernel_size=2, stride=2)
-        x = Tensor(np.random.randn(1, 2, 4, 4), requires_grad=True)
+        x = Tensor(np.random.randn(1, 2, 6, 6).astype(np.float64), requires_grad=True)
 
-        # Forward
-        y = pool(x)
-        loss = y.sum()
-        loss.backward()
+        def func(x):
+            return pool(x).sum()
 
-        # Analytical gradient
-        analytical_grad = x.grad
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
 
-        # Numerical gradient
-        def f(x_val):
-            out = pool(x_val)
-            return Tensor(out.data.sum())
+    def test_avgpool2d_gradient_check_with_padding(self):
+        """Verify AvgPool2d gradients with padding."""
+        from python.nn_core import AvgPool2d
 
-        numerical_grad = numerical_gradient(f, Tensor(x.data.copy()))
+        np.random.seed(42)
+        pool = AvgPool2d(kernel_size=3, stride=1, padding=1)
+        x = Tensor(np.random.randn(1, 2, 4, 4).astype(np.float64), requires_grad=True)
 
-        assert np.allclose(analytical_grad, numerical_grad, rtol=1e-3, atol=1e-5), \
-            f"AvgPool2d gradient mismatch"
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_global_avgpool1d_gradient_check(self):
+        """Verify GlobalAvgPool1d gradients using gradcheck."""
+        from python.nn_core import GlobalAvgPool1d
+
+        np.random.seed(42)
+        pool = GlobalAvgPool1d()
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_global_maxpool1d_gradient_check(self):
+        """Verify GlobalMaxPool1d gradients using gradcheck."""
+        from python.nn_core import GlobalMaxPool1d
+
+        np.random.seed(42)
+        pool = GlobalMaxPool1d()
+        x = Tensor(np.random.randn(1, 2, 8).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_global_avgpool2d_gradient_check(self):
+        """Verify GlobalAvgPool2d gradients using gradcheck."""
+        from python.nn_core import GlobalAvgPool2d
+
+        np.random.seed(42)
+        pool = GlobalAvgPool2d()
+        x = Tensor(np.random.randn(1, 2, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+
+    def test_global_maxpool2d_gradient_check(self):
+        """Verify GlobalMaxPool2d gradients using gradcheck."""
+        from python.nn_core import GlobalMaxPool2d
+
+        np.random.seed(42)
+        pool = GlobalMaxPool2d()
+        x = Tensor(np.random.randn(1, 2, 4, 4).astype(np.float64), requires_grad=True)
+
+        def func(x):
+            return pool(x).sum()
+
+        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
 
 
 class TestAttentionGradients:

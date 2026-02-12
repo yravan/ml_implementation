@@ -129,14 +129,14 @@ def convert_to_function(cls):
             if isinstance(arg, Tensor):
                 children.append(arg)
                 class_args[i] = arg.data
-            if isinstance(arg, (float, int)) and not isinstance(arg, bool):
-                class_args[i] = np.array(arg)
+            # if isinstance(arg, (float, int)) and not isinstance(arg, bool):
+            #     class_args[i] = np.array(arg)
         for k,v in class_kwargs.items():
             if isinstance(v, Tensor):
                 children.append(v)
                 class_kwargs[k] = v.data
-            if isinstance(v, (float, int)) and not isinstance(v, bool):
-                class_kwargs[k] = np.array(v)
+            # if isinstance(v, (float, int)) and not isinstance(v, bool):
+            #     class_kwargs[k] = np.array(v)
         requires_grad = any(arg.requires_grad for arg in children)
         out = Tensor(data=fn.forward(*class_args, **class_kwargs),
                      requires_grad=requires_grad,

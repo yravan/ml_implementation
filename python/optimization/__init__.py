@@ -64,28 +64,21 @@ from .optimizers import (
     LAMB, LARS,
     # Novel
     Lion, Muon,
-    # Functional
-    sgd_step, adam_step, adamw_step,
 )
 
 # Loss Functions
 from .losses import (
-    # Base
-    Loss,
     # Regression
     MSELoss, MAELoss, HuberLoss, SmoothL1Loss, RMSELoss,
     # Classification
     CrossEntropyLoss, BinaryCrossEntropyLoss, BCEWithLogitsLoss, NLLLoss,
-    FocalLoss, LabelSmoothingCrossEntropy,
+    FocalLoss,
     # Sequence
     CTCLoss,
     # Metric Learning
     TripletLoss, ContrastiveLoss, InfoNCELoss,
     # Distribution
     KLDivLoss, DiceLoss,
-    # Functional
-    mse_loss, mae_loss, cross_entropy_loss, binary_cross_entropy_loss,
-    kl_div_loss, triplet_loss,
 )
 # Learning Rate Schedulers
 from .schedulers import (
@@ -144,7 +137,7 @@ __all__ = [
     'Loss',
     'MSELoss', 'MAELoss', 'HuberLoss', 'SmoothL1Loss', 'RMSELoss',
     'CrossEntropyLoss', 'BinaryCrossEntropyLoss', 'BCEWithLogitsLoss', 'NLLLoss',
-    'FocalLoss', 'LabelSmoothingCrossEntropy',
+    'FocalLoss',
     'CTCLoss',
     'TripletLoss', 'ContrastiveLoss', 'InfoNCELoss',
     'KLDivLoss', 'DiceLoss',

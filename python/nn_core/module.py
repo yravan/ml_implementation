@@ -444,6 +444,14 @@ class Module:
         lines.append(")")
         return '\n'.join(lines)
 
+    def _init_parameters(self, fn: Callable[['Tensor'], None]):
+        def initialize(module: 'Module') -> None:
+            for name, param in module.named_parameters():
+                fn(param)
+        self.apply(initialize)
+
+
+
 
 class Sequential(Module):
     """
