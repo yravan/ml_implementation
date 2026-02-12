@@ -94,7 +94,7 @@ class MaxPool1d(Function):
         output_size = compute_pooling_output_size(input_size, kernel_size, stride, padding, dilation, ceil_mode)
 
         if padding > 0:
-            padded_x = np.zeros((B, C, L + 2 * padding))
+            padded_x = np.zeros((B, C, L + 2 * padding), dtype=x.dtype)
             padded_x[:, :, padding:-padding] = x
             x = padded_x
 
@@ -119,7 +119,7 @@ class MaxPool1d(Function):
         Gradient flows only through the max elements.
         """
         B, C, L_out = grad_output.shape
-        grad_x = np.zeros(self.shape)
+        grad_x = np.zeros(self.shape, dtype=grad_output.dtype)
         b_idx = np.arange(B)[:, None, None]
         c_idx = np.arange(C)[None, :, None]
         np.add.at(grad_x, (b_idx, c_idx, self.output_indices), grad_output)
@@ -164,9 +164,11 @@ class MaxPool2d(Function):
         B, C, H, W = x.shape
         H_out = compute_pooling_output_size(H, kernel_size, stride, padding, dilation, ceil_mode)
         W_out = compute_pooling_output_size(W, kernel_size, stride, padding, dilation, ceil_mode)
+        if H_out == 0 or W_out == 0:
+            raise RuntimeError("Output of max pooling is zero")
 
         if padding > 0:
-            padded_x = np.zeros((B, C, H + 2 * padding, W + 2 * padding))
+            padded_x = np.zeros((B, C, H + 2 * padding, W + 2 * padding), dtype=x.dtype)
             padded_x[:, :, padding:-padding, padding:-padding] = x
             x = padded_x
 
@@ -202,7 +204,7 @@ class MaxPool2d(Function):
 
         Gradient flows only through max elements (sparse gradient).
         """
-        grad_x = np.zeros(self.shape)
+        grad_x = np.zeros(self.shape, dtype=grad_output.dtype)
         b_idx = np.arange(grad_output.shape[0])[:, None, None, None]
         c_idx = np.arange(grad_output.shape[1])[None, :, None, None]
         np.add.at(grad_x, (b_idx, c_idx, self.h_indices, self.w_indices), grad_output)
@@ -251,7 +253,7 @@ class AvgPool1d(Function):
         output_size = compute_pooling_output_size(input_size, kernel_size, stride, padding, 1, ceil_mode)
 
         if padding > 0:
-            padded_x = np.zeros((B, C, L + 2 * padding))
+            padded_x = np.zeros((B, C, L + 2 * padding), dtype=x.dtype)
             padded_x[:, :, padding:-padding] = x
             x = padded_x
 
@@ -287,7 +289,7 @@ class AvgPool1d(Function):
         Gradient is distributed evenly to all elements in each window.
         """
         B, C, L_out = grad_output.shape
-        grad_x = np.zeros(self.shape)
+        grad_x = np.zeros(self.shape, dtype=grad_output.dtype)
         patch_indices = np.arange(L_out)[:, None] * self.stride + np.arange(self.kernel_size)[None, :]  # L_out, K
         scaled_grad = (grad_output / self.divisor)[:, :, :, None]  # B, C, L_out, 1 (broadcast over K)
         np.add.at(grad_x, (slice(None), slice(None), patch_indices), scaled_grad)
@@ -363,7 +365,7 @@ class AvgPool2d(Function):
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
         B, C, H_out, W_out = grad_output.shape
-        grad_x = np.zeros(self.shape)
+        grad_x = np.zeros(self.shape, dtype=grad_output.dtype)
 
         h_idx = np.arange(H_out)[:, None] * self.stride[0] + np.arange(self.kernel_size[0])[None, :]  # H_out, Kh
         w_idx = np.arange(W_out)[:, None] * self.stride[1] + np.arange(self.kernel_size[1])[None, :]  # W_out, Kw
@@ -417,7 +419,6 @@ class AdaptiveMaxPool2d(Function):
         """Compute gradient for adaptive max pooling."""
         raise NotImplementedError("TODO: Implement AdaptiveMaxPool2d backward")
 
-
 class AdaptiveAvgPool2d(Function):
     """
     Adaptive Average Pooling 2D functional operation.
@@ -425,34 +426,63 @@ class AdaptiveAvgPool2d(Function):
     Automatically computes kernel size and stride to achieve target output size.
     """
 
-    def forward(
-        self,
-        x: np.ndarray,
-        output_size: Union[int, Tuple[int, int]]
-    ) -> np.ndarray:
-        """
-        Compute adaptive average pooling.
+    def forward(self, x: np.ndarray, output_size) -> np.ndarray:
+        if isinstance(output_size, int):
+            output_size = (output_size, output_size)
 
-        Args:
-            x: Input (batch_size, channels, height, width)
-            output_size: Target output size (h, w) or single int for square
+        B, C, H, W = x.shape
+        H_out, W_out = output_size
 
-        Returns:
-            Pooled output with target size
-        """
-        raise NotImplementedError(
-            "TODO: Implement AdaptiveAvgPool2d forward\n"
-            "Hint:\n"
-            "  # For output_size=1, this is global average pooling:\n"
-            "  # return x.mean(axis=(2, 3), keepdims=True)\n"
-            "  \n"
-            "  # For other sizes, compute kernel and stride adaptively"
-        )
+        # Special case: global average pooling
+        if H_out == 1 and W_out == 1:
+            if not _no_grad:
+                self.input_shape = x.shape
+            return x.mean(axis=(2, 3), keepdims=True)
+
+        out = np.empty((B, C, H_out, W_out), dtype=x.dtype)
+
+        # PyTorch's adaptive pooling uses floor-based bin edges:
+        # bin i covers indices [floor(i * H / H_out), floor((i+1) * H / H_out))
+        h_starts = np.array([i * H // H_out for i in range(H_out)])
+        h_ends   = np.array([(i + 1) * H // H_out for i in range(H_out)])
+        w_starts = np.array([i * W // W_out for i in range(W_out)])
+        w_ends   = np.array([(i + 1) * W // W_out for i in range(W_out)])
+
+        for i in range(H_out):
+            for j in range(W_out):
+                region = x[:, :, h_starts[i]:h_ends[i], w_starts[j]:w_ends[j]]
+                out[:, :, i, j] = region.mean(axis=(2, 3))
+
+        if not _no_grad:
+            self.input_shape = x.shape
+            self.h_starts = h_starts
+            self.h_ends = h_ends
+            self.w_starts = w_starts
+            self.w_ends = w_ends
+
+        return out
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
-        """Compute gradient for adaptive average pooling."""
-        raise NotImplementedError("TODO: Implement AdaptiveAvgPool2d backward")
+        B, C, H, W = self.input_shape
+        H_out, W_out = grad_output.shape[2], grad_output.shape[3]
 
+        grad_input = np.zeros(self.input_shape, dtype=grad_output.dtype)
+
+        # Special case: global average pooling
+        if H_out == 1 and W_out == 1:
+            grad_input[:] = grad_output / (H * W)
+            return (grad_input,)
+
+        for i in range(H_out):
+            for j in range(W_out):
+                h_s, h_e = self.h_starts[i], self.h_ends[i]
+                w_s, w_e = self.w_starts[j], self.w_ends[j]
+                count = (h_e - h_s) * (w_e - w_s)
+                grad_input[:, :, h_s:h_e, w_s:w_e] += (
+                    grad_output[:, :, i, j][:, :, None, None] / count
+                )
+
+        return (grad_input,)
 
 # =============================================================================
 # Global Pooling Function Classes
@@ -498,7 +528,7 @@ class GlobalMaxPool1d(Function):
         return output
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
-        grad_x = np.zeros(self.shape)
+        grad_x = np.zeros(self.shape, dtype=grad_output.dtype)
         b_idx = np.arange(grad_output.shape[0])[:, None]
         c_idx = np.arange(grad_output.shape[1])[None, :]
         grad_x[b_idx, c_idx, self.indices] = grad_output
@@ -547,7 +577,7 @@ class GlobalMaxPool2d(Function):
         return output
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
-        grad_x = np.zeros(self.shape)
+        grad_x = np.zeros(self.shape, dtype=grad_output.dtype)
         b_idx = np.arange(grad_output.shape[0])[:, None]
         c_idx = np.arange(grad_output.shape[1])[None, :]
         grad_x[b_idx, c_idx, self.h_indices, self.w_indices] = grad_output

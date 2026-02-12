@@ -54,18 +54,11 @@ def im2col_2d(
     # as_strided gives (B, C, H_out, W_out, kh, kw)
     patches = np.lib.stride_tricks.as_strided(
         x,
-        shape=(B, C, H_out, W_out, kernel_h, kernel_w),
-        strides=(sB, sC, sh * sH, sw * sW, dh * sH, dw * sW),
+        shape=(B, C, kernel_h, kernel_w, H_out, W_out),
+        strides=(sB, sC, dh * sH, dw * sW, sh * sH, sw * sW),
         writeable=False,
     )
-
-    # ── FIX: reorder to (B, C, kh, kw, H_out, W_out) BEFORE reshape ──
-    #
-    # Without this transpose the reshape merges (C, H_out) into one axis
-    # and (W_out, kh, kw) into another — completely wrong.
-    cols = patches.transpose(0, 1, 4, 5, 2, 3).reshape(
-        B, C * kernel_h * kernel_w, H_out * W_out
-    )
+    cols = patches.reshape(B, C * kernel_h * kernel_w, H_out * W_out)
     return cols
 
 
@@ -296,7 +289,7 @@ class Conv1d(Function):
         bc_offset = np.arange(B * C_in).reshape(-1, 1) * L_padded
         all_indices = (bc_offset + indices.ravel()).ravel()
 
-        grad_x = np.zeros(B * C_in * L_padded)
+        grad_x = np.zeros(B * C_in * L_padded, dtype=grad_output.dtype)
         np.add.at(grad_x, all_indices, grad_patches.reshape(B * C_in, -1).ravel())
         grad_x = grad_x.reshape(B, C_in, L_padded)
 
@@ -318,43 +311,66 @@ class Conv2d(Function):
         assert x.ndim == 4
         global _no_grad
 
-        if isinstance(stride, int):   stride   = (stride, stride)
-        if isinstance(padding, int):  padding  = (padding, padding)
-        if isinstance(dilation, int): dilation = (dilation, dilation)
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        if isinstance(padding, int):
+            padding = (padding, padding)
+        if isinstance(dilation, int):
+            dilation = (dilation, dilation)
 
-        B, C, H, W  = x.shape
+        B, C, H, W = x.shape
         C_out, _, kh, kw = weight.shape
+        sh, sw = stride
+        dh, dw = dilation
         H_out, W_out = calculate_output_shape(
             (H, W), (kh, kw), stride, padding, dilation
         )
 
-        # Pad input once; im2col then runs with padding=(0,0)
         if padding != (0, 0):
-            x = np.pad(x, (
-                (0, 0), (0, 0),
-                (padding[0], padding[0]),
-                (padding[1], padding[1]),
-            ))
+            x = np.pad(
+                x,
+                (
+                    (0, 0),
+                    (0, 0),
+                    (padding[0], padding[0]),
+                    (padding[1], padding[1]),
+                ),
+            )
 
-        Cg  = C     // groups          # in-channels  per group
-        Cog = C_out // groups          # out-channels per group
-        N   = H_out * W_out
+        Cg = C // groups
+        Cog = C_out // groups
+        N = H_out * W_out
+        use_partial = N > Cg * kh * kw
 
-        outputs   = []
+        outputs = []
         cols_list = []
 
         for g in range(groups):
-            xg   = x[:, g * Cg : (g + 1) * Cg]              # (B, Cg, H_pad, W_pad)
-            wg   = weight[g * Cog : (g + 1) * Cog]           # (Cog, Cg, kh, kw)
-            Wmat = wg.reshape(Cog, -1)                        # (Cog, K)  K = Cg*kh*kw
+            xg = x[:, g * Cg : (g + 1) * Cg]
+            wg = weight[g * Cog : (g + 1) * Cog]
 
-            cols = im2col_2d(xg, kh, kw, stride, (0, 0), dilation)
-            # cols: (B, K, N)
+            if use_partial:
+                outg = np.zeros((B, Cog, H_out, W_out), dtype=x.dtype)
+                for ki in range(kh):
+                    for kj in range(kw):
+                        x_slice = xg[
+                            :,
+                            :,
+                            ki * dh : ki * dh + (H_out - 1) * sh + 1 : sh,
+                            kj * dw : kj * dw + (W_out - 1) * sw + 1 : sw,
+                        ]
+                        w_slice = wg[:, :, ki, kj]  # (Cog, Cg)
+                        outg += (w_slice @ x_slice.reshape(B, Cg, -1)).reshape(
+                            B, Cog, H_out, W_out
+                        )
+                cols_list.append(None)  # no cols to store
+            else:
+                Wmat = wg.reshape(Cog, -1)
+                cols = im2col_2d(xg, kh, kw, stride, (0, 0), dilation)
+                outg = Wmat @ cols
+                cols_list.append(cols)
 
-            # Batched matmul: (Cog, K) @ (B, K, N) → (B, Cog, N)
-            outg = Wmat @ cols                                # broadcasts over B
             outputs.append(outg)
-            cols_list.append(cols)
 
         out = np.concatenate(outputs, axis=1).reshape(B, C_out, H_out, W_out)
 
@@ -363,57 +379,85 @@ class Conv2d(Function):
 
         if not _no_grad:
             self.cols_list = cols_list
-            self.weight    = weight
-            self.x_shape   = x.shape          # padded shape
-            self.stride    = stride
-            self.padding   = padding
-            self.dilation  = dilation
-            self.groups    = groups
-            self.has_bias  = bias is not None
+            self.weight = weight
+            self.x_padded = x  # need this for partial backward
+            self.x_shape = x.shape
+            self.stride = stride
+            self.padding = padding
+            self.dilation = dilation
+            self.groups = groups
+            self.has_bias = bias is not None
             self.kh, self.kw = kh, kw
+            self.use_partial = use_partial
 
         return out
 
     def backward(self, grad_output):
         B, C_out, H_out, W_out = grad_output.shape
-        C      = self.x_shape[1]
+        C = self.x_shape[1]
         groups = self.groups
-        N      = H_out * W_out
+        N = H_out * W_out
+        sh, sw = self.stride
+        dh, dw = self.dilation
+        kh, kw = self.kh, self.kw
 
-        Cg  = C     // groups
+        Cg = C // groups
         Cog = C_out // groups
 
-        grad_weight = np.zeros_like(self.weight)
-        grad_x      = np.zeros(self.x_shape, dtype=grad_output.dtype)
+        grad_weight = np.zeros_like(self.weight, dtype=grad_output.dtype)
+        grad_x = np.zeros(self.x_shape, dtype=grad_output.dtype)
 
         for g in range(groups):
-            go   = grad_output[:, g * Cog : (g + 1) * Cog]   # (B, Cog, H_out, W_out)
-            go2  = go.reshape(B, Cog, N)                      # (B, Cog, N)
+            go = grad_output[:, g * Cog : (g + 1) * Cog]
+            go2 = go.reshape(B, Cog, N)
+            wg = self.weight[g * Cog : (g + 1) * Cog]
 
-            wg   = self.weight[g * Cog : (g + 1) * Cog]      # (Cog, Cg, kh, kw)
-            Wmat = wg.reshape(Cog, -1)                        # (Cog, K)
-            cols = self.cols_list[g]                           # (B, K, N)
+            if self.use_partial:
+                xg = self.x_padded[:, g * Cg : (g + 1) * Cg]
 
-            # ── grad_weight ──────────────────────────────────────────── #
-            # Σ_b (go2[b] @ cols[b].T)  →  (Cog, K)
-            gW = np.matmul(go2, cols.transpose(0, 2, 1))     # (B, Cog, K)
-            grad_weight[g * Cog : (g + 1) * Cog] = gW.sum(axis=0).reshape(wg.shape)
+                for ki in range(kh):
+                    for kj in range(kw):
+                        w_slice = wg[:, :, ki, kj]  # (Cog, Cg)
+                        x_slice = xg[
+                            :,
+                            :,
+                            ki * dh : ki * dh + (H_out - 1) * sh + 1 : sh,
+                            kj * dw : kj * dw + (W_out - 1) * sw + 1 : sw,
+                        ]
+                        x_flat = x_slice.reshape(B, Cg, N)
 
-            # ── grad_x  (via col2im) ─────────────────────────────────── #
-            # Wmat.T @ go2  →  (B, K, N)
-            grad_cols = np.matmul(Wmat.T, go2)                # broadcasts over B
+                        # grad_weight
+                        grad_weight[g * Cog : (g + 1) * Cog, :, ki, kj] = np.matmul(
+                            go2, x_flat.transpose(0, 2, 1)
+                        ).sum(0)
 
-            gx = col2im_2d(
-                grad_cols,
-                (B, Cg, self.x_shape[2], self.x_shape[3]),   # padded dims
-                self.kh, self.kw,
-                self.stride,
-                (0, 0),
-                self.dilation,
-            )
-            grad_x[:, g * Cg : (g + 1) * Cg] = gx
+                        # grad_x: accumulate into the same slice positions
+                        gx = np.matmul(w_slice.T, go2).reshape(B, Cg, H_out, W_out)
+                        grad_x[
+                            :,
+                            g * Cg : (g + 1) * Cg,
+                            ki * dh : ki * dh + (H_out - 1) * sh + 1 : sh,
+                            kj * dw : kj * dw + (W_out - 1) * sw + 1 : sw,
+                        ] += gx
+            else:
+                Wmat = wg.reshape(Cog, -1)
+                cols = self.cols_list[g]
 
-        # Strip the padding that was added in forward
+                gW = np.matmul(go2, cols.transpose(0, 2, 1))
+                grad_weight[g * Cog : (g + 1) * Cog] = gW.sum(axis=0).reshape(wg.shape)
+
+                grad_cols = np.matmul(Wmat.T, go2)
+                gx = col2im_2d(
+                    grad_cols,
+                    (B, Cg, self.x_shape[2], self.x_shape[3]),
+                    kh,
+                    kw,
+                    self.stride,
+                    (0, 0),
+                    self.dilation,
+                )
+                grad_x[:, g * Cg : (g + 1) * Cg] = gx
+
         ph, pw = self.padding
         if ph > 0 or pw > 0:
             grad_x = grad_x[:, :, ph:-ph, pw:-pw]

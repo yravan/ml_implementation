@@ -52,6 +52,8 @@ import math
 import numpy as np
 from typing import Literal, Tuple
 
+from numpy import dtype
+
 from ..foundations import Tensor
 
 
@@ -219,7 +221,7 @@ def xavier_uniform_(tensor: Tensor, gain: float = 1.0) -> None:
     """
     fan_in, fan_out = calculate_fan_in_fan_out(tensor)
     limit = gain * np.sqrt(6 / (fan_in + fan_out))
-    tensor.data = np.random.uniform(-limit, limit, tensor.data.shape)
+    tensor.data = np.random.uniform(-limit, limit, tensor.data.shape).astype(tensor.data.dtype, copy=False)
 
 
 def xavier_normal_(tensor: Tensor, gain: float = 1.0) -> None:
@@ -247,7 +249,7 @@ def xavier_normal_(tensor: Tensor, gain: float = 1.0) -> None:
     """
     fan_in, fan_out = calculate_fan_in_fan_out(tensor)
     std = gain * np.sqrt(2 / (fan_in + fan_out))
-    tensor.data = np.random.normal(0, std, tensor.data.shape)
+    tensor.data = np.random.normal(0, std, tensor.data.shape).astype(tensor.data.dtype, copy=False)
 
 
 # =============================================================================
@@ -297,7 +299,7 @@ def kaiming_uniform_(
         a = 0.0
     gain = np.sqrt(2 / (1 + a**2))
     limit = gain * np.sqrt(3 / fan)
-    tensor.data = np.random.uniform(-limit, limit, tensor.data.shape)
+    tensor.data = np.random.uniform(-limit, limit, tensor.data.shape).astype(tensor.data.dtype, copy=False)
 
 
 def kaiming_normal_(
@@ -340,14 +342,14 @@ def kaiming_normal_(
         a = 0.0
     gain = np.sqrt(2 / (1 + a**2))
     std = gain * np.sqrt(1 / fan)
-    tensor.data = np.random.normal(0, std, tensor.data.shape)
+    tensor.data = np.random.normal(0, std, tensor.data.shape).astype(tensor.data.dtype, copy=False)
 
 
 # =============================================================================
 # Normal and Uniform Initialization
 # =============================================================================
 
-def normal_(tensor: Tensor, mean: float = 0.0, std: float = 1.0) -> None:
+def normal_(tensor: Tensor, mean: float = 0.0, std: float = 0.01) -> None:
     """
     Initialize tensor with normal (Gaussian) distribution (in-place).
 
@@ -366,7 +368,7 @@ def normal_(tensor: Tensor, mean: float = 0.0, std: float = 1.0) -> None:
         >>> normal_(weight, mean=0.0, std=0.01)
         >>> # weight now contains values from N(0, 0.01^2)
     """
-    tensor.data = np.random.normal(mean, std, tensor.data.shape)
+    tensor.data = np.random.normal(mean, std, tensor.data.shape).astype(tensor.data.dtype, copy=False)
 
 
 def uniform_(tensor: Tensor, a: float = 0.0, b: float = 1.0) -> None:
@@ -388,7 +390,7 @@ def uniform_(tensor: Tensor, a: float = 0.0, b: float = 1.0) -> None:
         >>> uniform_(weight, a=-0.1, b=0.1)
         >>> # weight now contains values from U[-0.1, 0.1]
     """
-    tensor.data = np.random.uniform(a, b, tensor.data.shape)
+    tensor.data = np.random.uniform(a, b, tensor.data.shape).astype(tensor.data.dtype, copy=False)
 
 
 def zeros_(tensor: Tensor) -> None:

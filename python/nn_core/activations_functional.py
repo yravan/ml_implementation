@@ -60,8 +60,7 @@ class ReLU(Function):
             self.mask = x <= 0
         return np.maximum(x, 0)
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, ...]:
-        dx = grad_output.copy()
-        dx[self.mask] = 0.0
+        dx = grad_output * (~self.mask)
         return dx,
 
 class LeakyReLU(Function):
@@ -75,8 +74,7 @@ class LeakyReLU(Function):
         return out
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, ...]:
-        dx = grad_output.copy()
-        dx[self.mask] *= self.alpha
+        dx = grad_output * ((self.mask) * self.alpha + ~self.mask)
         return dx,
 
 class ELU(Function):

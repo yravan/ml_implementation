@@ -53,13 +53,15 @@ Implementation Notes
 - Normalize features based on training set statistics only
 - Be careful with time series: no future data in training
 """
+from abc import abstractmethod
+from pathlib import Path
 
 # Implementation Status: NOT STARTED
 # Complexity: Easy
 # Prerequisites: seeding (for reproducible shuffling)
 
 import numpy as np
-from typing import Iterator, Tuple, List, Optional, Union
+from typing import Iterator, Tuple, List, Optional, Union, Callable
 
 from python.utils.seeding import set_seed
 
@@ -334,6 +336,32 @@ def to_categorical(y: np.ndarray, num_classes: Optional[int] = None) -> np.ndarr
     return one_hot
 
 
+class Dataset:
+    """
+    General dataset loader.
+    """
+
+    def __init__(self, root: str, train: bool = True, transform: Optional[Callable] = None):
+        """
+        Args:
+            root: Root directory of ImageNet (contains train/ and val/)
+            train: If True, use training set; else validation set
+            subset: If set, only use this many samples (for debugging)
+        """
+        self.root = Path(root)
+        self.train = train
+        self.samples = []
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.samples)
+
+    @abstractmethod
+    def load_sample(self, idx: int):
+        """Load a single sample by index."""
+        raise NotImplementedError
+
+
 class DataLoader:
     """
     A simple data loader class for batch iteration.
@@ -359,9 +387,9 @@ class DataLoader:
         32
     """
 
-    def __init__(self, X: np.ndarray, y: Optional[np.ndarray] = None,
+    def __init__(self, dataset: Dataset,
                  batch_size: int = 32, shuffle: bool = True,
-                 drop_last: bool = False, seed: Optional[int] = None):
+                 drop_last: bool = False, seed: Optional[int] = None, num_workers: int = 10,):
         """
         Initialize DataLoader.
 
@@ -373,16 +401,16 @@ class DataLoader:
             drop_last: Drop incomplete final batch
             seed: Random seed
         """
-        self.X = X
-        self.y = y
+        self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
         self.seed = seed
-        self.n_samples = X.shape[0]
+        self.n_samples = len(dataset)
         self._rng = np.random.default_rng(seed)
         self._indices = np.arange(self.n_samples)
         self._current = 0
+        self.num_workers = num_workers
 
     def __iter__(self) -> "DataLoader":
         """Reset and return iterator."""
@@ -391,7 +419,7 @@ class DataLoader:
             self._rng.shuffle(self._indices)
         return self
 
-    def __next__(self) -> Tuple[np.ndarray, ...]:
+    def __next__(self):
         """Return next batch."""
         if self._current >= self.n_samples:
             raise StopIteration
@@ -405,10 +433,21 @@ class DataLoader:
 
         self._current = end
 
-        if self.y is not None:
-            return self.X[batch_indices], self.y[batch_indices]
-        else:
-            return (self.X[batch_indices],)
+        data_samples = []
+        for idx in batch_indices:
+            try:
+                data = self.dataset.load_sample(idx)
+                data_samples.append(data)
+            except Exception as e:
+                continue
+        num_data_types = len(data_samples[0])
+        batched_data = []
+        for i in range(num_data_types):
+            batched_data.append(
+                np.stack(tuple(sample[i] for sample in data_samples), axis=0)
+            )
+
+        return tuple(batched_data)
 
     def __len__(self) -> int:
         """Return number of batches."""

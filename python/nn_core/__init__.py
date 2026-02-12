@@ -99,7 +99,6 @@ from .regularization import (
     Dropout, Dropout1d, Dropout2d, Dropout3d,
     DropPath, DropPathScheduled,
     DropoutScheduled,
-    LabelSmoothing, LabelSmoothingCrossEntropy,
 )
 
 # Regularization functional

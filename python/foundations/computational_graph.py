@@ -116,7 +116,11 @@ from .functionals import (
     Sigmoid,
     Identity,
     LogSoftmax,
-    _no_grad
+    _no_grad,
+    Sub,
+    Neg,
+    Div,
+    Min,
 )
 
 
@@ -130,28 +134,36 @@ def convert_to_function(cls):
             if isinstance(arg, Tensor):
                 children.append(arg)
                 class_args[i] = arg.data
-            # if isinstance(arg, (float, int)) and not isinstance(arg, bool):
-            #     class_args[i] = np.array(arg)
-        for k,v in class_kwargs.items():
+            elif isinstance(arg, np.ndarray):
+                if arg.dtype == np.float64:
+                    class_args[i] = arg.astype(np.float32, copy=False)
+            elif isinstance(arg, float):
+                class_args[i] = np.float32(arg)
+        for k, v in class_kwargs.items():
             if isinstance(v, Tensor):
                 children.append(v)
                 class_kwargs[k] = v.data
-            # if isinstance(v, (float, int)) and not isinstance(v, bool):
-            #     class_kwargs[k] = np.array(v)
+            elif isinstance(v, np.ndarray):
+                if v.dtype == np.float64:
+                    class_kwargs[k] = v.astype(np.float32, copy=False)
+            elif isinstance(v, float):
+                class_kwargs[k] = np.float32(v)
         requires_grad = any(arg.requires_grad for arg in children)
         out = Tensor(data=fn.forward(*class_args, **class_kwargs),
                      requires_grad=requires_grad,
                      _children=tuple(children),
-                     _grad_fn=fn
-        )
+                     _grad_fn=fn)
         return out
     return f
 
 identity = convert_to_function(Identity)
-set = convert_to_function(Set)
+set_fn = convert_to_function(Set)
 concat = convert_to_function(Concat)
 add = convert_to_function(Add)
+sub = convert_to_function(Sub)
+neg = convert_to_function(Neg)
 mul = convert_to_function(Mul)
+div = convert_to_function(Div)
 matmul = convert_to_function(MatMul)
 pow = convert_to_function(Pow)
 sum = convert_to_function(Sum)
@@ -161,6 +173,7 @@ log = convert_to_function(Log)
 reshape = convert_to_function(Reshape)
 transpose = convert_to_function(Transpose)
 max = convert_to_function(Max)
+min = convert_to_function(Min)
 abs = convert_to_function(Abs)
 sigmoid = convert_to_function(Sigmoid)
 logsigmoid = convert_to_function(LogSigmoid)
@@ -216,9 +229,9 @@ class Tensor:
             _grad_fn: The function that created this tensor (internal use)
         """
         if not isinstance(data, np.ndarray):
-            self.data = np.array(data)
+            self.data = np.asarray(data, dtype=np.float32)
         else:
-            self.data = data
+            self.data = data if data.dtype == np.float32 else data.astype(np.float32)
         global _no_grad
         self.requires_grad = not _no_grad and requires_grad
         self._children = _children
@@ -275,35 +288,33 @@ class Tensor:
             if self.ndim == 0:
                 self.grad = 1.0
             else:
-                self.grad = np.ones_like(self.data)
+                self.grad = np.ones_like(self.data, dtype=self.data.dtype)
         else:
             if grad.ndim != self.ndim:
                 raise RuntimeError("Expected grad with the same dim")
             if grad.shape != self.shape:
                 raise RuntimeError("Expected grad with the same shape")
 
+        # ── Iterative topological sort ──
         topo = []
-        stack = []
-        visited = {}
+        visited = set()
+        stack = [(self, False)]
 
-        def dfs(node):
-            stack.append(node)
-            visited[node] = "in progress"
+        while stack:
+            node, processed = stack.pop()
+            if processed:
+                topo.append(node)
+                continue
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.append((node, True))  # push "emit me after my children"
             for child in node._children:
                 if child not in visited:
-                    dfs(child)
-                elif visited[child] == "in progress":
-                    raise RuntimeError("Computation Graph not a DAG")
-                else:
-                    continue
-            visited[node] = "done"
-            topo.append(node)
-            stack.pop()
+                    stack.append((child, False))
 
-        dfs(self)
-        reversed_topo = topo[::-1]
-
-        for node in reversed_topo:
+        # ── Backward pass ──
+        for node in reversed(topo):
             if node.requires_grad and node._grad_fn is not None:
                 child_grads = node._grad_fn.backward(node.grad)
                 for child, child_grad in zip(node._children, child_grads):
@@ -338,11 +349,11 @@ class Tensor:
 
     def __neg__(self) -> 'Tensor':
         """Negation: -self."""
-        return -1 * self
+        return neg(self)
 
     def __sub__(self, other: Union['Tensor', float, np.ndarray]) -> 'Tensor':
         """Subtraction: self - other."""
-        return self + (-other)
+        return sub(self, other)
 
     def __rsub__(self, other: Union[float, np.ndarray]) -> 'Tensor':
         """Reverse subtraction."""
@@ -352,11 +363,11 @@ class Tensor:
         """Division: self / other."""
         if isinstance(other, (int, np.integer)):
             other = float(other)
-        return self * (other ** -1)
+        return div(self, other)
 
     def __rtruediv__(self, other: Union[float, np.ndarray]) -> 'Tensor':
         """Reverse division."""
-        return other * (self ** -1)
+        return div(other, self)
 
     def __pow__(self, power: float) -> 'Tensor':
         """Power: self ** power."""
@@ -428,6 +439,10 @@ class Tensor:
     def max(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
         """Max of elements or element-wise max with another tensor."""
         return max(self, axis=axis, keepdims=keepdims)
+
+    def min(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
+        """Min of elements or element-wise max with another tensor."""
+        return min(self, axis=axis, keepdims=keepdims)
     def var(self, axis: Optional[Union[int, Tuple[int, ...]]] = None, keepdims: bool = False) -> 'Tensor':
         """Variance of elements."""
         return var(self, axis=axis, keepdims=keepdims)
@@ -465,7 +480,7 @@ class Tensor:
         return self
 
     def set(self, indices: Union[int, Tuple[int], List[int], np.ndarray, 'Tensor'], values: Union[float, np.ndarray, 'Tensor']) -> 'Tensor':
-        return set(self, indices, values)
+        return set_fn(self, indices, values)
 
     @property
     def T(self) -> 'Tensor':

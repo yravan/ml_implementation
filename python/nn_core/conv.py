@@ -97,7 +97,7 @@ class Conv1d(Module):
         if bias:
             self.bias = Parameter(np.zeros(out_channels))
         else:
-            self.register_parameter('bias', None)
+            self.bias = None
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -190,7 +190,7 @@ class Conv2d(Module):
         if bias:
             self.bias = Parameter(np.zeros(out_channels))
         else:
-            self.register_parameter('bias', None)
+            self.bias = None
 
     def forward(self, x: Tensor) -> Tensor:
         """

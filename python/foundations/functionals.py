@@ -85,6 +85,8 @@ def _unbroadcast(grad: np.ndarray, target_shape: Tuple[int, ...], func: str = "s
     the result has shape (2, 3). In backward, we need to sum over
     the first axis to get gradient for the (3,) tensor.
     """
+    if grad.shape == target_shape:
+        return grad
     grad_shape = np.array(grad.shape)
     target_shape_pad = (1,) * (len(grad_shape) - len(target_shape)) + target_shape
     target_shape_pad = np.array(target_shape_pad)
@@ -97,8 +99,6 @@ def _unbroadcast(grad: np.ndarray, target_shape: Tuple[int, ...], func: str = "s
             grad = grad.mean(axis=broadcast_dims, keepdims=True)
         else:
             raise ValueError("Unsupported function: {}".format(func))
-    else:
-        grad = grad.copy()
     return grad.reshape(target_shape)
 
 
@@ -143,15 +143,46 @@ class Add(Function):
             y = np.array([y])
         global _no_grad
         if not _no_grad:
-            self.x = x
-            self.y = y
+            self.x_shape = x.shape
+            self.y_shape = y.shape
         return x + y
+
+    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute gradients for addition."""
+        dx = _unbroadcast(grad_output, self.x_shape)
+        dy = _unbroadcast(grad_output, self.y_shape)
+        if dx is dy:          # same object (no broadcast happened)
+            dy = dy.copy()
+        return dx, dy
+
+class Sub(Function):
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Compute x - y."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
+        if isinstance(y, (float, int)):
+            y = np.array([y])
+        global _no_grad
+        if not _no_grad:
+            self.x_shape = x.shape
+            self.y_shape = y.shape
+        return x - y
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Compute gradients for addition."""
         dx = grad_output
         dy = grad_output
-        return _unbroadcast(dx, self.x.shape), _unbroadcast(dy, self.y.shape)
+        return _unbroadcast(dx, self.x_shape), -_unbroadcast(dy, self.y_shape)
+
+class Neg(Function):
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
+        return -x
+    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, ...]:
+        dx = grad_output
+        return -dx,
+
 
 
 class Mul(Function):
@@ -180,6 +211,25 @@ class Mul(Function):
         dy = grad_output * self.x
         return _unbroadcast(dx, self.x.shape), _unbroadcast(dy, self.y.shape)
 
+class Div(Function):
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Compute x * y."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
+        if isinstance(y, (float, int)):
+            y = np.array([y])
+        global _no_grad
+        if not _no_grad:
+            self.x = x
+            self.y = y
+        return x / y
+
+    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute gradients: ∂L/∂x = grad * y, ∂L/∂y = grad * x."""
+        dx = grad_output / self.y
+        dy = -grad_output * self.x / self.y ** 2
+        return dx, dy
 
 class MatMul(Function):
     """
@@ -275,7 +325,7 @@ class Clamp(Function):
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
         """Gradient of exp is exp."""
-        dx = np.zeros_like(grad_output)
+        dx = np.zeros_like(grad_output,dtype=grad_output.dtype)
         dx[self.mask] = grad_output[self.mask]
         return dx,
 
@@ -383,6 +433,37 @@ class Max(Function):
 
         max_vals = np.max(self.x, axis=self.axis, keepdims=True)
         mask = (self.x == max_vals).astype(np.uint8)
+        mask = mask / mask.sum(axis=self.axis, keepdims=True)
+
+        return (mask * grad_output,)
+
+
+class Min(Function):
+    """
+    Min reduction: y = min(x, axis).
+
+    Backward: gradient flows only to min elements.
+    """
+
+    def forward(self, x: np.ndarray, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
+        global _no_grad
+        if not _no_grad:
+            self.x = x
+            self.shape = x.shape
+            self.axis = axis
+            self.keepdims = keepdims
+
+        return np.min(x, axis=axis, keepdims=keepdims)
+
+    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
+        """Gradient flows to max elements."""
+        if not self.keepdims and self.axis is not None:
+            grad_output = np.expand_dims(grad_output, self.axis)
+
+        min_vals = np.min(self.x, axis=self.axis, keepdims=True)
+        mask = (self.x == min_vals).astype(np.uint8)
         mask = mask / mask.sum(axis=self.axis, keepdims=True)
 
         return (mask * grad_output,)
@@ -569,7 +650,7 @@ class Slice(Function):
         return x[slices]
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
-        grad = np.zeros(self.shape)
+        grad = np.zeros(self.shape, dtype=grad_output.dtype)
         grad[self.slices] = grad_output
         return grad,
 

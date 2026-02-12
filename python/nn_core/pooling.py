@@ -25,6 +25,7 @@ from .pooling_functional import (
     max_pool2d,
     global_max_pool2d,
     global_avg_pool2d,
+    adaptive_avg_pool2d,
 )
 
 
@@ -761,13 +762,7 @@ class AdaptiveAvgPool2d(Module):
             >>> assert output.shape == (32, 2048, 1, 1)
             >>> # Can reshape to (32, 2048) for downstream FC layers
         """
-        raise NotImplementedError(
-            "TODO: Implement adaptive average pooling\n"
-            "1. Validate input is 4D\n"
-            "2. Use torch.nn.functional.adaptive_avg_pool2d:\n"
-            "   F.adaptive_avg_pool2d(x, self.output_size)\n"
-            "3. Return output"
-        )
+        return adaptive_avg_pool2d(x, self.output_size)
 
     def extra_repr(self) -> str:
         """Return string representation with parameters."""

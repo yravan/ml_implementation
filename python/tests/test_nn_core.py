@@ -187,7 +187,7 @@ class TestLinear:
 
         # Gradients should exist
         assert x.grad is not None
-        assert layer.weight.grad is not None
+        assert layer.weight_T.grad is not None
         if layer.bias is not None:
             assert layer.bias.grad is not None
 

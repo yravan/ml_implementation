@@ -23,10 +23,7 @@ Helper Functions:
 import numpy as np
 from typing import Tuple, Optional
 
-from python.foundations import Function, convert_to_function
-
-# Global flag for gradient tracking
-_no_grad = False
+from python.foundations import Function, convert_to_function, _no_grad
 
 
 # =============================================================================
@@ -68,25 +65,14 @@ class Dropout(Function):
         Returns:
             Output array with dropout applied (if training)
         """
-        raise NotImplementedError(
-            "TODO: Implement Dropout forward\n"
-            "Hint:\n"
-            "  global _no_grad\n"
-            "  \n"
-            "  if not training or p == 0:\n"
-            "      return x\n"
-            "  \n"
-            "  # Generate dropout mask\n"
-            "  mask = (np.random.rand(*x.shape) > p).astype(x.dtype)\n"
-            "  \n"
-            "  if not _no_grad:\n"
-            "      self.mask = mask\n"
-            "      self.p = p\n"
-            "      self.training = training\n"
-            "  \n"
-            "  # Apply mask and scale\n"
-            "  return x * mask / (1 - p)"
-        )
+        if not training:
+            return x
+        mask = (np.random.rand(*x.shape) >= p).astype(x.dtype)
+        global _no_grad
+        if not _no_grad:
+            self.mask = mask
+            self.p = p
+        return x * mask / (1 - p)
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
         """
@@ -98,15 +84,8 @@ class Dropout(Function):
         Returns:
             Tuple of (grad_input,)
         """
-        raise NotImplementedError(
-            "TODO: Implement Dropout backward\n"
-            "Hint:\n"
-            "  if not self.training or self.p == 0:\n"
-            "      return (grad_output,)\n"
-            "  \n"
-            "  # Gradient flows only through kept elements\n"
-            "  return (grad_output * self.mask / (1 - self.p),)"
-        )
+        dx = grad_output / (1 - self.p) * self.mask
+        return dx,
 
 
 class Dropout1d(Function):
@@ -137,33 +116,19 @@ class Dropout1d(Function):
         Returns:
             Output array
         """
-        raise NotImplementedError(
-            "TODO: Implement Dropout1d forward\n"
-            "Hint:\n"
-            "  global _no_grad\n"
-            "  \n"
-            "  if not training or p == 0:\n"
-            "      return x\n"
-            "  \n"
-            "  batch, channels, length = x.shape\n"
-            "  \n"
-            "  # Mask shape: (batch, channels, 1) - same mask for all positions\n"
-            "  mask = (np.random.rand(batch, channels, 1) > p).astype(x.dtype)\n"
-            "  \n"
-            "  if not _no_grad:\n"
-            "      self.mask = mask\n"
-            "      self.p = p\n"
-            "      self.training = training\n"
-            "  \n"
-            "  return x * mask / (1 - p)"
-        )
+        if not training:
+            return x
+        mask = (np.random.rand(*x.shape[:2]) >= p).astype(x.dtype)[..., None]
+        global _no_grad
+        if not _no_grad:
+            self.mask = mask
+            self.p = p
+        return x * mask / (1 - p)
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
         """Compute gradient for 1D spatial dropout."""
-        raise NotImplementedError(
-            "TODO: Implement Dropout1d backward\n"
-            "Hint: Same as Dropout but with channel mask"
-        )
+        dx = grad_output / (1 - self.p) * self.mask
+        return dx,
 
 
 class Dropout2d(Function):
@@ -194,30 +159,19 @@ class Dropout2d(Function):
         Returns:
             Output array
         """
-        raise NotImplementedError(
-            "TODO: Implement Dropout2d forward\n"
-            "Hint:\n"
-            "  global _no_grad\n"
-            "  \n"
-            "  if not training or p == 0:\n"
-            "      return x\n"
-            "  \n"
-            "  batch, channels, h, w = x.shape\n"
-            "  \n"
-            "  # Mask shape: (batch, channels, 1, 1)\n"
-            "  mask = (np.random.rand(batch, channels, 1, 1) > p).astype(x.dtype)\n"
-            "  \n"
-            "  if not _no_grad:\n"
-            "      self.mask = mask\n"
-            "      self.p = p\n"
-            "      self.training = training\n"
-            "  \n"
-            "  return x * mask / (1 - p)"
-        )
+        if not training:
+            return x
+        mask = (np.random.rand(*x.shape[:2]) >= p).astype(x.dtype)[..., None, None]
+        global _no_grad
+        if not _no_grad:
+            self.mask = mask
+            self.p = p
+        return x * mask / (1 - p)
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
-        """Compute gradient for 2D spatial dropout."""
-        raise NotImplementedError("TODO: Implement Dropout2d backward")
+        """Compute gradient for 1D spatial dropout."""
+        dx = grad_output / (1 - self.p) * self.mask
+        return (dx,)
 
 
 class Dropout3d(Function):
@@ -248,17 +202,19 @@ class Dropout3d(Function):
         Returns:
             Output array
         """
-        raise NotImplementedError(
-            "TODO: Implement Dropout3d forward\n"
-            "Hint:\n"
-            "  batch, channels = x.shape[:2]\n"
-            "  mask = (np.random.rand(batch, channels, 1, 1, 1) > p).astype(x.dtype)\n"
-            "  return x * mask / (1 - p) if training and p > 0 else x"
-        )
+        if not training:
+            return x
+        mask = (np.random.rand(*x.shape[:2]) >= p).astype(x.dtype)[..., None, None, None]
+        global _no_grad
+        if not _no_grad:
+            self.mask = mask
+            self.p = p
+        return x * mask / (1 - p)
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
-        """Compute gradient for 3D spatial dropout."""
-        raise NotImplementedError("TODO: Implement Dropout3d backward")
+        """Compute gradient for 1D spatial dropout."""
+        dx = grad_output / (1 - self.p) * self.mask
+        return dx,
 
 
 # =============================================================================

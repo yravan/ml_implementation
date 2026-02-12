@@ -103,7 +103,9 @@ class Linear(Module):
               W ~ Normal(0, √(2/fan_in))
         """
         super().__init__()
-        self.weight = Parameter(np.zeros((out_features, in_features)))
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = Parameter(np.zeros((in_features, out_features))) # transposed
         if bias:
             self.bias = Parameter(np.zeros((out_features,)))
         else:
@@ -135,7 +137,7 @@ class Linear(Module):
             pass is handled automatically by the computational graph.
             No need for a backward() method!
         """
-        out = x @ self.weight.T
+        out = x @ self.weight
         if self.bias is not None: out += self.bias
         return out
 
@@ -266,13 +268,13 @@ class LazyLinear(Module):
         self.in_features = x.shape[-1]
         if self.weight is None:
             self._initialize_parameters()
-        out = x @ self.weight.T
+        out = x @ self.weight
         if self.bias is not None: out += self.bias
         return out
 
     def _initialize_parameters(self):
         """Initialize weight and bias after in_features is known."""
-        self.weight = Parameter(np.zeros((self.out_features, self.in_features)))
+        self.weight = Parameter(np.zeros((self.in_features, self.out_features)))
         if self.init == 'xavier':
             self._init_parameters(xavier_normal_)
         elif self.init == 'kaiming':
