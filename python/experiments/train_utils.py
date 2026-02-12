@@ -386,3 +386,26 @@ def print_classification_report(cm: np.ndarray,
 
 
 
+def adjust_learning_rate(optimizer, epoch: int, initial_lr: float,
+                         schedule: str = 'step'):
+    """
+    Adjust learning rate based on epoch.
+
+    Standard ImageNet schedule: decay by 10x at epochs 30, 60, 80.
+    """
+    if schedule == 'step':
+        if epoch < 30:
+            lr = initial_lr
+        elif epoch < 60:
+            lr = initial_lr * 0.1
+        elif epoch < 80:
+            lr = initial_lr * 0.01
+        else:
+            lr = initial_lr * 0.001
+    elif schedule == 'cosine':
+        lr = initial_lr * 0.5 * (1 + np.cos(np.pi * epoch / 90))
+    else:
+        lr = initial_lr
+
+    optimizer.lr = lr
+    return lr

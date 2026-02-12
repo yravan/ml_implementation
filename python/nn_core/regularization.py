@@ -108,7 +108,7 @@ class Dropout(Module):
         - Or use np.random.rand(x.shape) < (1-p) for bool mask
         - Cache mask for backward pass if needed
         """
-        return dropout(x, p=self.p, trainig=self.training)
+        return dropout(x, p=self.p, training=self.training)
 
     def extra_repr(self) -> str:
         """Return extra representation with dropout probability info."""
@@ -182,7 +182,7 @@ class Dropout1d(Module):
         - Mask shape: (N, C, 1)
         - Broadcasts across L (sequence length)
         """
-        return dropout1d(x, p=self.p, trainig=self.training)
+        return dropout1d(x, p=self.p, training=self.training)
 
     def extra_repr(self) -> str:
         """Return extra representation with dropout probability info."""
@@ -281,7 +281,7 @@ class Dropout2d(Module):
         - Same mask across all spatial positions (H, W)
         - During eval: return input unchanged
         """
-        return dropout2d(x, p=self.p, trainig=self.training)
+        return dropout2d(x, p=self.p, training=self.training)
 
     def extra_repr(self) -> str:
         """Return extra representation with dropout probability info."""
@@ -347,7 +347,7 @@ class Dropout3d(Module):
         - Mask shape: (N, C, 1, 1, 1)
         - Broadcasts across D, H, W
         """
-        return dropout3d(x, p=self.p, trainig=self.training)
+        return dropout3d(x, p=self.p, training=self.training)
 
     def extra_repr(self) -> str:
         """Return extra representation with dropout probability info."""

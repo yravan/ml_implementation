@@ -267,7 +267,7 @@ class CrossEntropyLoss(Module):
 
         # one-hot labels
         labels_data = np.zeros(logits.shape)
-        labels_data[np.arange(B), targets.data.astype(np.uint8)] = 1.0
+        labels_data[np.arange(B), targets.data.astype(np.int64)] = 1.0
         labels = Tensor(labels_data)
 
         # label smoothing

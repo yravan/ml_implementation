@@ -61,7 +61,8 @@ from python.experiments.train_utils import (
 # Our framework imports
 from python.optimization import SGD, CrossEntropyLoss, AdamW, Adam
 from python.vision import transforms
-from python.vision.models import resnet18, resnet34, resnet50
+from python.vision.models import resnet18, resnet34, resnet50, alexnet
+
 
 def load_data(subset):
 
@@ -100,6 +101,8 @@ def load_model(model_type, train_loader: DataLoader):
         model = resnet34(num_classes=train_loader.dataset.num_classes)
     elif model_type == "resnet50":
         model = resnet50(num_classes=train_loader.dataset.num_classes)
+    elif model_type == "alexnet":
+        model = alexnet(num_classes=train_loader.dataset.num_classes)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -357,7 +360,7 @@ if __name__ == '__main__':
         learning_rate=args.lr,
         optimizer_type=args.optimizer,
         optimizer_params=optimizer_params,
-        model_type=args.model,
+        model_type='alexnet',
         lr_schedule=args.lr_schedule,
         log_interval=args.log_interval,
         seed=args.seed,
