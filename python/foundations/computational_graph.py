@@ -215,7 +215,10 @@ class Tensor:
             _children: Parent tensors in the computational graph (internal use)
             _grad_fn: The function that created this tensor (internal use)
         """
-        self.data = np.array(data)
+        if not isinstance(data, np.ndarray):
+            self.data = np.array(data)
+        else:
+            self.data = data
         global _no_grad
         self.requires_grad = not _no_grad and requires_grad
         self._children = _children

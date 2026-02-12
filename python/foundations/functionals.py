@@ -95,7 +95,11 @@ def _unbroadcast(grad: np.ndarray, target_shape: Tuple[int, ...], func: str = "s
             grad = grad.sum(axis=broadcast_dims, keepdims=True)
         elif func == "mean":
             grad = grad.mean(axis=broadcast_dims, keepdims=True)
-    return grad.reshape(target_shape).copy()
+        else:
+            raise ValueError("Unsupported function: {}".format(func))
+    else:
+        grad = grad.copy()
+    return grad.reshape(target_shape)
 
 
 
