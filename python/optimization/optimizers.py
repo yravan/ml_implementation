@@ -100,7 +100,7 @@ class Optimizer:
         ...         pass
     """
 
-    def __init__(self, params: Union[List[Tensor], List[Dict[str, ...]]], **defaults) -> None:
+    def __init__(self, params: Union[List[Tensor], List[Dict[str, Any]]], **defaults) -> None:
         """
         Initialize base optimizer.
 
@@ -188,7 +188,7 @@ class SGD(Optimizer):
         ...     optimizer.step(grads)
     """
 
-    def __init__(self, params: Union[List[Tensor], List[Dict[str, ...]]],
+    def __init__(self, params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 0.01,
                  momentum: float = 0.0,
                  weight_decay: float = 0.0,
@@ -340,7 +340,7 @@ class RMSprop(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 0.01,
                  alpha: float = 0.99,
                  eps: float = 1e-8,
@@ -459,7 +459,7 @@ class Adagrad(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], Dict[str, ...]],
+                 params: Union[List[Tensor], Dict[str, Any]],
                  lr: float = 0.01,
                  lr_decay: float = 0.0,
                  eps: float = 1e-10,
@@ -538,7 +538,7 @@ class Adadelta(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 1.0,
                  rho: float = 0.9,
                  eps: float = 1e-6,
@@ -626,7 +626,7 @@ class Adam(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 0.001,
                  betas: Tuple[float, float] = (0.9, 0.999),
                  eps: float = 1e-8,
@@ -720,7 +720,7 @@ class AdamW(Optimizer):
 
     def __init__(
         self,
-        params: Union[List[Tensor], List[Dict[str, ...]]],
+        params: Union[List[Tensor], List[Dict[str, Any]]],
         lr: float = 0.001,
         betas: Tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-8,
@@ -821,7 +821,7 @@ class NAdam(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 0.002,
                  betas: Tuple[float, float] = (0.9, 0.999),
                  eps: float = 1e-8,
@@ -886,7 +886,7 @@ class RAdam(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 0.001,
                  betas: Tuple[float, float] = (0.9, 0.999),
                  eps: float = 1e-8,
@@ -942,7 +942,7 @@ class Adafactor(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: Optional[float] = None,
                  eps: Tuple[float, float] = (1e-30, 1e-3),
                  clip_threshold: float = 1.0,
@@ -1034,7 +1034,7 @@ class LAMB(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 0.001,
                  betas: Tuple[float, float] = (0.9, 0.999),
                  eps: float = 1e-6,
@@ -1094,7 +1094,7 @@ class LARS(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 0.1,
                  momentum: float = 0.9,
                  weight_decay: float = 0.0,
@@ -1161,7 +1161,7 @@ class Lion(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 1e-4,
                  betas: Tuple[float, float] = (0.9, 0.99),
                  weight_decay: float = 0.0):
@@ -1221,7 +1221,7 @@ class Muon(Optimizer):
     """
 
     def __init__(self,
-                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 params: Union[List[Tensor], List[Dict[str, Any]]],
                  lr: float = 0.02,
                  momentum: float = 0.95,
                  nesterov: bool = True,

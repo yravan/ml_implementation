@@ -133,6 +133,10 @@ class Add(Function):
 
     def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Compute x + y."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
+        if isinstance(y, (float, int)):
+            y = np.array([y])
         global _no_grad
         if not _no_grad:
             self.x = x
@@ -156,6 +160,10 @@ class Mul(Function):
 
     def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Compute x * y."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
+        if isinstance(y, (float, int)):
+            y = np.array([y])
         global _no_grad
         if not _no_grad:
             self.x = x
@@ -182,6 +190,10 @@ class MatMul(Function):
 
     def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Compute X @ Y."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
+        if isinstance(y, (float, int)):
+            y = np.array([y])
         global _no_grad
         if not _no_grad:
             self.x = x
@@ -204,6 +216,8 @@ class Pow(Function):
     """
     def forward(self, x: np.ndarray, power: float) -> np.ndarray:
         """Compute x ** power."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         if not _no_grad:
             self.power = power
@@ -225,6 +239,8 @@ class Sum(Function):
 
     def forward(self, x: np.ndarray, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> np.ndarray:
         """Compute sum along axis."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         if not _no_grad:
             self.axis = axis
@@ -242,6 +258,12 @@ class Sum(Function):
 class Clamp(Function):
     def forward(self, x: np.ndarray, min_val: np.ndarray, max_val: np.ndarray) -> np.ndarray:
         """Compute exp(x)."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
+        if isinstance(min_val, (float, int)):
+            min_val = np.array([min_val])
+        if isinstance(max_val, (float, int)):
+            max_val = np.array([max_val])
         global _no_grad
         if not _no_grad:
             self.mask = (x >= min_val) & (x <= max_val)
@@ -264,6 +286,8 @@ class Exp(Function):
 
     def forward(self, x: np.ndarray) -> np.ndarray:
         """Compute exp(x)."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         self.output = np.exp(x)
         return self.output
 
@@ -282,6 +306,8 @@ class Log(Function):
 
     def forward(self, x: np.ndarray) -> np.ndarray:
         """Compute log(x)."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         if not _no_grad:
             self.x = x
@@ -296,6 +322,8 @@ class Reshape(Function):
     """Reshape operation that preserves gradient flow."""
 
     def forward(self, x: np.ndarray, new_shape: Tuple[int, ...]) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         if not _no_grad:
             self.old_shape = x.shape
@@ -310,6 +338,8 @@ class Transpose(Function):
     """Transpose operation."""
 
     def forward(self, x: np.ndarray, axes: Optional[Tuple[int, ...]] = None) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         if not _no_grad:
             self.axes = axes
@@ -331,7 +361,8 @@ class Max(Function):
     """
 
     def forward(self, x: np.ndarray, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> np.ndarray:
-        """Compute max along axis."""
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         if not _no_grad:
             self.x = x
@@ -355,6 +386,8 @@ class Max(Function):
 
 class Abs(Function):
     def forward(self, x: np.ndarray) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         if not _no_grad:
             self.mask = x < 0
@@ -375,6 +408,8 @@ class Sigmoid(Function):
     """
 
     def forward(self, x: np.ndarray) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         out = sigmoid(x)
         global _no_grad
         if not _no_grad:
@@ -390,6 +425,8 @@ class LogSigmoid(Function):
     Sigmoid activation: y = 1 / (1 + exp(-x)).
     """
     def forward(self, x: np.ndarray) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         out = log_sigmoid(x)
         global _no_grad
         if not _no_grad:
@@ -410,6 +447,8 @@ class Softmax(Function):
     """
 
     def forward(self, x: np.ndarray, axis: int = -1) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         out = softmax(x, axis)
         if not _no_grad:
@@ -423,6 +462,8 @@ class Softmax(Function):
 
 class LogSoftmax(Function):
     def forward(self, x: np.ndarray, axis: int = -1) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         out = log_softmax(x, axis)
         if not _no_grad:
@@ -448,6 +489,10 @@ class Concat(Function):
     Backward: Split gradient back to original shapes
     """
     def forward(self, *inputs: np.ndarray, axis: int = 0) -> np.ndarray:
+        inputs = list(inputs)
+        for i, x in enumerate(inputs):
+            if isinstance(x, (float, int)):
+                inputs[i] = np.array([x])
         out = np.concatenate(inputs, axis=axis)
         global _no_grad
         if not _no_grad:
@@ -467,6 +512,10 @@ class Stack(Function):
     Backward: Unstack gradient
     """
     def forward(self, *inputs: np.ndarray, axis: int = 0) -> np.ndarray:
+        inputs = list(inputs)
+        for i, x in enumerate(inputs):
+            if isinstance(x, (float, int)):
+                inputs[i] = np.array([x])
         global _no_grad
         if not _no_grad:
             self.axis = axis
@@ -486,6 +535,8 @@ class Split(Function):
     Backward: Concatenate gradients
     """
     def forward(self, x: np.ndarray, indices_or_sections, axis: int = 0) -> List[np.ndarray]:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad;
         if not _no_grad:
             self.indices_or_sections = indices_or_sections
@@ -505,6 +556,8 @@ class Slice(Function):
     Backward: Scatter gradient back to original positions
     """
     def forward(self, x: np.ndarray, slices) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         if not _no_grad:
             self.slices = slices
@@ -518,6 +571,8 @@ class Slice(Function):
 
 class Mean(Function):
     def forward(self, x: np.ndarray, axis: Optional[Union[int, Tuple[int, ...]]] = None, keepdims: bool = False) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         mean = np.mean(x, axis=axis, keepdims=keepdims)
         if not _no_grad:
@@ -542,6 +597,8 @@ class Var(Function):
     """
 
     def forward(self, x: np.ndarray, axis: Optional[Union[int, Tuple[int, ...]]] = None, keepdims: bool = False) -> np.ndarray:
+        if isinstance(x, (float, int)):
+            x = np.array([x])
         global _no_grad
         var = np.var(x, axis=axis, keepdims=keepdims)
         if not _no_grad:
