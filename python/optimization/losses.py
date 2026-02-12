@@ -71,7 +71,7 @@ from math import prod
 import numpy as np
 from typing import Optional, Literal, Union, Tuple
 
-from python.foundations import Function, Tensor, minimum
+from python.foundations import Function, Tensor, minimum, maximum
 from python.nn_core import Module
 
 
@@ -92,7 +92,7 @@ def _reduce(loss: Tensor, reduction: str) -> Tensor:
 # Regression Modulees
 # =============================================================================
 
-class MSEModule(Module):
+class MSELoss(Module):
     """
     Mean Squared Error Module (L2 Module).
 
@@ -122,7 +122,7 @@ class MSEModule(Module):
         return _reduce(loss, reduction)
 
 
-class MAEModule(Module):
+class MAELoss(Module):
     """
     Mean Absolute Error Module (L1 Module).
 
@@ -152,7 +152,7 @@ class MAEModule(Module):
 
 
 
-class HuberModule(Module):
+class HuberLoss(Module):
     """
     Huber Module (Smooth L1).
 
@@ -178,14 +178,13 @@ class HuberModule(Module):
     """
 
     def forward(self, predictions: Tensor, targets: Tensor, delta: float = 1.0, reduction: str="mean") -> Tensor:
-        mse = (predictions - targets)**2 * 0.5
-        mae = delta * ((predictions - targets).abs() - 0.5 * delta)
-        loss = minimum(mse, mae)
+        error = (predictions - targets).abs()
+        loss = 0.5 * error.clamp(max_val=delta) ** 2 + delta * (error - delta).clamp(min_val=0)
         return _reduce(loss, reduction)
 
 
 
-class SmoothL1Module(Module):
+class SmoothL1Loss(Module):
     """
     Smooth L1 Module.
 
@@ -203,14 +202,13 @@ class SmoothL1Module(Module):
           https://arxiv.org/abs/1504.08083
     """
 
-    def forward(self, predictions: Tensor, targets: Tensor, beta: float = 1.0, reduction: str='mean') -> Tensor:
-        mse = (predictions - targets)**2 * 0.5 / beta
-        mae = (predictions - targets).abs() - 0.5 * beta
-        loss = minimum(mse, mae)
+    def forward(self, predictions, targets, beta=1.0, reduction='mean'):
+        error = (predictions - targets).abs()
+        loss = 0.5 * error.clamp(max_val=beta) ** 2 / beta + (error - beta).clamp(min_val=0)
         return _reduce(loss, reduction)
 
 
-class RMSEModule(Module):
+class RMSELoss(Module):
     """
     Root Mean Squared Error Module.
 
@@ -230,7 +228,7 @@ class RMSEModule(Module):
 # Classification Modulees
 # =============================================================================
 
-class CrossEntropyModule(Module):
+class CrossEntropyLoss(Module):
     """
     Cross-Entropy Module for multi-class classification.
 
@@ -289,7 +287,7 @@ class CrossEntropyModule(Module):
         loss = _reduce(loss, reduction)
         return loss
 
-class BinaryCrossEntropyModule(Module):
+class BinaryCrossEntropyLoss(Module):
     """
     Binary Cross-Entropy Module.
 
@@ -315,7 +313,7 @@ class BinaryCrossEntropyModule(Module):
         loss = _reduce(loss, reduction)
         return loss
 
-class BCEWithLogitsModule(Module):
+class BCEWithLogitsLoss(Module):
     """
     BCE with built-in sigmoid, numerically stable.
 
@@ -341,7 +339,7 @@ class BCEWithLogitsModule(Module):
         return loss
 
 
-class NLLModule(Module):
+class NLLLoss(Module):
     """
     Negative Log-Likelihood Module.
 
@@ -380,7 +378,7 @@ class NLLModule(Module):
         loss = _reduce(loss, reduction)
         return loss
 
-class FocalModule(Module):
+class FocalLoss(Module):
     """
     Focal Module for handling class imbalance.
 
@@ -404,47 +402,46 @@ class FocalModule(Module):
           https://arxiv.org/abs/1708.02002
 
     Example:
-        >>> loss = FocalModule(gamma=2.0, alpha=0.25)
-        >>> loss(logits, targets)  # Easy examples contribute less
+        >>> loss = FocalModule()
+        >>> loss(logits, targets, gamma=2.0, alpha=0.25)
     """
 
-    def forward(self, logits: Tensor, targets: Tensor, gamma: float = 2.0, alpha: Optional[float] = None, reduction: str = 'mean') -> Tensor:
+    def forward(self, logits: Tensor, targets: Tensor, gamma: float = 2.0,
+                alpha: float = 1, reduction: str = 'mean') -> Tensor:
+        """
+        Args:
+            logits: (N, C) raw logits
+            targets: (N,) class indices
+            gamma: Focusing parameter (higher = more focus on hard examples)
+            alpha: Weighting factor for positive class (optional)
+            reduction: 'mean', 'sum', or 'none'
+
+        Returns:
+            Focal loss
+
+        """
         B = logits.shape[0]
-        K = logits.shape[-1]
-
-        # Compute softmax probabilities
-        probs = logits.softmax(axis=-1)
-
-        # Get probability of correct class: p_t
-        # Create one-hot and extract p_t via element-wise multiply + sum
+        # one-hot labels
         labels_data = np.zeros(logits.shape)
         labels_data[np.arange(B), targets.data] = 1.0
         labels = Tensor(labels_data)
 
+        # use log softmax for numerical stability
+        log_probs = logits.log_softmax(axis=-1)
+        probs = logits.softmax(axis=-1)
+
+        # p_t for correct class
         p_t = (probs * labels).sum(axis=-1)  # (B,)
-
-        # Focal weight: (1 - p_t)^gamma
-        focal_weight = (1 - p_t) ** gamma
-
-        # Cross-entropy for correct class: -log(p_t)
-        ce = -p_t.log()
-
-        # Focal loss
-        loss = focal_weight * ce
-
-        # Optional alpha weighting (for binary, alpha weights positive class)
-        if alpha is not None:
-            alpha_t = Tensor(np.where(targets.data == 1, alpha, 1 - alpha))
-            loss = alpha_t * loss
-
-        return _reduce(loss, reduction)
+        log_p_t = (log_probs * labels).sum(axis=-1)  # (B,)
+        focal_loss = -alpha * (1 - p_t) ** gamma * log_p_t
+        return _reduce(focal_loss, reduction)
 
 
 # =============================================================================
 # Sequence Modulees
 # =============================================================================
 
-class CTCModule(Module):
+class CTCLoss(Module):
     """
     Connectionist Temporal Classification Module.
 
@@ -468,10 +465,9 @@ class CTCModule(Module):
         - Graves et al. "Connectionist Temporal Classification" (2006)
           https://www.cs.toronto.edu/~graves/icml_2006.pdf
 
-    Note:
-        CTC is complex to implement with autograd. This implementation provides
-        the forward pass structure; for full gradient support, consider using
-        a specialized library or implementing the forward-backward algorithm.
+    Example:
+        >>> loss = CTCModule()
+        >>> loss(log_probs, targets, input_lengths, target_lengths, blank=0)
     """
 
     def forward(self, log_probs: Tensor, targets: Tensor,
@@ -489,77 +485,32 @@ class CTCModule(Module):
         Returns:
             CTC loss
 
-        Implementation uses forward-backward algorithm:
-        1. Expand targets with blanks: [b, t1, b, t2, b, ...]
-        2. Forward pass: α[t,s] = P(output up to s at time t)
-        3. Loss = -log(Σ_s α[T,s])
-        """
-        T, N, C = log_probs.shape
+        Implementation Hints (forward-backward algorithm):
+            # For each sample n:
+            # 1. Expand targets with blanks: [b, t1, b, t2, b, ...]
+            expanded = [blank, target[0], blank, target[1], blank, ...]
 
-        # For simplicity, compute per-sample losses
-        losses = []
-        target_offset = 0
+            # 2. Forward pass in log space
+            log_alpha = np.full((T, L), -np.inf)  # L = 2*S+1
+            log_alpha[0, 0] = log_probs[0, n, blank]
+            log_alpha[0, 1] = log_probs[0, n, expanded[1]]
 
-        for n in range(N):
-            T_n = int(input_lengths.data[n])
-            S_n = int(target_lengths.data[n])
-
-            # Extract this sample's targets
-            if targets.data.ndim == 1:
-                sample_targets = targets.data[target_offset:target_offset + S_n]
-                target_offset += S_n
-            else:
-                sample_targets = targets.data[n, :S_n]
-
-            # Expand targets with blanks: [b, t1, b, t2, b, ...]
-            L = 2 * S_n + 1
-            expanded = np.zeros(L, dtype=int)
-            expanded[0::2] = blank
-            expanded[1::2] = sample_targets
-
-            # Forward algorithm (in log space for stability)
-            log_alpha = np.full((T_n, L), -np.inf)
-
-            # Initialize
-            log_alpha[0, 0] = log_probs.data[0, n, blank]
-            if L > 1:
-                log_alpha[0, 1] = log_probs.data[0, n, expanded[1]]
-
-            # Forward pass
-            for t in range(1, T_n):
+            for t in range(1, T):
                 for s in range(L):
-                    label = expanded[s]
-                    log_prob = log_probs.data[t, n, label]
+                    # Can come from: same state, previous state, or skip blank
+                    # Use np.logaddexp for numerical stability
 
-                    # Can come from same state
-                    score = log_alpha[t-1, s]
-
-                    # Can come from previous state
-                    if s > 0:
-                        score = np.logaddexp(score, log_alpha[t-1, s-1])
-
-                    # Can skip blank (if not blank and not same as s-2)
-                    if s > 1 and label != blank and label != expanded[s-2]:
-                        score = np.logaddexp(score, log_alpha[t-1, s-2])
-
-                    log_alpha[t, s] = score + log_prob
-
-            # Total probability: sum of last two states
-            log_prob_total = log_alpha[T_n-1, L-1]
-            if L > 1:
-                log_prob_total = np.logaddexp(log_prob_total, log_alpha[T_n-1, L-2])
-
-            losses.append(-log_prob_total)
-
-        loss = Tensor(np.array(losses))
-        return _reduce(loss, reduction)
+            # 3. Loss = -log(sum of final states)
+            loss = -np.logaddexp(log_alpha[T-1, L-1], log_alpha[T-1, L-2])
+        """
+        raise NotImplementedError("TODO: Implement CTC Module")
 
 
 # =============================================================================
-# Metric Learning Modulees
+# Metric Learning Losses
 # =============================================================================
 
-class TripletModule(Module):
+class TripletLoss(Module):
     """
     Triplet Module for metric learning.
 
@@ -596,27 +547,27 @@ class TripletModule(Module):
 
         Returns:
             Triplet loss
-        """
-        # Compute squared distances (more numerically stable)
-        d_pos_sq = ((anchor - positive) ** 2).sum(axis=-1)
-        d_neg_sq = ((anchor - negative) ** 2).sum(axis=-1)
 
-        if p == 2:
-            # Euclidean distance
+        Implementation Hints:
+            # Compute distances
+            d_pos_sq = ((anchor - positive) ** 2).sum(axis=-1)
+            d_neg_sq = ((anchor - negative) ** 2).sum(axis=-1)
+
+            # For Euclidean (p=2):
             d_pos = d_pos_sq ** 0.5
             d_neg = d_neg_sq ** 0.5
-        else:
-            # For other p-norms, use abs and power
-            d_pos = ((anchor - positive).abs() ** p).sum(axis=-1) ** (1.0 / p)
-            d_neg = ((anchor - negative).abs() ** p).sum(axis=-1) ** (1.0 / p)
 
-        # Triplet loss: max(d_pos - d_neg + margin, 0)
-        loss = (d_pos - d_neg + margin).relu()
+            # Triplet loss: max(d_pos - d_neg + margin, 0)
+            # Use maximum(x, Tensor(zeros)) for ReLU
+            diff = d_pos - d_neg + margin
+            loss = maximum(diff, Tensor(np.zeros_like(diff.data)))
 
-        return _reduce(loss, reduction)
+            return _reduce(loss, reduction)
+        """
+        raise NotImplementedError("TODO: Implement Triplet Module")
 
 
-class ContrastiveModule(Module):
+class ContrastiveLoss(Module):
     """
     Contrastive Module for learning similarity.
 
@@ -648,23 +599,26 @@ class ContrastiveModule(Module):
 
         Returns:
             Contrastive loss
+
+        Implementation Hints:
+            # Euclidean distance
+            d_sq = ((x1 - x2) ** 2).sum(axis=-1)
+            d = d_sq ** 0.5
+
+            # Similar pairs: minimize distance
+            loss_similar = (1 - y) * d_sq
+
+            # Dissimilar pairs: push apart up to margin
+            margin_diff = maximum(Tensor(margin) - d, Tensor(np.zeros_like(d.data)))
+            loss_dissimilar = y * (margin_diff ** 2)
+
+            loss = loss_similar + loss_dissimilar
+            return _reduce(loss, reduction)
         """
-        # Euclidean distance
-        d_sq = ((x1 - x2) ** 2).sum(axis=-1)
-        d = d_sq ** 0.5
-
-        # Similar pairs: minimize distance
-        loss_similar = (1 - y) * d_sq
-
-        # Dissimilar pairs: push apart up to margin
-        margin_diff = (Tensor(np.full(d.shape, margin)) - d).relu()
-        loss_dissimilar = y * (margin_diff ** 2)
-
-        loss = loss_similar + loss_dissimilar
-        return _reduce(loss, reduction)
+        raise NotImplementedError("TODO: Implement Contrastive Module")
 
 
-class InfoNCEModule(Module):
+class InfoNCELoss(Module):
     """
     InfoNCE Module (Noise Contrastive Estimation).
 
@@ -699,63 +653,40 @@ class InfoNCEModule(Module):
 
         Returns:
             InfoNCE loss
+
+        Implementation Hints:
+            # L2 normalize embeddings
+            query_norm = (query ** 2).sum(axis=-1, keepdims=True) ** 0.5
+            key_norm = (key ** 2).sum(axis=-1, keepdims=True) ** 0.5
+            query = query / query_norm
+            key = key / key_norm
+
+            # Positive similarity (cosine)
+            pos_sim = (query * key).sum(axis=-1) / temperature  # (N,)
+
+            if negatives is None:
+                # Use other batch items as negatives
+                all_sim = query @ key.T() / temperature  # (N, N)
+
+                # Cross-entropy with positives on diagonal
+                # log_softmax over all keys, pick diagonal
+                log_probs = _tensor_log_softmax(all_sim, axis=-1)
+                diag_indices = np.arange(query.shape[0])
+                loss = Tensor(-log_probs.data[diag_indices, diag_indices])
+            else:
+                # Concatenate pos and neg similarities, then softmax
+                ...
+
+            return _reduce(loss, reduction)
         """
-        # L2 normalize embeddings
-        query_norm = (query ** 2).sum(axis=-1, keepdims=True) ** 0.5
-        key_norm = (key ** 2).sum(axis=-1, keepdims=True) ** 0.5
-        query = query / query_norm
-        key = key / key_norm
-
-        # Positive similarity: dot product of corresponding pairs
-        pos_sim = (query * key).sum(axis=-1) / temperature  # (N,)
-
-        if negatives is None:
-            # Use other batch items as negatives (SimCLR style)
-            # All pairwise similarities
-            all_sim = query @ key.T() / temperature  # (N, N)
-
-            # Numerator: exp(positive similarity)
-            # Denominator: sum of exp(all similarities) for each query
-            # But we need to be careful: the positive is on the diagonal
-
-            # log_softmax over all keys for each query, then pick diagonal
-            log_probs = all_sim.log_softmax(axis=-1)  # (N, N)
-
-            # Extract diagonal (positive pairs)
-            # Loss is negative log prob of positive
-            diag_indices = np.arange(query.shape[0])
-            loss = Tensor(-log_probs.data[diag_indices, diag_indices])
-        else:
-            # Explicit negatives provided
-            neg_norm = (negatives ** 2).sum(axis=-1, keepdims=True) ** 0.5
-            negatives = negatives / neg_norm
-
-            # Negative similarities: (N, M)
-            neg_sim = query @ negatives.T() / temperature
-
-            # Concatenate positive and negative similarities
-            # pos_sim: (N,) -> (N, 1)
-            # neg_sim: (N, M)
-            # all_sim: (N, 1+M)
-            pos_sim_expanded = pos_sim.reshape((-1, 1))
-
-            # For proper autograd, we need to concatenate tensors
-            # Simplified: compute logsumexp manually
-            all_sim_data = np.concatenate([pos_sim_expanded.data, neg_sim.data], axis=-1)
-            all_sim = Tensor(all_sim_data)
-
-            # InfoNCE: -log(exp(pos) / sum(exp(all))) = -pos + logsumexp(all)
-            log_probs = all_sim.log_softmax(axis=-1)
-            loss = -log_probs[:, 0]  # First column is positive
-
-        return _reduce(loss, reduction)
+        raise NotImplementedError("TODO: Implement InfoNCE Module")
 
 
 # =============================================================================
 # Distribution Modulees
 # =============================================================================
 
-class KLDivModule(Module):
+class KLDivLoss(Module):
     """
     Kullback-Leibler Divergence Module.
 
@@ -819,7 +750,7 @@ class KLDivModule(Module):
             return _reduce(kl_per_sample, reduction)
 
 
-class DiceModule(Module):
+class DiceLoss(Module):
     """
     Dice Module for segmentation.
 
@@ -889,9 +820,3 @@ class DiceModule(Module):
             loss = 1 - dice
 
         return _reduce(loss, reduction)
-
-
-# =============================================================================
-# Functional Interfaces
-# =============================================================================
-

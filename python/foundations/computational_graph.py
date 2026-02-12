@@ -494,6 +494,11 @@ class Tensor:
         """Softmax activation."""
         return softmax(self, axis=axis)
 
+    def log_softmax(self, axis: int = -1) -> 'Tensor':
+        """Logarithm softmax activation."""
+        return logsoftmax(self, axis=axis)
+
+
     def __repr__(self) -> str:
         """String representation."""
         return f"Tensor({self.data}, requires_grad={self.requires_grad})"
@@ -530,7 +535,29 @@ def stack(*inputs: Union[Tensor, np.ndarray, float, int], axis: int = 0) -> Tens
     )
 
 
+def print_graph(tensor, indent=0, visited=None):
+    """Print the computation graph for a tensor."""
+    if visited is None:
+        visited = {}
 
+    prefix = "  " * indent
+    grad_fn_name = type(tensor._grad_fn).__name__ if tensor._grad_fn else "Leaf"
+    grad_str = "✓" if tensor.requires_grad else "✗"
+
+    node_id = id(tensor)
+    seen = node_id in visited
+    visited[node_id] = True
+
+    print(
+        f"{prefix}[{grad_str}] {grad_fn_name} → shape={tensor.shape} dtype={tensor.dtype}"
+        + (" (seen)" if seen else "")
+    )
+
+    if seen or not tensor._children:
+        return
+
+    for child in tensor._children:
+        print_graph(child, indent + 1, visited)
 
 # ==================== Context Manager ====================
 

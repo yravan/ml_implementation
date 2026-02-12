@@ -58,6 +58,7 @@ import numpy as np
 from typing import Union, Literal, Optional, Tuple
 
 from .module import Module
+from ..foundations import Tensor
 
 
 # =============================================================================
@@ -615,7 +616,7 @@ def init_kaiming_normal(
 # =============================================================================
 
 def normal_(
-    tensor: np.ndarray,
+    tensor: Tensor,
     mean: float = 0.0,
     std: float = 1.0,
 ) -> np.ndarray:
@@ -637,10 +638,7 @@ def normal_(
         >>> normal_(weight, mean=0.0, std=0.01)
         >>> # weight now contains values from N(0, 0.01²)
     """
-    raise NotImplementedError(
-        "TODO: Implement normal distribution initialization\n"
-        "Use np.random.normal(mean, std, tensor.shape)"
-    )
+    tensor.data = np.random.normal(mean, std, tensor.data.shape)
 
 
 def uniform_(

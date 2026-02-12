@@ -120,7 +120,7 @@ class Set(Function):
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, ...]:
         grad_x = grad_output.copy()
         grad_x[self.indices] = 0
-        return grad_x
+        return grad_x,
 
 class Add(Function):
     """
@@ -245,7 +245,7 @@ class Clamp(Function):
         """Compute exp(x)."""
         global _no_grad
         if not _no_grad:
-            self.mask = min_val < x < max_val
+            self.mask = (x >= min_val) & (x <= max_val)
         return np.clip(x, min_val, max_val)
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
@@ -359,7 +359,7 @@ class Abs(Function):
         global _no_grad
         if not _no_grad:
             self.mask = x < 0
-        return x.abs()
+        return np.abs(x)
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
         dx = grad_output.copy()
@@ -475,8 +475,8 @@ class Stack(Function):
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, ...]:
         num_inputs = grad_output.shape[self.axis]
-        indices = np.arange(num_inputs)
-        return tuple(np.take(grad_output, indices, axis=self.axis))
+        grads = np.split(grad_output, num_inputs, axis=self.axis)
+        return tuple(g.squeeze(axis=self.axis) for g in grads)
 
 
 class Split(Function):
@@ -550,6 +550,7 @@ class Var(Function):
             self.keepdims = keepdims
             self.mean = np.mean(x, axis=self.axis, keepdims=True)
             self.count = x.size // var.size
+            self.x = x
         return var
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:

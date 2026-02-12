@@ -56,6 +56,7 @@ References
 import numpy as np
 from typing import Optional, Tuple, Union
 
+from .init import normal_
 from .module import Module, Parameter
 from python.foundations import Tensor
 
@@ -85,7 +86,7 @@ class Linear(Module):
         in_features: int,
         out_features: int,
         bias: bool = True,
-        init: str = 'xavier'
+        init: str = 'normal'
     ):
         """
         Initialize Linear layer.
@@ -108,9 +109,17 @@ class Linear(Module):
             self.bias = Parameter(np.zeros((out_features,)))
         else:
             self.bias = None
-        raise NotImplementedError(
-            "TODO: Initialize Linear layer\n"
-        )
+        if init == 'xavier':
+            raise NotImplementedError
+        elif init == 'kaiming':
+            raise NotImplementedError
+        elif init == 'normal':
+            normal_(self.weight, std=0.01)
+            normal_(self.bias, std=0.01)
+        elif init == 'zeros':
+            pass
+        else:
+            raise ValueError(f"Unknown init method: {init}")
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -183,9 +192,16 @@ class Bilinear(Module):
             self.bias = Parameter(np.zeros((out_features,)))
         else:
             self.bias = None
-        raise NotImplementedError(
-            "TODO: Initialize Bilinear layer\n"
-        )
+        if init == 'xavier':
+            raise NotImplementedError
+        elif init == 'kaiming':
+            raise NotImplementedError
+        elif init == 'normal':
+            raise NotImplementedError
+        elif init == 'zeros':
+            pass
+        else:
+            raise ValueError(f"Unknown init method: {init}")
 
     def forward(self, x1: Tensor, x2: Tensor) -> Tensor:
         """
@@ -259,7 +275,16 @@ class LazyLinear(Module):
     def _initialize_parameters(self):
         """Initialize weight and bias after in_features is known."""
         self.weight = Parameter(np.zeros((self.out_features, self.in_features)))
-        raise NotImplementedError("TODO: Initialize parameters based on in_features")
+        if self.init == 'xavier':
+            raise NotImplementedError
+        elif self.init == 'kaiming':
+            raise NotImplementedError
+        elif self.init == 'normal':
+            raise NotImplementedError
+        elif self.init == 'zeros':
+            pass
+        else:
+            raise ValueError(f"Unknown init method: {self.init}")
 
     def extra_repr(self) -> str:
         in_str = self.in_features if self.in_features else "?"

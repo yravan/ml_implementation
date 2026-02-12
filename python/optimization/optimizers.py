@@ -68,6 +68,7 @@ Implementation Notes
 - Use float64 for optimizer states to avoid numerical issues
 - Weight decay should be handled explicitly, not through L2 loss
 """
+from abc import abstractmethod
 
 # Implementation Status: NOT STARTED
 # Complexity: Easy to Medium (varies by optimizer)
@@ -75,6 +76,11 @@ Implementation Notes
 
 import numpy as np
 from typing import List, Tuple, Optional, Dict, Any, Iterator, Union
+
+from httplib2.auth import params
+from sympy.physics.units import momentum
+
+from python.foundations import Tensor
 
 
 # =============================================================================
@@ -94,26 +100,40 @@ class Optimizer:
         ...         pass
     """
 
-    def __init__(self, params: List[np.ndarray], defaults: Dict[str, Any]):
+    def __init__(self, params: Union[List[Tensor], List[Dict[str, ...]]], **defaults) -> None:
         """
         Initialize base optimizer.
 
         Args:
-            params: List of parameter arrays to optimize
+            params: List of parameter arrays to optimize or list of param dictionaries
             defaults: Dictionary of default hyperparameters
         """
-        self.params = params
+        self.per_group_hyperparams = None
         self.defaults = defaults
         self.state: Dict[int, Dict[str, Any]] = {}  # Per-parameter state
         self._step_count = 0
+        if isinstance(params[0], Tensor):
+            for param in params:
+                assert isinstance(param, Tensor)
+            self.param_groups = [{"params": params}]
+        else:
+            self.param_groups = params
+            for group in self.param_groups:
+                assert "params" in group
+                assert isinstance(group["params"], list)
+                for param in group["params"]:
+                    assert isinstance(param, Tensor)
 
-    def step(self, gradients: List[np.ndarray]) -> None:
+    @abstractmethod
+    def step(self) -> None:
         """Perform a single optimization step."""
         raise NotImplementedError("Subclasses must implement step()")
 
     def zero_grad(self) -> None:
         """Reset optimizer state. Override in subclasses if needed."""
-        pass
+        for group in self.param_groups:
+            for param in group["params"]:
+                param.zero_grad()
 
     def get_state(self) -> Dict[str, Any]:
         """Get optimizer state for checkpointing."""
@@ -168,13 +188,12 @@ class SGD(Optimizer):
         ...     optimizer.step(grads)
     """
 
-    def __init__(self,
-                 params: List[np.ndarray],
+    def __init__(self, params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 0.01,
                  momentum: float = 0.0,
                  weight_decay: float = 0.0,
                  dampening: float = 0.0,
-                 nesterov: bool = False):
+                 nesterov: bool = False) -> None:
         """
         Initialize SGD optimizer.
 
@@ -186,78 +205,56 @@ class SGD(Optimizer):
             dampening: Dampening for momentum (usually 0)
             nesterov: Enable Nesterov accelerated gradient
         """
-        raise NotImplementedError(
-            "TODO: Initialize SGD optimizer\n"
-            "Hint:\n"
-            "  defaults = {'lr': lr, 'momentum': momentum, 'weight_decay': weight_decay,\n"
-            "              'dampening': dampening, 'nesterov': nesterov}\n"
-            "  super().__init__(params, defaults)\n"
-            "  \n"
-            "  # Initialize velocity buffer for each parameter\n"
-            "  for i, p in enumerate(params):\n"
-            "      self.state[i] = {'velocity': np.zeros_like(p)}"
-        )
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay, dampening=dampening, nesterov=nesterov)
+        super().__init__(params, **defaults)
+        self._initialize_velocities()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
+    def step(self) -> None:
         """
         Perform one SGD optimization step.
-
-        Args:
-            gradients: List of gradient arrays, same order as params
         """
-        raise NotImplementedError(
-            "TODO: Implement SGD step\n"
-            "Hint:\n"
-            "  lr = self.defaults['lr']\n"
-            "  momentum = self.defaults['momentum']\n"
-            "  weight_decay = self.defaults['weight_decay']\n"
-            "  dampening = self.defaults['dampening']\n"
-            "  nesterov = self.defaults['nesterov']\n"
-            "  \n"
-            "  for i, (param, grad) in enumerate(zip(self.params, gradients)):\n"
-            "      # Apply weight decay\n"
-            "      if weight_decay != 0:\n"
-            "          grad = grad + weight_decay * param\n"
-            "      \n"
-            "      # Apply momentum\n"
-            "      if momentum != 0:\n"
-            "          v = self.state[i]['velocity']\n"
-            "          v = momentum * v + (1 - dampening) * grad\n"
-            "          self.state[i]['velocity'] = v\n"
-            "          \n"
-            "          if nesterov:\n"
-            "              grad = grad + momentum * v\n"
-            "          else:\n"
-            "              grad = v\n"
-            "      \n"
-            "      # Update parameter\n"
-            "      param -= lr * grad"
-        )
+        for group in self.param_groups:
+            params = group['params']
+            for p in params:
+                # compute the gradient with weight decay
+                weight_decay = group.get('weight_decay', self.defaults['weight_decay'])
+                if weight_decay > 1e-8:
+                    grad = p.grad + weight_decay * p.data
+                else:
+                    grad = p.grad
 
-    def get_state(self) -> Dict[str, Any]:
-        """Get optimizer state for checkpointing."""
-        raise NotImplementedError(
-            "TODO: Return optimizer state\n"
-            "Hint:\n"
-            "  return {\n"
-            "      'state': {i: {'velocity': s['velocity'].copy()} for i, s in self.state.items()},\n"
-            "      'defaults': self.defaults.copy(),\n"
-            "      'step_count': self._step_count\n"
-            "  }"
-        )
+                # update the velocity in place
+                momentum = group.get('momentum', self.defaults['momentum'])
+                dampening = group.get('dampening', self.defaults['dampening'])
+                if momentum > 1e-8:
+                    velocity = self.velocities[p]
+                    velocity *= momentum
+                    if self._step_count > 0:
+                        velocity += grad * (1 - dampening)
+                    else:
+                        velocity += grad
+                else:
+                    velocity = grad
 
-    def set_state(self, state: Dict[str, Any]) -> None:
-        """Restore optimizer state from checkpoint."""
-        raise NotImplementedError(
-            "TODO: Restore optimizer state\n"
-            "Hint:\n"
-            "  self.state = {i: {'velocity': s['velocity'].copy()} for i, s in state['state'].items()}\n"
-            "  self.defaults = state['defaults'].copy()\n"
-            "  self._step_count = state['step_count']"
-        )
+                # perform gradient descent in place
+                nesterov = group.get('nesterov', self.defaults['nesterov'])
+                if nesterov:
+                    descent_vector = velocity * momentum + p.grad
+                else:
+                    descent_vector = velocity
+                lr = group.get('lr', self.defaults['lr'])
+                p.data -= descent_vector * lr
+        self._step_count += 1
 
+    def _initialize_velocities(self) -> None:
+        self.velocities = {}
+        for group in self.param_groups:
+            momentum = group.get('momentum', self.defaults['momentum'])
+            if momentum > 1e-8:
+                for p in group['params']:
+                    self.velocities[p] = np.zeros_like(p.data)
 
-class SGDW(Optimizer):
+class SGDW(SGD):
     """
     SGD with Decoupled Weight Decay.
 
@@ -272,28 +269,42 @@ class SGDW(Optimizer):
         https://arxiv.org/abs/1711.05101
     """
 
-    def __init__(self,
-                 params: List[np.ndarray],
-                 lr: float = 0.01,
-                 momentum: float = 0.0,
-                 weight_decay: float = 0.01,
-                 nesterov: bool = False):
-        raise NotImplementedError(
-            "TODO: Initialize SGDW\n"
-            "Hint: Same as SGD but weight_decay is applied differently in step()"
-        )
+    def step(self) -> None:
+        """
+        Perform one SGD optimization step.
+        """
+        for group in self.param_groups:
+            params = group["params"]
+            for p in params:
+                # compute the gradient with weight decay
+                weight_decay = group.get("weight_decay", self.defaults["weight_decay"])
+                lr = group.get("lr", self.defaults["lr"])
+                if weight_decay > 1e-8:
+                    p.data *= 1- lr * weight_decay
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement SGDW step\n"
-            "Hint:\n"
-            "  for i, (param, grad) in enumerate(zip(self.params, gradients)):\n"
-            "      # Apply decoupled weight decay FIRST\n"
-            "      param *= (1 - self.defaults['lr'] * self.defaults['weight_decay'])\n"
-            "      \n"
-            "      # Then apply regular SGD+momentum update (no weight decay in grad)\n"
-            "      # ... momentum update as in SGD ..."
-        )
+                grad = p.grad
+
+                # update the velocity in place
+                momentum = group.get("momentum", self.defaults["momentum"])
+                dampening = group.get("dampening", self.defaults["dampening"])
+                if momentum > 1e-8:
+                    velocity = self.velocities[p]
+                    velocity *= momentum
+                    if self._step_count > 0:
+                        velocity += grad * (1 - dampening)
+                    else:
+                        velocity += grad
+                else:
+                    velocity = grad
+
+                # perform gradient descent in place
+                nesterov = group.get("nesterov", self.defaults["nesterov"])
+                if nesterov:
+                    descent_vector = velocity * momentum + p.grad
+                else:
+                    descent_vector = velocity
+                p.data -= descent_vector * lr
+        self._step_count += 1
 
 
 # =============================================================================
@@ -329,7 +340,7 @@ class RMSprop(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 0.01,
                  alpha: float = 0.99,
                  eps: float = 1e-8,
@@ -348,53 +359,75 @@ class RMSprop(Optimizer):
             momentum: Momentum factor (optional, creates RMSprop with momentum)
             centered: If True, compute centered RMSprop (normalizes by variance)
         """
-        raise NotImplementedError(
-            "TODO: Initialize RMSprop\n"
-            "Hint:\n"
-            "  defaults = {'lr': lr, 'alpha': alpha, 'eps': eps,\n"
-            "              'weight_decay': weight_decay, 'momentum': momentum, 'centered': centered}\n"
-            "  super().__init__(params, defaults)\n"
-            "  \n"
-            "  for i, p in enumerate(params):\n"
-            "      self.state[i] = {\n"
-            "          'square_avg': np.zeros_like(p),  # v_t (EMA of g²)\n"
-            "          'momentum_buffer': np.zeros_like(p) if momentum > 0 else None,\n"
-            "          'grad_avg': np.zeros_like(p) if centered else None  # For centered RMSprop\n"
-            "      }"
-        )
+        defaults = dict(lr=lr, alpha=alpha, eps=eps, weight_decay=weight_decay, momentum=momentum, centered=centered)
+        super().__init__(params, **defaults)
+        self._initialize_velocities()
+        self._initialize_grad_avg()
+        self._initialize_buffer()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement RMSprop step\n"
-            "Hint:\n"
-            "  alpha = self.defaults['alpha']\n"
-            "  eps = self.defaults['eps']\n"
-            "  \n"
-            "  for i, (param, grad) in enumerate(zip(self.params, gradients)):\n"
-            "      state = self.state[i]\n"
-            "      \n"
-            "      # Update squared gradient EMA\n"
-            "      state['square_avg'] = alpha * state['square_avg'] + (1 - alpha) * (grad ** 2)\n"
-            "      \n"
-            "      # Compute denominator\n"
-            "      if self.defaults['centered']:\n"
-            "          state['grad_avg'] = alpha * state['grad_avg'] + (1 - alpha) * grad\n"
-            "          avg = state['square_avg'] - state['grad_avg'] ** 2  # Variance\n"
-            "      else:\n"
-            "          avg = state['square_avg']\n"
-            "      \n"
-            "      # Compute update\n"
-            "      update = grad / (np.sqrt(avg) + eps)\n"
-            "      \n"
-            "      # Optional momentum\n"
-            "      if self.defaults['momentum'] > 0:\n"
-            "          buf = state['momentum_buffer']\n"
-            "          buf = self.defaults['momentum'] * buf + update\n"
-            "          state['momentum_buffer'] = buf\n"
-            "          update = buf\n"
-            "      \n"
-            "      param -= self.defaults['lr'] * update"
-        )
+    def step(self) -> None:
+        for group in self.param_groups:
+            params = group["params"]
+            for p in params:
+                momentum = group.get("momentum", self.defaults["momentum"])
+                centered = group.get("centered", self.defaults["centered"])
+                alpha = group.get("alpha", self.defaults["alpha"])
+                lr = group.get("lr", self.defaults["lr"])
+                eps = group.get("eps", self.defaults["eps"])
+                weight_decay = group.get("weight_decay", self.defaults["weight_decay"])
+
+                # compute the gradient with weight decay
+                grad = p.grad
+                if weight_decay > 1e-8:
+                    grad = p.grad + weight_decay * p.data
+                else:
+                    grad = p.grad
+
+                # update the velocity in place
+                velocity = self.velocities[p]
+                velocity *= alpha
+                velocity += (1 - alpha) * grad ** 2
+
+                # recenter
+                if centered:
+                    grad_avg = self.grad_avg[p]
+                    grad_avg *= alpha; grad_avg += grad * (1 - alpha)
+                    velocity = velocity - grad_avg ** 2
+
+                # momentum
+                if momentum > 1e-8:
+                    descent_vector = self.buffer[p]
+                    descent_vector *= momentum; descent_vector += grad / (np.sqrt(velocity) + eps)
+                else:
+                    descent_vector = p.grad / (np.sqrt(velocity) + eps)
+
+                # perform gradient descent in place
+                p.data -= descent_vector * lr
+        self._step_count += 1
+
+    def _initialize_velocities(self) -> None:
+        self.velocities = {}
+        for group in self.param_groups:
+            alpha = group.get('alpha', self.defaults['alpha'])
+            if alpha > 1e-8:
+                for p in group['params']:
+                    self.velocities[p] = np.zeros_like(p.data)
+
+    def _initialize_grad_avg(self) -> None:
+        self.grad_avg = {}
+        for group in self.param_groups:
+            centered = group.get('centered', self.defaults['centered'])
+            if centered:
+                for p in group['params']:
+                    self.grad_avg[p] = np.zeros_like(p.data)
+
+    def _initialize_buffer(self) -> None:
+        self.buffer = {}
+        for group in self.param_groups:
+            momentum = group.get('momentum', self.defaults['momentum'])
+            if momentum:
+                for p in group['params']:
+                    self.buffer[p] = np.zeros_like(p.data)
 
 
 class Adagrad(Optimizer):
@@ -426,7 +459,7 @@ class Adagrad(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], Dict[str, ...]],
                  lr: float = 0.01,
                  lr_decay: float = 0.0,
                  eps: float = 1e-10,
@@ -443,34 +476,43 @@ class Adagrad(Optimizer):
             weight_decay: L2 penalty
             initial_accumulator_value: Starting value for squared gradient sum
         """
-        raise NotImplementedError(
-            "TODO: Initialize Adagrad\n"
-            "Hint:\n"
-            "  for i, p in enumerate(params):\n"
-            "      self.state[i] = {\n"
-            "          'sum': np.full_like(p, initial_accumulator_value)  # G_t\n"
-            "      }"
-        )
+        defaults = dict(lr=lr, lr_decay=lr_decay, eps=eps, weight_decay=weight_decay, initial_accumulator_value=initial_accumulator_value)
+        super().__init__(params, **defaults)
+        self.state_sum = {}
+        for group in self.param_groups:
+            initial_accumulator = group.get('initial_accumulator_value', self.defaults['initial_accumulator_value'])
+            for p in group['params']:
+                self.state_sum[p] = np.zeros(p.shape).astype(np.float32)
+                self.state_sum[p] += float(initial_accumulator)
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement Adagrad step\n"
-            "Hint:\n"
-            "  self._step_count += 1\n"
-            "  lr = self.defaults['lr'] / (1 + (self._step_count - 1) * self.defaults['lr_decay'])\n"
-            "  \n"
-            "  for i, (param, grad) in enumerate(zip(self.params, gradients)):\n"
-            "      # Weight decay\n"
-            "      if self.defaults['weight_decay'] != 0:\n"
-            "          grad = grad + self.defaults['weight_decay'] * param\n"
-            "      \n"
-            "      # Accumulate squared gradient\n"
-            "      self.state[i]['sum'] += grad ** 2\n"
-            "      \n"
-            "      # Update\n"
-            "      param -= lr * grad / (np.sqrt(self.state[i]['sum']) + self.defaults['eps'])"
-        )
 
+    def step(self) -> None:
+        for group in self.param_groups:
+            params = group["params"]
+            for p in params:
+                lr = group.get("lr", self.defaults["lr"])
+                lr_decay = group.get("lr_decay", self.defaults["lr_decay"])
+                eps = group.get("eps", self.defaults["eps"])
+                weight_decay = group.get("weight_decay", self.defaults["weight_decay"])
+
+                # compute the gradient with weight decay
+                grad = p.grad
+                if weight_decay > 1e-8:
+                    grad = p.grad + weight_decay * p.data
+                else:
+                    grad = p.grad
+
+                # update learning rate
+                lr = lr * 1 / (1 + self._step_count * lr_decay)
+
+                # update grad square in place
+                G = self.state_sum[p]
+                G += grad ** 2
+
+                # perform gradient descent in place
+                descent_vector = grad / (np.sqrt(G) + eps)
+                p.data -= descent_vector * lr
+        self._step_count += 1
 
 class Adadelta(Optimizer):
     """
@@ -496,8 +538,8 @@ class Adadelta(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
-                 lr: float = 1.0,  # Often set to 1.0 (Adadelta derives its own LR)
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 lr: float = 1.0,
                  rho: float = 0.9,
                  eps: float = 1e-6,
                  weight_decay: float = 0.0):
@@ -505,45 +547,28 @@ class Adadelta(Optimizer):
         Initialize Adadelta optimizer.
 
         Args:
-            params: List of parameter arrays
+            params: List of Tensor parameters or param groups
             lr: Learning rate multiplier (typically 1.0)
             rho: Decay rate for running averages (similar to momentum)
             eps: Small constant for numerical stability
             weight_decay: L2 penalty
         """
-        raise NotImplementedError(
-            "TODO: Initialize Adadelta\n"
-            "Hint:\n"
-            "  for i, p in enumerate(params):\n"
-            "      self.state[i] = {\n"
-            "          'square_avg': np.zeros_like(p),       # E[g²]\n"
-            "          'acc_delta': np.zeros_like(p),        # E[Δθ²]\n"
-            "      }"
-        )
+        defaults = dict(lr=lr, rho=rho, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, **defaults)
+        self._initialize_state()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement Adadelta step\n"
-            "Hint:\n"
-            "  rho = self.defaults['rho']\n"
-            "  eps = self.defaults['eps']\n"
-            "  \n"
-            "  for i, (param, grad) in enumerate(zip(self.params, gradients)):\n"
-            "      state = self.state[i]\n"
-            "      \n"
-            "      # Update running average of squared gradients\n"
-            "      state['square_avg'] = rho * state['square_avg'] + (1 - rho) * grad ** 2\n"
-            "      \n"
-            "      # Compute update using RMS ratio\n"
-            "      std = np.sqrt(state['acc_delta'] + eps)\n"
-            "      delta = std / np.sqrt(state['square_avg'] + eps) * grad\n"
-            "      \n"
-            "      # Update running average of squared updates\n"
-            "      state['acc_delta'] = rho * state['acc_delta'] + (1 - rho) * delta ** 2\n"
-            "      \n"
-            "      # Apply update\n"
-            "      param -= self.defaults['lr'] * delta"
-        )
+    def _initialize_state(self) -> None:
+        """Initialize square_avg and acc_delta buffers for each parameter."""
+        self.square_avg = {}
+        self.acc_delta = {}
+        for group in self.param_groups:
+            for p in group['params']:
+                self.square_avg[p] = np.zeros_like(p.data)
+                self.acc_delta[p] = np.zeros_like(p.data)
+
+    def step(self) -> None:
+        """Perform one Adadelta optimization step."""
+        raise NotImplementedError("TODO: Implement Adadelta step")
 
 
 # =============================================================================
@@ -580,7 +605,7 @@ class Adam(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 0.001,
                  betas: Tuple[float, float] = (0.9, 0.999),
                  eps: float = 1e-8,
@@ -590,68 +615,33 @@ class Adam(Optimizer):
         Initialize Adam optimizer.
 
         Args:
-            params: List of parameter arrays
+            params: List of Tensor parameters or param groups
             lr: Learning rate
             betas: (β₁, β₂) coefficients for moment estimates
             eps: Term for numerical stability
             weight_decay: L2 penalty (NOT recommended, use AdamW instead)
             amsgrad: Use AMSGrad variant (maintains max of past v_t)
         """
-        raise NotImplementedError(
-            "TODO: Initialize Adam\n"
-            "Hint:\n"
-            "  defaults = {'lr': lr, 'betas': betas, 'eps': eps,\n"
-            "              'weight_decay': weight_decay, 'amsgrad': amsgrad}\n"
-            "  super().__init__(params, defaults)\n"
-            "  \n"
-            "  for i, p in enumerate(params):\n"
-            "      self.state[i] = {\n"
-            "          'exp_avg': np.zeros_like(p),       # m_t (first moment)\n"
-            "          'exp_avg_sq': np.zeros_like(p),    # v_t (second moment)\n"
-            "          'max_exp_avg_sq': np.zeros_like(p) if amsgrad else None  # For AMSGrad\n"
-            "      }"
-        )
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
+        super().__init__(params, **defaults)
+        self._initialize_state()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement Adam step\n"
-            "Hint:\n"
-            "  self._step_count += 1\n"
-            "  beta1, beta2 = self.defaults['betas']\n"
-            "  \n"
-            "  for i, (param, grad) in enumerate(zip(self.params, gradients)):\n"
-            "      # Weight decay (L2, but prefer AdamW)\n"
-            "      if self.defaults['weight_decay'] != 0:\n"
-            "          grad = grad + self.defaults['weight_decay'] * param\n"
-            "      \n"
-            "      state = self.state[i]\n"
-            "      \n"
-            "      # Update biased first moment estimate\n"
-            "      state['exp_avg'] = beta1 * state['exp_avg'] + (1 - beta1) * grad\n"
-            "      \n"
-            "      # Update biased second moment estimate\n"
-            "      state['exp_avg_sq'] = beta2 * state['exp_avg_sq'] + (1 - beta2) * grad ** 2\n"
-            "      \n"
-            "      # Bias correction\n"
-            "      bias_correction1 = 1 - beta1 ** self._step_count\n"
-            "      bias_correction2 = 1 - beta2 ** self._step_count\n"
-            "      m_hat = state['exp_avg'] / bias_correction1\n"
-            "      v_hat = state['exp_avg_sq'] / bias_correction2\n"
-            "      \n"
-            "      # AMSGrad: use max of past v_hat\n"
-            "      if self.defaults['amsgrad']:\n"
-            "          state['max_exp_avg_sq'] = np.maximum(state['max_exp_avg_sq'], v_hat)\n"
-            "          v_hat = state['max_exp_avg_sq']\n"
-            "      \n"
-            "      # Update\n"
-            "      param -= self.defaults['lr'] * m_hat / (np.sqrt(v_hat) + self.defaults['eps'])"
-        )
+    def _initialize_state(self) -> None:
+        """Initialize first and second moment buffers for each parameter."""
+        self.exp_avg = {}
+        self.exp_avg_sq = {}
+        self.max_exp_avg_sq = {}
+        for group in self.param_groups:
+            amsgrad = group.get('amsgrad', self.defaults['amsgrad'])
+            for p in group['params']:
+                self.exp_avg[p] = np.zeros_like(p.data)
+                self.exp_avg_sq[p] = np.zeros_like(p.data)
+                if amsgrad:
+                    self.max_exp_avg_sq[p] = np.zeros_like(p.data)
 
-    def get_state(self) -> Dict[str, Any]:
-        raise NotImplementedError("TODO: Implement get_state")
-
-    def set_state(self, state: Dict[str, Any]) -> None:
-        raise NotImplementedError("TODO: Implement set_state")
+    def step(self) -> None:
+        """Perform one Adam optimization step."""
+        raise NotImplementedError("TODO: Implement Adam step")
 
 
 class AdamW(Optimizer):
@@ -680,35 +670,37 @@ class AdamW(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 0.001,
                  betas: Tuple[float, float] = (0.9, 0.999),
                  eps: float = 1e-8,
-                 weight_decay: float = 0.01):  # Note: default 0.01, not 0
+                 weight_decay: float = 0.01):
         """
         Initialize AdamW optimizer.
 
         Args:
-            params: List of parameter arrays
+            params: List of Tensor parameters or param groups
             lr: Learning rate
             betas: (β₁, β₂) for moment estimates
             eps: Numerical stability term
             weight_decay: Decoupled weight decay coefficient
         """
-        raise NotImplementedError(
-            "TODO: Initialize AdamW\n"
-            "Hint: Same structure as Adam, but weight_decay handled differently in step()"
-        )
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, **defaults)
+        self._initialize_state()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement AdamW step\n"
-            "Hint:\n"
-            "  # Same as Adam but:\n"
-            "  # 1. Do NOT add weight_decay to gradient\n"
-            "  # 2. After computing Adam update, apply weight decay separately:\n"
-            "  # param -= lr * weight_decay * param"
-        )
+    def _initialize_state(self) -> None:
+        """Initialize first and second moment buffers for each parameter."""
+        self.exp_avg = {}
+        self.exp_avg_sq = {}
+        for group in self.param_groups:
+            for p in group['params']:
+                self.exp_avg[p] = np.zeros_like(p.data)
+                self.exp_avg_sq[p] = np.zeros_like(p.data)
+
+    def step(self) -> None:
+        """Perform one AdamW optimization step."""
+        raise NotImplementedError("TODO: Implement AdamW step")
 
 
 class NAdam(Optimizer):
@@ -734,19 +726,39 @@ class NAdam(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 0.002,
                  betas: Tuple[float, float] = (0.9, 0.999),
                  eps: float = 1e-8,
                  weight_decay: float = 0.0,
                  momentum_decay: float = 0.004):
-        raise NotImplementedError("TODO: Initialize NAdam")
+        """
+        Initialize NAdam optimizer.
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement NAdam step\n"
-            "Hint: Like Adam but with Nesterov-style lookahead in momentum"
-        )
+        Args:
+            params: List of Tensor parameters or param groups
+            lr: Learning rate
+            betas: (β₁, β₂) for moment estimates
+            eps: Numerical stability term
+            weight_decay: L2 penalty
+            momentum_decay: Decay for momentum schedule
+        """
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, momentum_decay=momentum_decay)
+        super().__init__(params, **defaults)
+        self._initialize_state()
+
+    def _initialize_state(self) -> None:
+        """Initialize first and second moment buffers for each parameter."""
+        self.exp_avg = {}
+        self.exp_avg_sq = {}
+        for group in self.param_groups:
+            for p in group['params']:
+                self.exp_avg[p] = np.zeros_like(p.data)
+                self.exp_avg_sq[p] = np.zeros_like(p.data)
+
+    def step(self) -> None:
+        """Perform one NAdam optimization step."""
+        raise NotImplementedError("TODO: Implement NAdam step")
 
 
 class RAdam(Optimizer):
@@ -779,29 +791,37 @@ class RAdam(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 0.001,
                  betas: Tuple[float, float] = (0.9, 0.999),
                  eps: float = 1e-8,
                  weight_decay: float = 0.0):
-        raise NotImplementedError("TODO: Initialize RAdam")
+        """
+        Initialize RAdam optimizer.
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement RAdam step\n"
-            "Hint:\n"
-            "  # Compute SMA length\n"
-            "  rho_inf = 2.0 / (1 - beta2) - 1\n"
-            "  rho_t = rho_inf - 2 * t * (beta2 ** t) / (1 - beta2 ** t)\n"
-            "  \n"
-            "  if rho_t > 5:\n"
-            "      # Compute rectification term and use Adam update\n"
-            "      rect = np.sqrt((rho_t - 4) * (rho_t - 2) * rho_inf /\n"
-            "                     ((rho_inf - 4) * (rho_inf - 2) * rho_t))\n"
-            "      # Adam update with rectification\n"
-            "  else:\n"
-            "      # SGD with momentum (no adaptive LR)"
-        )
+        Args:
+            params: List of Tensor parameters or param groups
+            lr: Learning rate
+            betas: (β₁, β₂) for moment estimates
+            eps: Numerical stability term
+            weight_decay: L2 penalty
+        """
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, **defaults)
+        self._initialize_state()
+
+    def _initialize_state(self) -> None:
+        """Initialize first and second moment buffers for each parameter."""
+        self.exp_avg = {}
+        self.exp_avg_sq = {}
+        for group in self.param_groups:
+            for p in group['params']:
+                self.exp_avg[p] = np.zeros_like(p.data)
+                self.exp_avg_sq[p] = np.zeros_like(p.data)
+
+    def step(self) -> None:
+        """Perform one RAdam optimization step."""
+        raise NotImplementedError("TODO: Implement RAdam step")
 
 
 class Adafactor(Optimizer):
@@ -827,12 +847,12 @@ class Adafactor(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
-                 lr: Optional[float] = None,  # None = use relative step size
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
+                 lr: Optional[float] = None,
                  eps: Tuple[float, float] = (1e-30, 1e-3),
                  clip_threshold: float = 1.0,
                  decay_rate: float = -0.8,
-                 beta1: Optional[float] = None,  # None = no first moment
+                 beta1: Optional[float] = None,
                  weight_decay: float = 0.0,
                  scale_parameter: bool = True,
                  relative_step: bool = True,
@@ -841,7 +861,7 @@ class Adafactor(Optimizer):
         Initialize Adafactor.
 
         Args:
-            params: Parameter arrays
+            params: List of Tensor parameters or param groups
             lr: Learning rate (None for relative step sizing)
             eps: (eps1, eps2) regularization constants
             clip_threshold: Threshold for gradient clipping
@@ -852,26 +872,32 @@ class Adafactor(Optimizer):
             relative_step: Use relative step size
             warmup_init: Use warmup initialization
         """
-        raise NotImplementedError(
-            "TODO: Initialize Adafactor\n"
-            "Hint:\n"
-            "  # For each 2D+ parameter, store row and column factors\n"
-            "  # For 1D parameters, store full second moment\n"
-            "  for i, p in enumerate(params):\n"
-            "      if p.ndim >= 2:\n"
-            "          self.state[i] = {\n"
-            "              'exp_avg_sq_row': np.zeros(p.shape[:-1]),\n"
-            "              'exp_avg_sq_col': np.zeros(p.shape[:-2] + (p.shape[-1],)),\n"
-            "          }\n"
-            "      else:\n"
-            "          self.state[i] = {'exp_avg_sq': np.zeros_like(p)}"
-        )
+        defaults = dict(lr=lr, eps=eps, clip_threshold=clip_threshold, decay_rate=decay_rate,
+                        beta1=beta1, weight_decay=weight_decay, scale_parameter=scale_parameter,
+                        relative_step=relative_step, warmup_init=warmup_init)
+        super().__init__(params, **defaults)
+        self._initialize_state()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement Adafactor step\n"
-            "Hint: See paper for factorized second moment computation"
-        )
+    def _initialize_state(self) -> None:
+        """Initialize factorized second moment buffers for each parameter."""
+        self.exp_avg = {}
+        self.exp_avg_sq_row = {}
+        self.exp_avg_sq_col = {}
+        self.exp_avg_sq = {}
+        for group in self.param_groups:
+            beta1 = group.get('beta1', self.defaults['beta1'])
+            for p in group['params']:
+                if beta1 is not None:
+                    self.exp_avg[p] = np.zeros_like(p.data)
+                if p.data.ndim >= 2:
+                    self.exp_avg_sq_row[p] = np.zeros(p.data.shape[:-1])
+                    self.exp_avg_sq_col[p] = np.zeros(p.data.shape[-1])
+                else:
+                    self.exp_avg_sq[p] = np.zeros_like(p.data)
+
+    def step(self) -> None:
+        """Perform one Adafactor optimization step."""
+        raise NotImplementedError("TODO: Implement Adafactor step")
 
 
 # =============================================================================
@@ -913,49 +939,39 @@ class LAMB(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 0.001,
                  betas: Tuple[float, float] = (0.9, 0.999),
                  eps: float = 1e-6,
                  weight_decay: float = 0.0,
-                 adam: bool = False):  # If True, becomes ADAM (no layer-wise scaling)
+                 adam: bool = False):
         """
         Initialize LAMB optimizer.
 
         Args:
-            params: Parameter arrays
+            params: List of Tensor parameters or param groups
             lr: Learning rate
             betas: (β₁, β₂) for moment estimates
             eps: Numerical stability term
             weight_decay: Decoupled weight decay
             adam: If True, disable layer-wise scaling (becomes AdamW)
         """
-        raise NotImplementedError(
-            "TODO: Initialize LAMB\n"
-            "Hint: Similar to AdamW, but add trust ratio computation in step()"
-        )
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, adam=adam)
+        super().__init__(params, **defaults)
+        self._initialize_state()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement LAMB step\n"
-            "Hint:\n"
-            "  for i, (param, grad) in enumerate(zip(self.params, gradients)):\n"
-            "      # Compute Adam update (with decoupled weight decay)\n"
-            "      # ... Adam moment updates ...\n"
-            "      update = m_hat / (np.sqrt(v_hat) + eps) + weight_decay * param\n"
-            "      \n"
-            "      # Compute trust ratio (layer-wise scaling)\n"
-            "      param_norm = np.linalg.norm(param)\n"
-            "      update_norm = np.linalg.norm(update)\n"
-            "      \n"
-            "      if param_norm > 0 and update_norm > 0:\n"
-            "          trust_ratio = param_norm / update_norm\n"
-            "      else:\n"
-            "          trust_ratio = 1.0\n"
-            "      \n"
-            "      # Apply scaled update\n"
-            "      param -= lr * trust_ratio * update"
-        )
+    def _initialize_state(self) -> None:
+        """Initialize first and second moment buffers for each parameter."""
+        self.exp_avg = {}
+        self.exp_avg_sq = {}
+        for group in self.param_groups:
+            for p in group['params']:
+                self.exp_avg[p] = np.zeros_like(p.data)
+                self.exp_avg_sq[p] = np.zeros_like(p.data)
+
+    def step(self) -> None:
+        """Perform one LAMB optimization step."""
+        raise NotImplementedError("TODO: Implement LAMB step")
 
 
 class LARS(Optimizer):
@@ -983,7 +999,7 @@ class LARS(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 0.1,
                  momentum: float = 0.9,
                  weight_decay: float = 0.0,
@@ -993,29 +1009,28 @@ class LARS(Optimizer):
         Initialize LARS optimizer.
 
         Args:
-            params: Parameter arrays
+            params: List of Tensor parameters or param groups
             lr: Global learning rate
             momentum: Momentum factor
             weight_decay: L2 penalty
             trust_coefficient: Trust coefficient for layer-wise scaling
             eps: Numerical stability term
         """
-        raise NotImplementedError("TODO: Initialize LARS")
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay,
+                        trust_coefficient=trust_coefficient, eps=eps)
+        super().__init__(params, **defaults)
+        self._initialize_velocities()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement LARS step\n"
-            "Hint:\n"
-            "  for i, (param, grad) in enumerate(zip(self.params, gradients)):\n"
-            "      # Compute local learning rate\n"
-            "      param_norm = np.linalg.norm(param)\n"
-            "      grad_norm = np.linalg.norm(grad)\n"
-            "      \n"
-            "      local_lr = trust_coefficient * param_norm / (grad_norm + weight_decay * param_norm + eps)\n"
-            "      \n"
-            "      # Momentum update with local LR\n"
-            "      # ..."
-        )
+    def _initialize_velocities(self) -> None:
+        """Initialize momentum buffers for each parameter."""
+        self.velocities = {}
+        for group in self.param_groups:
+            for p in group['params']:
+                self.velocities[p] = np.zeros_like(p.data)
+
+    def step(self) -> None:
+        """Perform one LARS optimization step."""
+        raise NotImplementedError("TODO: Implement LARS step")
 
 
 # =============================================================================
@@ -1051,7 +1066,7 @@ class Lion(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 1e-4,
                  betas: Tuple[float, float] = (0.9, 0.99),
                  weight_decay: float = 0.0):
@@ -1059,36 +1074,25 @@ class Lion(Optimizer):
         Initialize Lion optimizer.
 
         Args:
-            params: Parameter arrays
+            params: List of Tensor parameters or param groups
             lr: Learning rate (use ~10x smaller than AdamW)
             betas: (β₁, β₂) for momentum update and sign computation
             weight_decay: Decoupled weight decay (use larger than AdamW, e.g., 0.1)
         """
-        raise NotImplementedError(
-            "TODO: Initialize Lion\n"
-            "Hint:\n"
-            "  for i, p in enumerate(params):\n"
-            "      self.state[i] = {'exp_avg': np.zeros_like(p)}  # Only momentum, no v!"
-        )
+        defaults = dict(lr=lr, betas=betas, weight_decay=weight_decay)
+        super().__init__(params, **defaults)
+        self._initialize_state()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement Lion step\n"
-            "Hint:\n"
-            "  beta1, beta2 = self.defaults['betas']\n"
-            "  \n"
-            "  for i, (param, grad) in enumerate(zip(self.params, gradients)):\n"
-            "      m = self.state[i]['exp_avg']\n"
-            "      \n"
-            "      # Compute sign of interpolated momentum\n"
-            "      update = np.sign(beta2 * m + (1 - beta2) * grad)\n"
-            "      \n"
-            "      # Apply update with weight decay\n"
-            "      param -= self.defaults['lr'] * (update + self.defaults['weight_decay'] * param)\n"
-            "      \n"
-            "      # Update momentum (for next iteration)\n"
-            "      self.state[i]['exp_avg'] = beta1 * m + (1 - beta1) * grad"
-        )
+    def _initialize_state(self) -> None:
+        """Initialize momentum buffer for each parameter (no second moment needed)."""
+        self.exp_avg = {}
+        for group in self.param_groups:
+            for p in group['params']:
+                self.exp_avg[p] = np.zeros_like(p.data)
+
+    def step(self) -> None:
+        """Perform one Lion optimization step."""
+        raise NotImplementedError("TODO: Implement Lion step")
 
 
 class Muon(Optimizer):
@@ -1122,48 +1126,38 @@ class Muon(Optimizer):
     """
 
     def __init__(self,
-                 params: List[np.ndarray],
+                 params: Union[List[Tensor], List[Dict[str, ...]]],
                  lr: float = 0.02,
                  momentum: float = 0.95,
                  nesterov: bool = True,
-                 backend: str = 'newtonschulz',  # or 'svd'
+                 backend: str = 'newtonschulz',
                  backend_steps: int = 5):
         """
         Initialize Muon optimizer.
 
         Args:
-            params: Parameter arrays
+            params: List of Tensor parameters or param groups
             lr: Learning rate
             momentum: Momentum factor
             nesterov: Use Nesterov momentum
             backend: Method for orthogonalization ('newtonschulz' or 'svd')
             backend_steps: Number of Newton-Schulz iterations
         """
-        raise NotImplementedError(
-            "TODO: Initialize Muon\n"
-            "Hint:\n"
-            "  for i, p in enumerate(params):\n"
-            "      self.state[i] = {'momentum_buffer': np.zeros_like(p)}"
-        )
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov,
+                        backend=backend, backend_steps=backend_steps)
+        super().__init__(params, **defaults)
+        self._initialize_state()
 
-    def step(self, gradients: List[np.ndarray]) -> None:
-        raise NotImplementedError(
-            "TODO: Implement Muon step\n"
-            "Hint:\n"
-            "  # The key is orthogonalization\n"
-            "  # For matrices (weight matrices), use Newton-Schulz iteration:\n"
-            "  def newton_schulz(G, steps=5):\n"
-            "      '''Compute G @ (G.T @ G)^{-1/2} via Newton-Schulz'''\n"
-            "      a, b, c = (3.4445, -4.7750, 2.0315)\n"
-            "      X = G / np.linalg.norm(G)\n"
-            "      for _ in range(steps):\n"
-            "          A = X @ X.T\n"
-            "          B = b * A + c * A @ A\n"
-            "          X = a * X + B @ X\n"
-            "      return X\n"
-            "  \n"
-            "  # Apply orthogonalized update"
-        )
+    def _initialize_state(self) -> None:
+        """Initialize momentum buffer for each parameter."""
+        self.momentum_buffer = {}
+        for group in self.param_groups:
+            for p in group['params']:
+                self.momentum_buffer[p] = np.zeros_like(p.data)
+
+    def step(self) -> None:
+        """Perform one Muon optimization step."""
+        raise NotImplementedError("TODO: Implement Muon step")
 
 
 # =============================================================================
