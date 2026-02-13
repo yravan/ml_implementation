@@ -14,6 +14,8 @@ The Tensor class uses these Functions to build the computational graph.
 """
 
 import numpy as np
+from numpy import dtype
+
 np.seterr(all='raise', under='ignore')  # FloatingPointError on any overflow/invalid/divide
 from typing import List, Optional, Tuple, Union
 from abc import ABC, abstractmethod
@@ -325,9 +327,7 @@ class Clamp(Function):
         return np.clip(x, min_val, max_val)
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
-        """Gradient of exp is exp."""
-        dx = np.zeros_like(grad_output,dtype=grad_output.dtype)
-        dx[self.mask] = grad_output[self.mask]
+        dx = grad_output * self.mask
         return dx,
 
 

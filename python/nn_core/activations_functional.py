@@ -57,11 +57,15 @@ class ReLU(Function):
     def forward(self, x:np.ndarray) -> np.ndarray:
         global _no_grad;
         if not _no_grad:
-            self.mask = x <= 0
+            self.mask = (x > 0).astype(x.dtype)
+            self.mask_overwritten = False
         return np.maximum(x, 0)
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, ...]:
-        dx = grad_output * (~self.mask)
-        return dx,
+        if self.mask_overwritten:
+            np.add(grad_output, self.mask, out=self.mask)
+        else:
+            np.multiply(self.mask, grad_output, out=self.mask)
+        return self.mask,
 
 class LeakyReLU(Function):
     def forward(self, x:np.ndarray, alpha: float = 0.01) -> np.ndarray:

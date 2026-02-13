@@ -70,7 +70,7 @@ def _load_c_extension():
 
         if omp_prefix:
             cmd = [
-                "clang", "-O3", "-mcpu=native", "-ffast-math",
+                "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
                 "-Xpreprocessor", "-fopenmp",
                 f"-I{omp_prefix}/include",
                 f"-L{omp_prefix}/lib", "-lomp",
@@ -84,7 +84,7 @@ def _load_c_extension():
                 RuntimeWarning, stacklevel=3,
             )
             cmd = [
-                "clang", "-O3", "-mcpu=native", "-ffast-math",
+                "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
                 "-shared", "-fPIC",
                 "-o", str(so), str(src),
             ]
@@ -566,18 +566,30 @@ class Conv2d(Function):
         if groups == 1:
             Wmat = self.weight.reshape(C_out, -1)  # (C_out, C*kh*kw)
             cols = self.cols                        # (B, C*kh*kw, N)
+            CKK = cols.shape[1]
             go = grad_output.reshape(B, C_out, N)   # (B, C_out, N)
 
-            # grad_weight: Σ_b go[b] @ cols[b].T  →  (C_out, C*kh*kw)
-            grad_weight = np.matmul(go, cols.transpose(0, 2, 1)).sum(axis=0)
-            grad_weight = grad_weight.reshape(self.weight.shape)
-
-            # grad_cols: W.T @ go  →  (B, C*kh*kw, N)
-            grad_cols = np.matmul(Wmat.T, go)
+            # Adaptive strategy: when spatial dims are small (deep layers),
+            # batched matmul creates B tiny GEMMs that BLAS can't parallelize.
+            # Reshape into one big GEMM is up to 10× faster there.
+            # When spatial dims are large (early layers), batched matmul wins
+            # because we avoid the transpose+copy overhead.
+            if N <=64 and N < CKK:
+                # Deep layers: pre-transpose, single GEMM for both ops
+                go_flat = np.ascontiguousarray(go.transpose(1, 0, 2)).reshape(C_out, B * N)
+                cols_flat = np.ascontiguousarray(cols.transpose(1, 0, 2)).reshape(CKK, B * N)
+                grad_weight = (go_flat @ cols_flat.T).reshape(self.weight.shape)
+                grad_cols = np.ascontiguousarray(
+                    (Wmat.T @ go_flat).reshape(CKK, B, N).transpose(1, 0, 2)
+                )
+            else:
+                # Early layers: batched matmul, no copies
+                grad_weight = np.matmul(go, cols.transpose(0, 2, 1)).sum(axis=0)
+                grad_weight = grad_weight.reshape(self.weight.shape)
+                grad_cols = np.matmul(Wmat.T, go)
 
             # col2im: grad_cols → grad_x_padded
             if kh == 1 and kw == 1:
-                # 1×1 fast path: col2im is reshape (stride=1) or scatter (stride>1)
                 sh, sw = self.stride
                 if sh == 1 and sw == 1:
                     grad_x = grad_cols.reshape(B, C, Hp, Wp)
@@ -620,11 +632,19 @@ class Conv2d(Function):
             wg = self.weight[g * Cog : (g + 1) * Cog]
             Wmat = wg.reshape(Cog, -1)
             cols = self.cols_list[g]
+            CKKg = cols.shape[1]
 
-            gW = np.matmul(go, cols.transpose(0, 2, 1)).sum(axis=0)
+            if N <=64 and N < CKKg:
+                go_flat = np.ascontiguousarray(go.transpose(1, 0, 2)).reshape(Cog, B * N)
+                cols_flat = np.ascontiguousarray(cols.transpose(1, 0, 2)).reshape(CKKg, B * N)
+                gW = go_flat @ cols_flat.T
+                grad_cols = np.ascontiguousarray(
+                    (Wmat.T @ go_flat).reshape(CKKg, B, N).transpose(1, 0, 2)
+                )
+            else:
+                gW = np.matmul(go, cols.transpose(0, 2, 1)).sum(axis=0)
+                grad_cols = np.matmul(Wmat.T, go)
             grad_weight[g * Cog : (g + 1) * Cog] = gW.reshape(wg.shape)
-
-            grad_cols = np.matmul(Wmat.T, go)
 
             if kh == 1 and kw == 1:
                 sh, sw = self.stride

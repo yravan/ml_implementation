@@ -206,3 +206,174 @@ void col2im_f64(
         }
     }
 }
+
+
+/* ================================================================
+ * Forward
+ *
+ * Parallel over B × C_out. Each thread computes one output channel
+ * for one batch element — perfect load balance, zero conflicts.
+ * ================================================================ */
+void conv2d_forward_f32(
+    const float *__restrict__ x,       /* (B, C, H, W) — already padded */
+    const float *__restrict__ weight,  /* (C_out, Cg, kh, kw) */
+    const float *__restrict__ bias,    /* (C_out,) or NULL */
+    float *__restrict__ out,           /* (B, C_out, H_out, W_out) */
+    int B, int C, int H, int W,
+    int C_out, int kh, int kw,
+    int sh, int sw, int dh, int dw,
+    int H_out, int W_out,
+    int groups
+) {
+    const int Cg  = C / groups;
+    const int Cog = C_out / groups;
+    const int HW  = H * W;
+    const int ON  = H_out * W_out;
+    const int KK  = kh * kw;
+
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int b = 0; b < B; b++) {
+        for (int co = 0; co < C_out; co++) {
+            const int g = co / Cog;
+            const int ci_base = g * Cg;
+            const float *w_co = weight + co * Cg * KK;
+            float *out_co = out + b * C_out * ON + co * ON;
+            const float bv = bias ? bias[co] : 0.0f;
+
+            for (int oh = 0; oh < H_out; oh++) {
+                for (int ow = 0; ow < W_out; ow++) {
+                    float sum = bv;
+                    for (int ci = 0; ci < Cg; ci++) {
+                        const float *xc = x + b * C * HW + (ci_base + ci) * HW;
+                        const float *wc = w_co + ci * KK;
+                        for (int ki = 0; ki < kh; ki++) {
+                            const int ih = oh * sh + ki * dh;
+                            const float *xrow = xc + ih * W;
+                            const float *wrow = wc + ki * kw;
+                            for (int kj = 0; kj < kw; kj++) {
+                                sum += wrow[kj] * xrow[ow * sw + kj * dw];
+                            }
+                        }
+                    }
+                    out_co[oh * W_out + ow] = sum;
+                }
+            }
+        }
+    }
+}
+
+
+/* ================================================================
+ * Backward: grad_weight
+ *
+ * Parallel over C_out. For each output channel, accumulate over
+ * all (B, H_out, W_out) using Option B loop order: load each
+ * grad_output element once, scatter-accumulate to the small
+ * gw[co] buffer (Cg*kh*kw floats, fits in L1).
+ * ================================================================ */
+void conv2d_backward_weight_f32(
+    const float *__restrict__ x,        /* (B, C, H, W) padded */
+    const float *__restrict__ grad_out, /* (B, C_out, H_out, W_out) */
+    float *__restrict__ grad_weight,    /* (C_out, Cg, kh, kw) */
+    int B, int C, int H, int W,
+    int C_out, int kh, int kw,
+    int sh, int sw, int dh, int dw,
+    int H_out, int W_out,
+    int groups
+) {
+    const int Cg  = C / groups;
+    const int Cog = C_out / groups;
+    const int HW  = H * W;
+    const int ON  = H_out * W_out;
+    const int KK  = kh * kw;
+    const int gw_size = Cg * KK;
+
+    #pragma omp parallel for schedule(static)
+    for (int co = 0; co < C_out; co++) {
+        const int g = co / Cog;
+        const int ci_base = g * Cg;
+        float *gw = grad_weight + co * gw_size;
+
+        /* Zero this output channel's weight gradient */
+        memset(gw, 0, gw_size * sizeof(float));
+
+        for (int b = 0; b < B; b++) {
+            const float *go_bco = grad_out + b * C_out * ON + co * ON;
+
+            for (int oh = 0; oh < H_out; oh++) {
+                for (int ow = 0; ow < W_out; ow++) {
+                    const float g_val = go_bco[oh * W_out + ow];
+
+                    for (int ci = 0; ci < Cg; ci++) {
+                        const float *xc = x + b * C * HW + (ci_base + ci) * HW;
+                        float *gwc = gw + ci * KK;
+                        for (int ki = 0; ki < kh; ki++) {
+                            const int ih = oh * sh + ki * dh;
+                            const float *xrow = xc + ih * W;
+                            float *gwrow = gwc + ki * kw;
+                            for (int kj = 0; kj < kw; kj++) {
+                                gwrow[kj] += g_val * xrow[ow * sw + kj * dw];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/* ================================================================
+ * Backward: grad_input
+ *
+ * Parallel over B — each batch element writes to independent memory.
+ * For each (co, oh, ow), scatter weight * grad_out to input positions.
+ * Output array MUST be pre-zeroed by caller.
+ * ================================================================ */
+void conv2d_backward_input_f32(
+    const float *__restrict__ weight,   /* (C_out, Cg, kh, kw) */
+    const float *__restrict__ grad_out, /* (B, C_out, H_out, W_out) */
+    float *__restrict__ grad_x,         /* (B, C, H, W) — pre-zeroed */
+    int B, int C, int H, int W,
+    int C_out, int kh, int kw,
+    int sh, int sw, int dh, int dw,
+    int H_out, int W_out,
+    int groups
+) {
+    const int Cg  = C / groups;
+    const int Cog = C_out / groups;
+    const int HW  = H * W;
+    const int ON  = H_out * W_out;
+    const int KK  = kh * kw;
+
+    #pragma omp parallel for schedule(static)
+    for (int b = 0; b < B; b++) {
+        float *gx_b = grad_x + b * C * HW;
+
+        for (int co = 0; co < C_out; co++) {
+            const int g = co / Cog;
+            const int ci_base = g * Cg;
+            const float *w_co = weight + co * Cg * KK;
+            const float *go_bco = grad_out + b * C_out * ON + co * ON;
+
+            for (int oh = 0; oh < H_out; oh++) {
+                for (int ow = 0; ow < W_out; ow++) {
+                    const float g_val = go_bco[oh * W_out + ow];
+
+                    for (int ci = 0; ci < Cg; ci++) {
+                        float *gxc = gx_b + (ci_base + ci) * HW;
+                        const float *wc = w_co + ci * KK;
+                        for (int ki = 0; ki < kh; ki++) {
+                            const int ih = oh * sh + ki * dh;
+                            float *gxrow = gxc + ih * W;
+                            const float *wrow = wc + ki * kw;
+                            for (int kj = 0; kj < kw; kj++) {
+                                gxrow[ow * sw + kj * dw] += wrow[kj] * g_val;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

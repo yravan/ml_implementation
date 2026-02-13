@@ -24,6 +24,80 @@ from typing import Tuple, Optional, Union
 
 from python.foundations import Function, convert_to_function, _no_grad
 
+# =============================================================================
+# C Extension loader for BatchNorm
+# =============================================================================
+import ctypes
+
+_bn_lib = None
+_f32p = ctypes.POINTER(ctypes.c_float)
+
+def _load_bn_c():
+    global _bn_lib
+    if _bn_lib is not None:
+        return _bn_lib
+
+    import ctypes, subprocess, pathlib, os
+    _f32p = ctypes.POINTER(ctypes.c_float)
+    _ci = ctypes.c_int
+    _cf = ctypes.c_float
+
+    src = pathlib.Path(__file__).parent / "_batchnorm_c.c"
+    so  = pathlib.Path(__file__).parent / "_batchnorm_c.so"
+
+    if not src.exists():
+        return None
+
+    needs_compile = not so.exists() or os.path.getmtime(src) > os.path.getmtime(so)
+
+    if needs_compile:
+        import platform
+        if platform.system() == "Darwin":
+            omp_prefix = None
+            for prefix in ["/opt/homebrew", "/usr/local"]:
+                if os.path.exists(f"{prefix}/opt/libomp/lib/libomp.dylib"):
+                    omp_prefix = f"{prefix}/opt/libomp"
+                    break
+            if omp_prefix:
+                cmd = [
+                    "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
+                    "-Xpreprocessor", "-fopenmp",
+                    f"-I{omp_prefix}/include", f"-L{omp_prefix}/lib", "-lomp",
+                    "-shared", "-fPIC", "-o", str(so), str(src),
+                ]
+            else:
+                cmd = [
+                    "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
+                    "-shared", "-fPIC", "-o", str(so), str(src),
+                ]
+        else:
+            cmd = [
+                "gcc", "-O3", "-march=native", "-ffast-math", "-fno-finite-math-only",
+                "-fopenmp", "-shared", "-fPIC", "-o", str(so), str(src), "-lm",
+            ]
+
+        try:
+            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return None
+
+    lib = ctypes.CDLL(str(so))
+
+    # forward train: x, out, norm_x, gamma, beta, mean, var, B, C, S, eps
+    lib.batchnorm_forward_train.argtypes = [_f32p]*7 + [_ci]*3 + [_cf]
+    lib.batchnorm_forward_train.restype = None
+
+    # forward eval: x, out, gamma, beta, running_mean, running_var, B, C, S, eps
+    lib.batchnorm_forward_eval.argtypes = [_f32p]*6 + [_ci]*3 + [_cf]
+    lib.batchnorm_forward_eval.restype = None
+
+    # backward: grad_out, norm_x, gamma, var, grad_x, grad_gamma, grad_beta, B, C, S, eps
+    lib.batchnorm_backward.argtypes = [_f32p]*7 + [_ci]*3 + [_cf]
+    lib.batchnorm_backward.restype = None
+
+    _bn_lib = lib
+    return lib
+
 
 # =============================================================================
 # Batch Normalization Function Classes
@@ -54,36 +128,50 @@ class BatchNorm1d(Function):
         momentum: float = 0.1,
         eps: float = 1e-5
     ) -> np.ndarray:
-        """
-        Compute batch normalization.
+        if x.ndim not in (2, 3):
+            raise RuntimeError("Invalid input for BatchNorm1d", x.shape)
 
-        Args:
-            x: Input (batch_size, num_features) or (batch_size, num_features, length)
-            gamma: Scale parameter (num_features,)
-            beta: Shift parameter (num_features,)
-            running_mean: Running mean for inference
-            running_var: Running variance for inference
-            training: Whether in training mode
-            momentum: Momentum for running stats update
-            eps: Small constant for numerical stability
+        lib = _load_bn_c()
+        use_c = lib is not None and x.dtype == np.float32
+        ndim = x.ndim
+        B, C = x.shape[:2]
+        S = x.shape[2] if ndim == 3 else 1
 
-        Returns:
-            output
-            updates running mean and variance in place
-        """
         if training:
-            if x.ndim == 2:
-                mean = x.mean(axis=0)
-                var = x.var(axis=0)
-                norm_x = (x - mean[None,:]) / np.sqrt(var[None,:] + eps)
-                output = norm_x * gamma[None,:] + beta[None,:]
-            elif x.ndim == 3:
-                mean = x.mean(axis=(0,2))
-                var = x.var(axis=(0,2))
-                norm_x = (x - mean[None,:,None]) / np.sqrt(var[None,:,None] + eps)
-                output = norm_x * gamma[None,:,None] + beta[None,:,None]
+            if use_c:
+                # C kernel expects (B, C, S) layout — reshape 2D to 3D
+                x_c = np.ascontiguousarray(x.reshape(B, C, S))
+                out = np.empty_like(x_c)
+                norm_x = np.empty_like(x_c)
+                mean = np.empty(C, dtype=np.float32)
+                var = np.empty(C, dtype=np.float32)
+
+                lib.batchnorm_forward_train(
+                    x_c.ctypes.data_as(_f32p),
+                    out.ctypes.data_as(_f32p),
+                    norm_x.ctypes.data_as(_f32p),
+                    gamma.ctypes.data_as(_f32p),
+                    beta.ctypes.data_as(_f32p),
+                    mean.ctypes.data_as(_f32p),
+                    var.ctypes.data_as(_f32p),
+                    ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
+                    ctypes.c_float(eps),
+                )
+                # Reshape back to original ndim
+                out = out.reshape(x.shape)
+                norm_x = norm_x.reshape(x.shape)
+                output = out
             else:
-                raise RuntimeError("Invalid input for BatchNorm1d", x.shape)
+                if ndim == 2:
+                    mean = x.mean(axis=0)
+                    var = x.var(axis=0)
+                    norm_x = (x - mean[None,:]) / np.sqrt(var[None,:] + eps)
+                    output = norm_x * gamma[None,:] + beta[None,:]
+                else:  # ndim == 3
+                    mean = x.mean(axis=(0,2))
+                    var = x.var(axis=(0,2))
+                    norm_x = (x - mean[None,:,None]) / np.sqrt(var[None,:,None] + eps)
+                    output = norm_x * gamma[None,:,None] + beta[None,:,None]
 
             if running_mean is not None:
                 running_mean *= momentum
@@ -96,14 +184,29 @@ class BatchNorm1d(Function):
             else:
                 running_var = var.copy()
         else:
-            if x.ndim == 2:
-                norm_x = (x - running_mean[None,:]) / np.sqrt(running_var[None,:] + eps)
-                output = norm_x * gamma[None,:] + beta[None,:]
-            elif x.ndim == 3:
-                norm_x = (x - running_mean[None,:,None]) / np.sqrt(running_var[None,:,None] + eps)
-                output = norm_x * gamma[None,:,None] + beta[None,:,None]
+            if use_c:
+                x_c = np.ascontiguousarray(x.reshape(B, C, S))
+                out = np.empty_like(x_c)
+
+                lib.batchnorm_forward_eval(
+                    x_c.ctypes.data_as(_f32p),
+                    out.ctypes.data_as(_f32p),
+                    gamma.ctypes.data_as(_f32p),
+                    beta.ctypes.data_as(_f32p),
+                    running_mean.ctypes.data_as(_f32p),
+                    running_var.ctypes.data_as(_f32p),
+                    ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
+                    ctypes.c_float(eps),
+                )
+                output = out.reshape(x.shape)
+                norm_x = None  # not needed in eval
             else:
-                raise RuntimeError("Invalid input for BatchNorm1d", x.shape)
+                if ndim == 2:
+                    norm_x = (x - running_mean[None,:]) / np.sqrt(running_var[None,:] + eps)
+                    output = norm_x * gamma[None,:] + beta[None,:]
+                else:
+                    norm_x = (x - running_mean[None,:,None]) / np.sqrt(running_var[None,:,None] + eps)
+                    output = norm_x * gamma[None,:,None] + beta[None,:,None]
 
         global _no_grad
         if not _no_grad:
@@ -121,30 +224,52 @@ class BatchNorm1d(Function):
         return output
 
 
-
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Compute gradients for batch normalization.
+        lib = _load_bn_c()
+        ndim = grad_output.ndim
 
-        Returns:
-            Tuple of (grad_x, grad_gamma, grad_beta)
-        """
-        if grad_output.ndim == 2:
-            grad_beta = grad_output.sum(axis=0)
-            grad_gamma = (self.norm_x * grad_output).sum(axis=0)
-            N = grad_output.shape[0]
-            grad_x = (self.gamma[None,:] / (N * np.sqrt(self.var[None,:] + self.eps))) * (
-                N * grad_output - grad_output.sum(axis=0,  keepdims=True) - self.norm_x * (grad_output * self.norm_x).sum(axis=0, keepdims=True)
-            )
-        elif grad_output.ndim == 3:
-            grad_beta = grad_output.sum(axis=(0,2))
-            grad_gamma = (self.norm_x * grad_output).sum(axis=(0,2))
-            N = grad_output.shape[0] * grad_output.shape[2]
-            grad_x = (self.gamma[None,:, None] / (N * np.sqrt(self.var[None,:, None] + self.eps))) * (
-                N * grad_output - grad_output.sum(axis=(0,2), keepdims=True) - self.norm_x * (grad_output * self.norm_x).sum(axis=(0,2), keepdims=True)
-            )
-        else:
+        if ndim not in (2, 3):
             raise RuntimeError("Invalid gradient for BatchNorm1d", grad_output.shape)
+
+        B, C = grad_output.shape[:2]
+        S = grad_output.shape[2] if ndim == 3 else 1
+
+        if lib is not None and grad_output.dtype == np.float32:
+            go = np.ascontiguousarray(grad_output.reshape(B, C, S))
+            nx = np.ascontiguousarray(self.norm_x.reshape(B, C, S))
+            grad_x = np.empty_like(go)
+            grad_gamma = np.empty(C, dtype=np.float32)
+            grad_beta = np.empty(C, dtype=np.float32)
+
+            lib.batchnorm_backward(
+                go.ctypes.data_as(_f32p),
+                nx.ctypes.data_as(_f32p),
+                self.gamma.ctypes.data_as(_f32p),
+                self.var.ctypes.data_as(_f32p),
+                grad_x.ctypes.data_as(_f32p),
+                grad_gamma.ctypes.data_as(_f32p),
+                grad_beta.ctypes.data_as(_f32p),
+                ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
+                ctypes.c_float(self.eps),
+            )
+            grad_x = grad_x.reshape(grad_output.shape)
+        else:
+            if ndim == 2:
+                grad_beta = grad_output.sum(axis=0)
+                grad_gamma = (self.norm_x * grad_output).sum(axis=0)
+                N = grad_output.shape[0]
+                grad_x = (self.gamma[None,:] / (N * np.sqrt(self.var[None,:] + self.eps))) * (
+                    N * grad_output - grad_output.sum(axis=0, keepdims=True)
+                    - self.norm_x * (grad_output * self.norm_x).sum(axis=0, keepdims=True)
+                )
+            else:  # ndim == 3
+                grad_beta = grad_output.sum(axis=(0,2))
+                grad_gamma = (self.norm_x * grad_output).sum(axis=(0,2))
+                N = grad_output.shape[0] * grad_output.shape[2]
+                grad_x = (self.gamma[None,:,None] / (N * np.sqrt(self.var[None,:,None] + self.eps))) * (
+                    N * grad_output - grad_output.sum(axis=(0,2), keepdims=True)
+                    - self.norm_x * (grad_output * self.norm_x).sum(axis=(0,2), keepdims=True)
+                )
 
         return grad_x, grad_gamma, grad_beta
 
@@ -173,31 +298,40 @@ class BatchNorm2d(Function):
         momentum: float = 0.1,
         eps: float = 1e-5
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Compute 2D batch normalization.
-
-        Args:
-            x: Input (batch_size, channels, height, width)
-            gamma: Scale parameter (channels,)
-            beta: Shift parameter (channels,)
-            running_mean: Running mean for inference
-            running_var: Running variance for inference
-            training: Whether in training mode
-            momentum: Momentum for running stats update
-            eps: Small constant for numerical stability
-
-        Returns:
-            output
-            updates running mean and variance in place
-        """
         if not x.ndim == 4:
             raise RuntimeError("Invalid input for BatchNorm2d", x.shape)
 
+        B, C, H, W = x.shape
+        S = H * W
+        lib = _load_bn_c()
+        use_c = lib is not None and x.dtype == np.float32
+
         if training:
-            mean = x.mean(axis=(0,2,3))
-            var = x.var(axis=(0,2,3))
-            norm_x = (x - mean[None,:,None, None]) / np.sqrt(var[None,:,None,None] + eps)
-            output = norm_x * gamma[None,:, None, None] + beta[None,:,None,None]
+            if use_c:
+                x_c = np.ascontiguousarray(x)
+                out = np.empty_like(x_c)
+                norm_x = np.empty_like(x_c)
+                mean = np.empty(C, dtype=np.float32)
+                var = np.empty(C, dtype=np.float32)
+
+                lib.batchnorm_forward_train(
+                    x_c.ctypes.data_as(_f32p),
+                    out.ctypes.data_as(_f32p),
+                    norm_x.ctypes.data_as(_f32p),
+                    gamma.ctypes.data_as(_f32p),
+                    beta.ctypes.data_as(_f32p),
+                    mean.ctypes.data_as(_f32p),
+                    var.ctypes.data_as(_f32p),
+                    ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
+                    ctypes.c_float(eps),
+                )
+                output = out
+            else:
+                mean = x.mean(axis=(0,2,3))
+                var = x.var(axis=(0,2,3))
+                norm_x = (x - mean[None,:,None,None]) / np.sqrt(var[None,:,None,None] + eps)
+                output = norm_x * gamma[None,:,None,None] + beta[None,:,None,None]
+
             if running_mean is not None:
                 running_mean *= momentum
                 running_mean += (1 - momentum) * mean
@@ -209,8 +343,25 @@ class BatchNorm2d(Function):
             else:
                 running_var = var.copy()
         else:
-            norm_x = (x - running_mean[None,:,None, None]) / np.sqrt(running_var[None,:,None,None] + eps)
-            output = norm_x * gamma[None,:, None, None] + beta[None,:,None,None]
+            if use_c:
+                x_c = np.ascontiguousarray(x)
+                out = np.empty_like(x_c)
+
+                lib.batchnorm_forward_eval(
+                    x_c.ctypes.data_as(_f32p),
+                    out.ctypes.data_as(_f32p),
+                    gamma.ctypes.data_as(_f32p),
+                    beta.ctypes.data_as(_f32p),
+                    running_mean.ctypes.data_as(_f32p),
+                    running_var.ctypes.data_as(_f32p),
+                    ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
+                    ctypes.c_float(eps),
+                )
+                output = out
+                norm_x = None
+            else:
+                norm_x = (x - running_mean[None,:,None,None]) / np.sqrt(running_var[None,:,None,None] + eps)
+                output = norm_x * gamma[None,:,None,None] + beta[None,:,None,None]
 
         global _no_grad
         if not _no_grad:
@@ -229,23 +380,40 @@ class BatchNorm2d(Function):
 
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Compute gradients for 2D batch normalization.
+        if grad_output.ndim != 4:
+            raise RuntimeError("Invalid gradient for BatchNorm2d", grad_output.shape)
 
-        Returns:
-            Tuple of (grad_x, grad_gamma, grad_beta)
-        """
-        if grad_output.ndim == 4:
-            grad_beta = grad_output.sum(axis=(0,2,3))
-            grad_gamma = (self.norm_x * grad_output).sum(axis=(0,2,3))
-            N = grad_output.shape[0] * grad_output.shape[2] * grad_output.shape[3]
-            grad_x = (self.gamma[None,:, None, None] / (N * np.sqrt(self.var[None,:, None, None] + self.eps))) * (
-                N * grad_output - grad_output.sum(axis=(0,2,3),  keepdims=True) - self.norm_x * (grad_output * self.norm_x).sum(axis=(0,2,3), keepdims=True)
+        B, C, H, W = grad_output.shape
+        S = H * W
+        lib = _load_bn_c()
+
+        if lib is not None and grad_output.dtype == np.float32:
+            go = np.ascontiguousarray(grad_output)
+            grad_x = np.empty_like(go)
+            grad_gamma = np.empty(C, dtype=np.float32)
+            grad_beta = np.empty(C, dtype=np.float32)
+
+            lib.batchnorm_backward(
+                go.ctypes.data_as(_f32p),
+                self.norm_x.ctypes.data_as(_f32p),
+                self.gamma.ctypes.data_as(_f32p),
+                self.var.ctypes.data_as(_f32p),
+                grad_x.ctypes.data_as(_f32p),
+                grad_gamma.ctypes.data_as(_f32p),
+                grad_beta.ctypes.data_as(_f32p),
+                ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
+                ctypes.c_float(self.eps),
             )
         else:
-            raise RuntimeError("Invalid gradient for BatchNorm1d", grad_output.shape)
-        return grad_x, grad_gamma, grad_beta
+            N = B * H * W
+            grad_beta = grad_output.sum(axis=(0,2,3))
+            grad_gamma = (self.norm_x * grad_output).sum(axis=(0,2,3))
+            grad_x = (self.gamma[None,:,None,None] / (N * np.sqrt(self.var[None,:,None,None] + self.eps))) * (
+                N * grad_output - grad_output.sum(axis=(0,2,3), keepdims=True)
+                - self.norm_x * (grad_output * self.norm_x).sum(axis=(0,2,3), keepdims=True)
+            )
 
+        return grad_x, grad_gamma, grad_beta
 
 # =============================================================================
 # Layer Normalization Function Class

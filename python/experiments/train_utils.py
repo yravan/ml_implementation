@@ -7,6 +7,11 @@ from typing import Tuple, List, Dict, Optional, Callable, Union
 from pathlib import Path
 from collections import OrderedDict
 
+from python.foundations.backwards_profiler import (
+    enable_backward_profiling,
+    print_backward_profile,
+    reset_backward_profile,
+)
 from python.utils.data_utils import DataLoader
 # Our framework imports
 from python.foundations import Tensor
@@ -81,6 +86,7 @@ def train_epoch(
         loss = criterion(logits, y, reduction='mean')
 
         # Backward
+        enable_backward_profiling()
         optimizer.zero_grad()
         start = time.time()
         loss.backward()
@@ -111,6 +117,8 @@ def train_epoch(
                 parts.append(f"{name}: {val*100:.2f}%")
             parts.append(f"{n / batch_time:.1f} img/s")
             print(f"    {' | '.join(parts)}")
+            print_backward_profile()
+            reset_backward_profile()
         pre_load = time.time()
 
     results = {'loss': total_loss / total_samples}

@@ -286,7 +286,7 @@ class Tensor:
         """
         if self.grad is None:
             if self.ndim == 0:
-                self.grad = 1.0
+                self.grad = np.array([1.0], dtype=self.dtype)
             else:
                 self.grad = np.ones_like(self.data, dtype=self.data.dtype)
         else:

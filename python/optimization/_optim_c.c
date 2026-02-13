@@ -61,8 +61,8 @@ void adam_step_f32(
         if (weight_decay > 1e-8f)
             g += weight_decay * params[i];
 
-        exp_avg[i] = beta1 * exp_avg[i] + (1.0f - beta1) * grads[i];
-        exp_avg_sq[i] = beta2 * exp_avg_sq[i] + (1.0f - beta2) * grads[i] * grads[i];
+        exp_avg[i] = beta1 * exp_avg[i] + (1.0f - beta1) * g;
+        exp_avg_sq[i] = beta2 * exp_avg_sq[i] + (1.0f - beta2) * g * g;
 
         float m_hat = exp_avg[i] / bc1;
         float v_hat = exp_avg_sq[i] / bc2;

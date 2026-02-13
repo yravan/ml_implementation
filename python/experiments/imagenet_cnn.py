@@ -328,9 +328,9 @@ if __name__ == '__main__':
     parser.add_argument('--data-dir', type=str, default='./data/imagenet',
                         help='Path to ImageNet dataset')
     parser.add_argument('--epochs', type=int, default=90)
-    parser.add_argument('--batch-size', type=int, default=128)
-    parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--optimizer', type=str, default='sgd',
+    parser.add_argument('--batch-size', type=int, default=256)
+    parser.add_argument('--lr', type=float, default=0.002)
+    parser.add_argument('--optimizer', type=str, default='adamw',
                         choices=['sgd', 'adam', 'adamw'])
     parser.add_argument('--model', type=str, default='resnet18',
                         choices=['resnet18', 'resnet34', 'resnet50'])
@@ -351,7 +351,7 @@ if __name__ == '__main__':
     if args.optimizer == 'sgd':
         optimizer_params = {'momentum': args.momentum, 'weight_decay': args.weight_decay}
     elif args.optimizer in ('adam', 'adamw'):
-        optimizer_params = {'weight_decay': args.weight_decay, 'betas': (0.9, 0.999)}
+        optimizer_params = {'weight_decay': args.weight_decay, 'betas': (0.99, 0.999)}
 
     results = train(
         data_dir=args.data_dir,

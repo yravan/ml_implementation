@@ -113,14 +113,14 @@ def _load_optim_c():
 
         if omp_prefix:
             cmd = [
-                "clang", "-O3", "-mcpu=native", "-ffast-math",
+                "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
                 "-Xpreprocessor", "-fopenmp",
                 f"-I{omp_prefix}/include", f"-L{omp_prefix}/lib", "-lomp",
                 "-shared", "-fPIC", "-o", str(so), str(src),
             ]
         else:
             cmd = [
-                "clang", "-O3", "-mcpu=native", "-ffast-math",
+                "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
                 "-shared", "-fPIC", "-o", str(so), str(src),
             ]
 
@@ -300,7 +300,7 @@ class SGD(Optimizer):
                 else 0.0,
                 weight_decay=group.get("weight_decay", self.defaults["weight_decay"]),
                 params_flat=params_flat,
-                velocity=np.zeros_like(params_flat),
+                velocity=np.zeros_like(params_flat, dtype=np.float32),
             )
 
     def step(self) -> None:
@@ -308,6 +308,7 @@ class SGD(Optimizer):
         for key, value in self.flattened_params.items():
             params = self.param_groups[key]["params"]
             grads_flat = np.concatenate([p.grad.ravel() for p in params])
+            grads_flat = grads_flat.astype(value["params_flat"].dtype, copy=False)  # ADD THIS
 
             if lib is not None and value["params_flat"].dtype == np.float32:
                 lib.sgd_step_f32(
@@ -372,6 +373,7 @@ class SGDW(SGD):
         for key, value in self.flattened_params.items():
             params = self.param_groups[key]["params"]
             grads_flat = np.concatenate([p.grad.ravel() for p in params])
+            grads_flat = grads_flat.astype(value["params_flat"].dtype, copy=False)  # ADD THIS
 
             if lib is not None and value["params_flat"].dtype == np.float32:
                 lib.sgdw_step_f32(
@@ -780,8 +782,8 @@ class Adam(Optimizer):
                 eps=group.get("eps", self.defaults["eps"]),
                 weight_decay=group.get("weight_decay", self.defaults["weight_decay"]),
                 params_flat=params_flat,
-                exp_avg_flat=np.zeros_like(params_flat),
-                exp_avg_sq_flat=np.zeros_like(params_flat),
+                exp_avg_flat=np.zeros_like(params_flat, dtype=np.float32),
+                exp_avg_sq_flat=np.zeros_like(params_flat, dtype=np.float32),
             )
 
     def step(self) -> None:
@@ -789,6 +791,7 @@ class Adam(Optimizer):
         for key, value in self.flattened_params.items():
             params = self.param_groups[key]["params"]
             grads_flat = np.concatenate([p.grad.ravel() for p in params])
+            grads_flat = grads_flat.astype(value["params_flat"].dtype, copy=False)  # ADD THIS
 
             bc1 = 1 - value["beta_1"] ** (self._step_count + 1)
             bc2 = 1 - value["beta_2"] ** (self._step_count + 1)
@@ -901,8 +904,8 @@ class AdamW(Optimizer):
                 eps=group.get("eps", self.defaults["eps"]),
                 weight_decay=group.get("weight_decay", self.defaults["weight_decay"]),
                 params_flat=params_flat,
-                exp_avg_flat=np.zeros_like(params_flat),
-                exp_avg_sq_flat=np.zeros_like(params_flat),
+                exp_avg_flat=np.zeros_like(params_flat, dtype=np.float32),
+                exp_avg_sq_flat=np.zeros_like(params_flat, dtype=np.float32),
             )
 
     def step(self) -> None:
@@ -910,6 +913,7 @@ class AdamW(Optimizer):
         for key, value in self.flattened_params.items():
             params = self.param_groups[key]["params"]
             grads_flat = np.concatenate([p.grad.ravel() for p in params])
+            grads_flat = grads_flat.astype(value["params_flat"].dtype, copy=False)  # ADD THIS
 
             bc1 = 1 - value["beta_1"] ** (self._step_count + 1)
             bc2 = 1 - value["beta_2"] ** (self._step_count + 1)
