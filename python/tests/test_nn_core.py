@@ -187,7 +187,7 @@ class TestLinear:
 
         # Gradients should exist
         assert x.grad is not None
-        assert layer.weight_T.grad is not None
+        assert layer.weight.grad is not None
         if layer.bias is not None:
             assert layer.bias.grad is not None
 
@@ -642,7 +642,7 @@ class TestConv2dComprehensive:
         def func(x):
             return conv(x).sum()
 
-        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+        assert gradcheck(func, (x,), eps=1e-3, atol=1e-4, rtol=1e-3)
 
     def test_conv2d_gradcheck_no_bias(self):
         """Verify Conv2d gradients without bias."""

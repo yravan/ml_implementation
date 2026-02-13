@@ -173,9 +173,10 @@ class Sub(Function):
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Compute gradients for addition."""
-        dx = grad_output
-        dy = grad_output
-        return _unbroadcast(dx, self.x_shape), -_unbroadcast(dy, self.y_shape)
+        dx = _unbroadcast(grad_output, self.x_shape)
+        dy = _unbroadcast(grad_output, self.y_shape).copy()
+        dy *= -1
+        return dx, dy
 
 class Neg(Function):
     def forward(self, x: np.ndarray) -> np.ndarray:
@@ -652,7 +653,13 @@ class Slice(Function):
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
         grad = np.zeros(self.shape, dtype=grad_output.dtype)
-        grad[self.slices] = grad_output
+        if grad_output.size == 1:
+            if grad_output.ndim == 1:
+                grad[self.slices] = grad_output[0]
+            else:
+                grad[self.slices] = grad_output
+        else:
+            grad[self.slices] = grad_output
         return grad,
 
 class Mean(Function):

@@ -43,6 +43,7 @@ def train_epoch(
     optimizer,
     metrics: Optional[Dict[str, Callable]] = None,
     log_interval: int = 50,
+    profile: bool = False,
 ) -> Dict[str, float]:
     """
     Train for one epoch.
@@ -71,7 +72,7 @@ def train_epoch(
 
     pre_load = time.time()
     for batch_idx, batch in enumerate(train_loader):
-        print(f"Data Loading: {time.time() - pre_load:.3f}s")
+        if profile: print(f"Data Loading: {time.time() - pre_load:.3f}s")
         batch_start = time.time()
 
         inputs, targets = batch[0], batch[1]
@@ -82,18 +83,18 @@ def train_epoch(
         # Forward
         start = time.time()
         logits = model(x)
-        print(f"Forward:  {time.time() - start:.3f}s")
+        if profile: print(f"Forward:  {time.time() - start:.3f}s")
         loss = criterion(logits, y, reduction='mean')
 
         # Backward
-        enable_backward_profiling()
+        if profile: enable_backward_profiling()
         optimizer.zero_grad()
         start = time.time()
         loss.backward()
-        print(f"Backward: {time.time() - start:.3f}s")
+        if profile: print(f"Backward: {time.time() - start:.3f}s")
         start = time.time()
         optimizer.step()
-        print(f"Optimization: {time.time() - start:.3f}s")
+        if profile: print(f"Optimization: {time.time() - start:.3f}s")
 
         # Track loss
         batch_loss = loss.data.item() if loss.data.ndim == 0 else loss.data.mean()
@@ -117,8 +118,8 @@ def train_epoch(
                 parts.append(f"{name}: {val*100:.2f}%")
             parts.append(f"{n / batch_time:.1f} img/s")
             print(f"    {' | '.join(parts)}")
-            print_backward_profile()
-            reset_backward_profile()
+            if profile: print_backward_profile()
+            if profile: reset_backward_profile()
         pre_load = time.time()
 
     results = {'loss': total_loss / total_samples}

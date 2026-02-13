@@ -14,20 +14,9 @@ Backward passes are handled by Function classes in functional.py via autograd.
 """
 
 from typing import Optional, Union, Tuple, List
-from python.foundations import Tensor
+from python.foundations import Tensor, convert_to_function
 from .module import Module, Parameter
-from .pooling_functional import (
-    global_avg_pool1d,
-    global_max_pool1d,
-    avg_pool1d,
-    avg_pool2d,
-    max_pool1d,
-    max_pool2d,
-    global_max_pool2d,
-    global_avg_pool2d,
-    adaptive_avg_pool2d,
-)
-
+from . import pooling_functional
 
 # ============================================================================
 # Max Pooling Classes
@@ -82,6 +71,7 @@ class MaxPool1d(Module):
         self.dilation = dilation
         self.ceil_mode = ceil_mode
         self.return_indices = return_indices
+        self.max_pool1d = convert_to_function(pooling_functional.MaxPool1d)
 
     def forward(
         self, x: Tensor
@@ -99,7 +89,7 @@ class MaxPool1d(Module):
         Raises:
             ValueError: If x is not 3D (batch, channels, length)
         """
-        return max_pool1d(x, self.kernel_size, self.stride, self.padding, self.dilation, self.ceil_mode)
+        return self.max_pool1d(x, self.kernel_size, self.stride, self.padding, self.dilation, self.ceil_mode)
 
 
     def extra_repr(self) -> str:
@@ -162,6 +152,7 @@ class MaxPool2d(Module):
         self.dilation = dilation
         self.ceil_mode = ceil_mode
         self.return_indices = return_indices
+        self.max_pool2d = convert_to_function(pooling_functional.MaxPool2d)
 
     def forward(
         self, x: Tensor
@@ -186,7 +177,7 @@ class MaxPool2d(Module):
             >>> output = pool(x)
             >>> assert output.shape == (2, 64, 28, 28)  # Same spatial size with padding
         """
-        return max_pool2d(x, self.kernel_size, self.stride, self.padding, self.dilation, self.ceil_mode)
+        return self.max_pool2d(x, self.kernel_size, self.stride, self.padding, self.dilation, self.ceil_mode)
 
     def extra_repr(self) -> str:
         """Return string representation with parameters."""
@@ -490,6 +481,7 @@ class AvgPool1d(Module):
         self.padding = padding
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
+        self.avg_pool1d = convert_to_function(pooling_functional.AvgPool1d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -504,7 +496,7 @@ class AvgPool1d(Module):
         Raises:
             ValueError: If x is not 3D (batch, channels, length)
         """
-        return avg_pool1d(x, self.kernel_size, self.stride, self.padding, self.count_include_pad)
+        return self.avg_pool1d(x, self.kernel_size, self.stride, self.padding, self.count_include_pad)
 
     def extra_repr(self) -> str:
         """Return string representation with parameters."""
@@ -565,6 +557,7 @@ class AvgPool2d(Module):
         self.padding = padding
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
+        self.avg_pool2d = convert_to_function(pooling_functional.AvgPool2d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -585,7 +578,7 @@ class AvgPool2d(Module):
             >>> output = pool(x)
             >>> assert output.shape == (2, 64, 28, 28)
         """
-        return avg_pool2d(x, self.kernel_size, self.stride, self.padding, self.count_include_pad)
+        return self.avg_pool2d(x, self.kernel_size, self.stride, self.padding, self.count_include_pad)
 
     def extra_repr(self) -> str:
         """Return string representation with parameters."""
@@ -741,6 +734,7 @@ class AdaptiveAvgPool2d(Module):
         """
         super().__init__()
         self.output_size = output_size
+        self.adaptive_avg_pool2d = convert_to_function(pooling_functional.AdaptiveAvgPool2d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -762,7 +756,7 @@ class AdaptiveAvgPool2d(Module):
             >>> assert output.shape == (32, 2048, 1, 1)
             >>> # Can reshape to (32, 2048) for downstream FC layers
         """
-        return adaptive_avg_pool2d(x, self.output_size)
+        return self.adaptive_avg_pool2d(x, self.output_size)
 
     def extra_repr(self) -> str:
         """Return string representation with parameters."""
@@ -836,6 +830,7 @@ class GlobalAvgPool1d(Module):
         """
         super().__init__()
         self.eps = eps
+        self.global_avg_pool1d = convert_to_function(pooling_functional.GlobalAvgPool1d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -847,7 +842,7 @@ class GlobalAvgPool1d(Module):
         Returns:
             Output tensor of shape (batch_size, channels)
         """
-        return global_avg_pool1d(x)
+        return self.global_avg_pool1d(x)
 
 
 class GlobalMaxPool1d(Module):
@@ -862,6 +857,9 @@ class GlobalMaxPool1d(Module):
         >>> output = pool(x)
         >>> assert output.shape == (batch_size, channels)
     """
+    def __init__(self):
+        super().__init__()
+        self.global_max_pool1d = convert_to_function(pooling_functional.GlobalMaxPool1d)
     def forward(self, x: Tensor) -> Tensor:
         """
         Apply global max pooling.
@@ -872,7 +870,7 @@ class GlobalMaxPool1d(Module):
         Returns:
             Output tensor of shape (batch_size, channels)
         """
-        return global_max_pool1d(x)
+        return self.global_max_pool1d(x)
 
 
 class GlobalAvgPool2d(Module):
@@ -910,6 +908,7 @@ class GlobalAvgPool2d(Module):
         """
         super().__init__()
         self.eps = eps
+        self.global_avg_pool2d = convert_to_function(pooling_functional.GlobalAvgPool2d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -930,7 +929,7 @@ class GlobalAvgPool2d(Module):
             >>> output = pool(x)
             >>> assert output.shape == (32, 2048)
         """
-        return global_avg_pool2d(x)
+        return self.global_avg_pool2d(x)
 
 
 class GlobalMaxPool2d(Module):
@@ -954,6 +953,9 @@ class GlobalMaxPool2d(Module):
         >>> output = pool(x)
         >>> assert output.shape == (batch_size, 2048)
     """
+    def __init__(self):
+        super().__init__()
+        self.global_max_pool2d = convert_to_function(pooling_functional.GlobalMaxPool2d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -974,7 +976,7 @@ class GlobalMaxPool2d(Module):
             >>> output = pool(x)
             >>> assert output.shape == (32, 2048)
         """
-        return global_max_pool2d(x)
+        return self.global_max_pool2d(x)
 
 
 class LPPool2d(Module):

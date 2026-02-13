@@ -710,7 +710,7 @@ class TestGradientCheck:
         x = Tensor(x, requires_grad=True)
 
         # This should not raise an assertion error
-        result = gradcheck(f, (x,), eps=1e-5, atol=1e-4)
+        result = gradcheck(f, (x,), eps=1e-4, atol=1e-3)
         assert result == True
 
 

@@ -398,7 +398,11 @@ class MaxPool2d(Function):
 
         lib = _load_c_extension()
         if lib is not None and grad_output.dtype == np.float32:
-            grad_x = np.zeros(self.shape, dtype=grad_output.dtype)
+            if 'grad_x' not in self.__dict__ or self.grad_x.shape != grad_output.shape:
+                grad_x = np.zeros(self.shape, dtype=grad_output.dtype)
+            else:
+                grad_x = self.grad_x
+                grad_x.fill(0)
             lib.max_pool2d_backward(
                 grad_output.ctypes.data_as(_f32p),
                 grad_x.ctypes.data_as(_f32p),
@@ -414,6 +418,8 @@ class MaxPool2d(Function):
             h_idx = self.indices // W
             w_idx = self.indices % W
             np.add.at(grad_x, (b_idx, c_idx, h_idx, w_idx), grad_output)
+
+        self.grad_x = grad_x
 
         if Ph > 0 or Pw > 0:
             grad_x = grad_x[:, :, Ph:H - Ph, Pw:W - Pw]
@@ -830,18 +836,3 @@ class GlobalMaxPool2d(Function):
         grad_x[b_idx, c_idx, self.h_indices, self.w_indices] = grad_output
         return (grad_x,)
 
-
-# =============================================================================
-# Functional Interfaces
-# =============================================================================
-
-max_pool1d = convert_to_function(MaxPool1d)
-max_pool2d = convert_to_function(MaxPool2d)
-avg_pool1d = convert_to_function(AvgPool1d)
-avg_pool2d = convert_to_function(AvgPool2d)
-adaptive_max_pool2d = convert_to_function(AdaptiveMaxPool2d)
-adaptive_avg_pool2d = convert_to_function(AdaptiveAvgPool2d)
-global_avg_pool1d = convert_to_function(GlobalAvgPool1d)
-global_max_pool1d = convert_to_function(GlobalMaxPool1d)
-global_avg_pool2d = convert_to_function(GlobalAvgPool2d)
-global_max_pool2d = convert_to_function(GlobalMaxPool2d)

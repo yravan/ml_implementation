@@ -34,13 +34,9 @@ References
 import numpy as np
 from typing import Optional, Union, Tuple, Literal
 
+from . import activations_functional
 from .activations_functional import (
-    leaky_relu,
-    prelu,
-    elu,
-    selu,
     relu6,
-    gelu,
     quickgelu,
     silu,
     softplus,
@@ -50,11 +46,10 @@ from .activations_functional import (
     hardtanh,
     tanh,
     hard_sigmoid,
-    relu,
 )
 from .module import Module, Parameter
-from python.foundations import Tensor, maximum
-from ..foundations.computational_graph import logsoftmax, softmax, logsigmoid, sigmoid
+from python.foundations import Tensor, maximum, convert_to_function
+import python.foundations
 
 
 # =============================================================================
@@ -78,6 +73,9 @@ class ReLU(Module):
         >>> relu(x)
         Tensor([0, 0, 0, 1, 2])
     """
+    def __init__(self):
+        super().__init__()
+        self.relu = convert_to_function(activations_functional.ReLU)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -89,7 +87,7 @@ class ReLU(Module):
         Returns:
             ReLU(x), same shape as input
         """
-        return relu(x)
+        return self.relu(x)
 
 
 class LeakyReLU(Module):
@@ -115,10 +113,11 @@ class LeakyReLU(Module):
         """
         super().__init__()
         self.negative_slope = negative_slope
+        self.leaky_relu = convert_to_function(activations_functional.LeakyReLU)
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass."""
-        return leaky_relu(x, alpha=self.negative_slope)
+        return self.leaky_relu(x, alpha=self.negative_slope)
 
     def extra_repr(self) -> str:
         return f"negative_slope={self.negative_slope}"
@@ -145,10 +144,11 @@ class PReLU(Module):
         super().__init__()
         self.num_parameters = num_parameters
         self.weight = Parameter(np.full(num_parameters, init))
+        self.prelu = convert_to_function(activations_functional.PReLU)
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass with learnable negative slope."""
-        return prelu(x, self.weight)
+        return self.prelu(x, self.weight)
 
     def extra_repr(self) -> str:
         return f"num_parameters={self.num_parameters}"
@@ -179,10 +179,11 @@ class ELU(Module):
         """
         super().__init__()
         self.alpha = alpha
+        self.elu = convert_to_function(activations_functional.ELU)
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass."""
-        return elu(x, self.alpha)
+        return self.elu(x, self.alpha)
 
     def extra_repr(self) -> str:
         return f"alpha={self.alpha}"
@@ -206,10 +207,11 @@ class SELU(Module):
     def __init__(self):
         """Initialize SELU (no learnable parameters)."""
         super().__init__()
+        self.selu = convert_to_function(activations_functional.SELU)
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass."""
-        return selu(x)
+        return self.selu(x)
 
     def extra_repr(self) -> str:
         return f"alpha={self.ALPHA:.4f}, scale={self.SCALE:.4f}"
@@ -263,6 +265,7 @@ class GELU(Module):
         """
         super().__init__()
         self.approximate = approximate
+        self.gelu = convert_to_function(activations_functional.GELU)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -274,7 +277,7 @@ class GELU(Module):
         Exact:
             GELU(x) = x * Φ(x) = 0.5 * x * (1 + erf(x / √2))
         """
-        return gelu(x, self.approximate)
+        return self.gelu(x, self.approximate)
 
     def extra_repr(self) -> str:
         return f"approximate={self.approximate}"
@@ -337,6 +340,7 @@ class Sigmoid(Module):
     def __init__(self):
         """Initialize Sigmoid."""
         super().__init__()
+        self.sigmoid = convert_to_function(python.foundations.functionals.Sigmoid)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -348,7 +352,7 @@ class Sigmoid(Module):
         Returns:
             Sigmoid of x, same shape, values in (0, 1)
         """
-        return sigmoid(x)
+        return self.sigmoid(x)
 
 
 class LogSigmoid(Module):
@@ -363,10 +367,11 @@ class LogSigmoid(Module):
 
     def __init__(self):
         super().__init__()
+        self.logsigmoid = convert_to_function(python.foundations.functionals.LogSigmoid)
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass."""
-        return logsigmoid(x)
+        return self.logsigmoid(x)
 
 
 class HardSigmoid(Module):
@@ -428,6 +433,7 @@ class Softmax(Module):
         """
         super().__init__()
         self.axis = axis
+        self.softmax = convert_to_function(python.foundations.functionals.Softmax)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -439,7 +445,7 @@ class Softmax(Module):
         Returns:
             Probabilities, same shape, summing to 1 along self.axis
         """
-        return softmax(x, axis=self.axis)
+        return self.softmax(x, axis=self.axis)
 
     def extra_repr(self) -> str:
         return f"axis={self.axis}"
@@ -459,10 +465,11 @@ class LogSoftmax(Module):
         """Initialize LogSoftmax."""
         super().__init__()
         self.axis = axis
+        self.logsoftmax = convert_to_function(python.foundations.functionals.LogSoftmax)
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass."""
-        return logsoftmax(x, axis=self.axis)
+        return self.logsoftmax(x, axis=self.axis)
     def extra_repr(self) -> str:
         return f"axis={self.axis}"
 
@@ -477,10 +484,11 @@ class Softmax2D(Module):
 
     def __init__(self):
         super().__init__()
+        self.softmax = convert_to_function(python.foundations.functionals.Softmax)
 
     def forward(self, x: Tensor) -> Tensor:
         """Apply softmax over channel dimension (axis=1)."""
-        return softmax(x, axis=1)
+        return self.softmax(x, axis=1)
 
 
 # =============================================================================

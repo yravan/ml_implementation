@@ -38,10 +38,9 @@ References
 import numpy as np
 from typing import Tuple, Union, Optional, List
 
-from .conv_functional import conv2d, conv1d
 from .module import Module, Parameter
-from python.foundations import Tensor, _no_grad
-from python.foundations.functionals import Function
+from python.foundations import Tensor, convert_to_function
+from . import conv_functional
 
 
 # =============================================================================
@@ -98,6 +97,7 @@ class Conv1d(Module):
             self.bias = Parameter(np.zeros(out_channels))
         else:
             self.bias = None
+        self.conv1d = convert_to_function(conv_functional.Conv1d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -109,7 +109,7 @@ class Conv1d(Module):
         Returns:
             Output Tensor (batch_size, out_channels, output_length)
         """
-        return conv1d(x, self.weight, self.bias, self.stride, self.padding, self.dilation)
+        return self.conv1d(x, self.weight, self.bias, self.stride, self.padding, self.dilation)
 
     def extra_repr(self) -> str:
         return (
@@ -192,6 +192,8 @@ class Conv2d(Module):
         else:
             self.bias = None
 
+        self.conv2d = convert_to_function(conv_functional.Conv2d)
+
     def forward(self, x: Tensor) -> Tensor:
         """
         Perform 2D convolution.
@@ -202,7 +204,7 @@ class Conv2d(Module):
         Returns:
             Output Tensor (batch_size, out_channels, height_out, width_out)
         """
-        return conv2d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+        return self.conv2d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
     def extra_repr(self) -> str:
         return (
@@ -637,92 +639,6 @@ class TransposedConv2d(Module):
             f"kernel_size={self.kernel_size}, stride={self.stride}, "
             f"padding={self.padding}"
         )
-
-
-# =============================================================================
-# Functional Classes for Autograd
-# =============================================================================
-
-class Conv1dFunction(Function):
-    """1D Convolution functional operation for autograd."""
-
-    def __init__(self, stride: int = 1, padding: int = 0, dilation: int = 1):
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-
-    def forward(
-        self,
-        x: np.ndarray,
-        weight: np.ndarray,
-        bias: Optional[np.ndarray] = None
-    ) -> np.ndarray:
-        """Compute 1D convolution."""
-        raise NotImplementedError("TODO: Implement Conv1dFunction forward")
-
-    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
-        """Compute gradients for 1D convolution."""
-        raise NotImplementedError("TODO: Implement Conv1dFunction backward")
-
-
-class Conv2dFunction(Function):
-    """2D Convolution functional operation for autograd."""
-
-    def __init__(
-        self,
-        stride: Union[int, Tuple[int, int]] = 1,
-        padding: Union[int, Tuple[int, int]] = 0,
-        dilation: Union[int, Tuple[int, int]] = 1,
-        groups: int = 1
-    ):
-        self.stride = (stride, stride) if isinstance(stride, int) else stride
-        self.padding = (padding, padding) if isinstance(padding, int) else padding
-        self.dilation = (dilation, dilation) if isinstance(dilation, int) else dilation
-        self.groups = groups
-
-    def forward(
-        self,
-        x: np.ndarray,
-        weight: np.ndarray,
-        bias: Optional[np.ndarray] = None
-    ) -> np.ndarray:
-        """Compute 2D convolution using im2col."""
-        raise NotImplementedError("TODO: Implement Conv2dFunction forward")
-
-    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
-        """Compute gradients for 2D convolution."""
-        raise NotImplementedError("TODO: Implement Conv2dFunction backward")
-
-
-class ConvTranspose2dFunction(Function):
-    """2D Transposed Convolution functional operation for autograd."""
-
-    def __init__(
-        self,
-        stride: Union[int, Tuple[int, int]] = 1,
-        padding: Union[int, Tuple[int, int]] = 0,
-        output_padding: Union[int, Tuple[int, int]] = 0,
-        dilation: Union[int, Tuple[int, int]] = 1,
-        groups: int = 1
-    ):
-        self.stride = (stride, stride) if isinstance(stride, int) else stride
-        self.padding = (padding, padding) if isinstance(padding, int) else padding
-        self.output_padding = (output_padding, output_padding) if isinstance(output_padding, int) else output_padding
-        self.dilation = (dilation, dilation) if isinstance(dilation, int) else dilation
-        self.groups = groups
-
-    def forward(
-        self,
-        x: np.ndarray,
-        weight: np.ndarray,
-        bias: Optional[np.ndarray] = None
-    ) -> np.ndarray:
-        """Compute transposed 2D convolution."""
-        raise NotImplementedError("TODO: Implement ConvTranspose2dFunction forward")
-
-    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
-        """Compute gradients for transposed 2D convolution."""
-        raise NotImplementedError("TODO: Implement ConvTranspose2dFunction backward")
 
 
 # =============================================================================

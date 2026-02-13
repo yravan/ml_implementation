@@ -11,13 +11,9 @@ This module provides regularization operations for deep learning, including:
 All regularization modules should be used with forward() method and autograd handles backward.
 """
 
-from typing import Tuple, Optional, Union
-import numpy as np
-from python.foundations import Tensor
+from python.foundations import Tensor, convert_to_function
 from .module import Module, Parameter
-from python.foundations.functionals import Function
-from .regularization_functional import dropout, dropout1d, dropout2d
-
+from . import regularization_functional
 
 # ============================================================================
 # Module Classes (Neural Network Layers)
@@ -80,6 +76,7 @@ class Dropout(Module):
             raise ValueError(f"Dropout probability must be in [0, 1), got {p}")
 
         self.p = p
+        self.dropout = convert_to_function(regularization_functional.Dropout)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -108,7 +105,7 @@ class Dropout(Module):
         - Or use np.random.rand(x.shape) < (1-p) for bool mask
         - Cache mask for backward pass if needed
         """
-        return dropout(x, p=self.p, training=self.training)
+        return self.dropout(x, p=self.p, training=self.training)
 
     def extra_repr(self) -> str:
         """Return extra representation with dropout probability info."""
@@ -166,6 +163,7 @@ class Dropout1d(Module):
             raise ValueError(f"Dropout probability must be in [0, 1), got {p}")
 
         self.p = p
+        self.dropout1d = convert_to_function(regularization_functional.Dropout1d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -182,7 +180,7 @@ class Dropout1d(Module):
         - Mask shape: (N, C, 1)
         - Broadcasts across L (sequence length)
         """
-        return dropout1d(x, p=self.p, training=self.training)
+        return self.dropout1d(x, p=self.p, training=self.training)
 
     def extra_repr(self) -> str:
         """Return extra representation with dropout probability info."""
@@ -253,6 +251,7 @@ class Dropout2d(Module):
             raise ValueError(f"Dropout probability must be in [0, 1), got {p}")
 
         self.p = p
+        self.dropout2d = convert_to_function(regularization_functional.Dropout2d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -281,7 +280,7 @@ class Dropout2d(Module):
         - Same mask across all spatial positions (H, W)
         - During eval: return input unchanged
         """
-        return dropout2d(x, p=self.p, training=self.training)
+        return self.dropout2d(x, p=self.p, training=self.training)
 
     def extra_repr(self) -> str:
         """Return extra representation with dropout probability info."""
@@ -331,6 +330,7 @@ class Dropout3d(Module):
             raise ValueError(f"Dropout probability must be in [0, 1), got {p}")
 
         self.p = p
+        self.dropout3d = convert_to_function(regularization_functional.Dropout3d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -347,7 +347,7 @@ class Dropout3d(Module):
         - Mask shape: (N, C, 1, 1, 1)
         - Broadcasts across D, H, W
         """
-        return dropout3d(x, p=self.p, training=self.training)
+        return self.dropout3d(x, p=self.p, training=self.training)
 
     def extra_repr(self) -> str:
         """Return extra representation with dropout probability info."""

@@ -267,7 +267,8 @@ def softplus(x: np.ndarray) -> np.ndarray:
         array([100.])
     """
     threshold = 20
-    x = np.where(x <= threshold, np.log(1 + np.exp(x)), x)
+    safe = np.minimum(x, threshold)
+    x = np.where(x <= threshold, np.log1p(np.exp(safe)), x)
     return x
 
 

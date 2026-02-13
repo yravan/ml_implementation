@@ -248,6 +248,7 @@ def train(
         train_results = train_epoch(
             model, train_loader, criterion, opt,
             metrics=metrics, log_interval=log_interval,
+            # profile=True,
         )
 
         # Validate

@@ -714,13 +714,3 @@ class SpectralNorm(Function):
 
         return grad_x, grad_gamma
 
-
-# =============================================================================
-# Functional Interfaces
-# =============================================================================
-
-batch_norm_1d = convert_to_function(BatchNorm1d)
-batch_norm_2d = convert_to_function(BatchNorm2d)
-layer_norm = convert_to_function(LayerNorm)
-group_norm = convert_to_function(GroupNorm)
-rms_norm = convert_to_function(RMSNorm)

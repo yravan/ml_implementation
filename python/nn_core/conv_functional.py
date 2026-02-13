@@ -499,6 +499,27 @@ class Conv2d(Function):
             if not _no_grad:
                 self.cols = cols
                 self.weight = weight
+                CKK = cols.shape[1]
+                self._cols_owned = not (kh == 1 and kw == 1)
+
+                # Lazy-allocate buffers — reuse across forward/backward calls
+                wt_shape = (CKK, C_out)
+                if not hasattr(self, '_Wmat_T') or self._Wmat_T.shape != wt_shape:
+                    self._Wmat_T = np.empty(wt_shape, dtype=x.dtype)
+                np.copyto(self._Wmat_T, Wmat.T)
+
+                gw_shape = (B, C_out, CKK)
+                if not hasattr(self, '_gw_buf') or self._gw_buf.shape != gw_shape:
+                    self._gw_buf = np.empty(gw_shape, dtype=x.dtype)
+
+                if N <= 64 and N < CKK:
+                    go_shape = (C_out, B * N)
+                    cf_shape = (CKK, B * N)
+                    if not hasattr(self, '_go_flat_buf') or self._go_flat_buf.shape != go_shape:
+                        self._go_flat_buf = np.empty(go_shape, dtype=x.dtype)
+                    if not hasattr(self, '_cols_flat_buf') or self._cols_flat_buf.shape != cf_shape:
+                        self._cols_flat_buf = np.empty(cf_shape, dtype=x.dtype)
+
                 self.x_padded_shape = (B, C, Hp, Wp)
                 self.stride = stride
                 self.padding = padding
@@ -575,18 +596,26 @@ class Conv2d(Function):
             # When spatial dims are large (early layers), batched matmul wins
             # because we avoid the transpose+copy overhead.
             if N <=64 and N < CKK:
-                # Deep layers: pre-transpose, single GEMM for both ops
-                go_flat = np.ascontiguousarray(go.transpose(1, 0, 2)).reshape(C_out, B * N)
-                cols_flat = np.ascontiguousarray(cols.transpose(1, 0, 2)).reshape(CKK, B * N)
+                # Deep layers: single GEMM, pre-allocated buffers
+                go_flat = self._go_flat_buf
+                cols_flat = self._cols_flat_buf
+                np.copyto(go_flat.reshape(C_out, B, N), go.transpose(1, 0, 2))
+                np.copyto(cols_flat.reshape(CKK, B, N), cols.transpose(1, 0, 2))
                 grad_weight = (go_flat @ cols_flat.T).reshape(self.weight.shape)
-                grad_cols = np.ascontiguousarray(
-                    (Wmat.T @ go_flat).reshape(CKK, B, N).transpose(1, 0, 2)
-                )
+                np.matmul(self._Wmat_T, go_flat, out=cols_flat)
+                np.copyto(cols, cols_flat.reshape(CKK, B, N).transpose(1, 0, 2))
+                grad_cols = cols
             else:
-                # Early layers: batched matmul, no copies
-                grad_weight = np.matmul(go, cols.transpose(0, 2, 1)).sum(axis=0)
-                grad_weight = grad_weight.reshape(self.weight.shape)
-                grad_cols = np.matmul(Wmat.T, go)
+                # Early layers: in-place matmul, reuse cols buffer
+                # 1) grad_weight: write intermediate into pre-allocated buffer
+                np.matmul(go, cols.transpose(0, 2, 1), out=self._gw_buf)
+                grad_weight = self._gw_buf.sum(axis=0).reshape(self.weight.shape)
+                # 2) grad_cols: overwrite cols buffer if we own it (not a view)
+                if self._cols_owned:
+                    np.matmul(self._Wmat_T, go, out=cols)
+                    grad_cols = cols
+                else:
+                    grad_cols = np.matmul(self._Wmat_T, go)
 
             # col2im: grad_cols → grad_x_padded
             if kh == 1 and kw == 1:
@@ -1113,19 +1142,3 @@ class DilatedConv2d(Function):
             "TODO: Implement DilatedConv2d backward\n"
             "Hint: Similar to Conv2d backward but with dilation"
         )
-
-
-# =============================================================================
-# Functional Interfaces (using convert_to_function)
-# =============================================================================
-
-conv1d = convert_to_function(Conv1d)
-conv2d = convert_to_function(Conv2d)
-conv3d = convert_to_function(Conv3d)
-conv_transpose1d = convert_to_function(ConvTranspose1d)
-conv_transpose2d = convert_to_function(ConvTranspose2d)
-conv_transpose3d = convert_to_function(ConvTranspose3d)
-depthwise_conv2d = convert_to_function(DepthwiseConv2d)
-pointwise_conv2d = convert_to_function(PointwiseConv2d)
-depthwise_separable_conv2d = convert_to_function(DepthwiseSeparableConv2d)
-dilated_conv2d = convert_to_function(DilatedConv2d)

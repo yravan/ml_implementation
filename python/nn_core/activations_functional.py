@@ -37,9 +37,6 @@ from typing import Optional, Union, Tuple, Literal
 from python.foundations import Tensor, maximum, Function, minimum
 from python.foundations.computational_graph import (
     convert_to_function,
-    sigmoid,
-    log,
-    softmax,
 )
 
 # Import _no_grad from computational_graph for gradient tracking control
@@ -65,6 +62,7 @@ class ReLU(Function):
             np.add(grad_output, self.mask, out=self.mask)
         else:
             np.multiply(self.mask, grad_output, out=self.mask)
+            self.mask_overwritten = True
         return self.mask,
 
 class LeakyReLU(Function):
@@ -227,7 +225,7 @@ def tanhshrink(x: Tensor) -> Tensor:
 
 def softplus(x:Tensor, beta: float = 1.0, threshold: float = 20.0) -> Tensor:
     mask = (beta * x) > threshold
-    out = log(1 + np.exp(beta * x)) * 1/beta
+    out = (1 + (beta * x).exp()).log() * 1/beta
     out.set(mask, x)
     return out
 
@@ -274,22 +272,14 @@ def gumbel_softmax(logits: np.ndarray, temperature: float = 1.0, hard: bool = Fa
     return out
 
 
-relu = convert_to_function(ReLU)
-leaky_relu = convert_to_function(LeakyReLU)
-elu = convert_to_function(ELU)
-selu = convert_to_function(SELU)
-prelu = convert_to_function(PReLU)
-gelu = convert_to_function(GELU)
 quickgelu = quickgelu
 silu = silu
 hard_sigmoid = hard_sigmoid
 tanh = tanh
 hardtanh = hardtanh
 tanhshrink = tanhshrink
-sigmoid = sigmoid
 softplus = softplus
 softsign = softsign
 mish = mish
-softmax = softmax
 temperature_softmax = temperature_softmax
 gumbel_softmax = gumbel_softmax

@@ -125,11 +125,11 @@ def numerical_gradient(func: Callable[[Tensor], Union[Tensor, float, np.ndarray]
         idx = iter.multi_index
         original = x.data[idx]
         x.data[idx] = original + epsilon
-        f_plus = func(x)
+        f_plus = float(func(x).data)
         x.data[idx] = original - epsilon
-        f_minus = func(x)
-        grad[idx] = (f_plus.data - f_minus.data) / (2 * epsilon)
+        f_minus = float(func(x).data)
         x.data[idx] = original
+        grad[idx] = (f_plus - f_minus) / (2 * epsilon)
         iter.iternext()
     return grad
 
@@ -179,8 +179,8 @@ def gradient_check(func: Callable,
         True
     """
     relative_errors = []
-    passed = False
-    for i, input, analytical in enumerate(zip(inputs, analytical_grads)):
+    passed = True
+    for i, (input, analytical) in enumerate(zip(inputs, analytical_grads)):
         def f(x):
             inputs[i] = x
             return func(*inputs)
@@ -419,8 +419,8 @@ def gradcheck(func: Callable, inputs: Tuple[Tensor, ...],
     inputs = list(inputs)
     for i, input in enumerate(inputs):
         if not input.requires_grad: continue
-        def f(x:Tensor) -> Tensor:
-            inputs[i] = x
+        def f(x: Tensor, _i=i):  # capture i by value
+            inputs[_i] = x
             x.requires_grad = True
             return func(*inputs)
         analytical = input.grad

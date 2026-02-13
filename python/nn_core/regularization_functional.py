@@ -474,15 +474,3 @@ class AlphaDropout(Function):
             "  return (grad_output * self.a * self.mask,)"
         )
 
-
-# =============================================================================
-# Functional Interfaces
-# =============================================================================
-
-dropout = convert_to_function(Dropout)
-dropout1d = convert_to_function(Dropout1d)
-dropout2d = convert_to_function(Dropout2d)
-dropout3d = convert_to_function(Dropout3d)
-drop_path = convert_to_function(DropPath)
-drop_block = convert_to_function(DropBlock)
-alpha_dropout = convert_to_function(AlphaDropout)

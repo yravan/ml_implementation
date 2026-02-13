@@ -11,18 +11,11 @@ This module contains all normalization layers for deep learning:
 Each module includes comprehensive documentation and implementation hints.
 """
 
-from python.foundations import Tensor
+from python.foundations import Tensor, convert_to_function
 from typing import Optional, Tuple, Union, List
 import numpy as np
 from .module import Module, Parameter
-from .normalization_functional import (
-    batch_norm_1d,
-    batch_norm_2d,
-    layer_norm,
-    group_norm,
-    rms_norm,
-)
-
+from . import normalization_functional
 
 # ============================================================================
 # BATCH NORMALIZATION
@@ -75,6 +68,7 @@ class BatchNorm1d(Module):
             self.register_buffer('running_mean', np.zeros(num_features))
             self.register_buffer('running_var', np.ones(num_features))
             self.register_buffer('num_batches_tracked', 0)
+        self.batch_norm1d = convert_to_function(normalization_functional.BatchNorm1d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -92,7 +86,7 @@ class BatchNorm1d(Module):
         - If training=False: Uses running statistics
         - Stores intermediate values for backward pass via autograd
         """
-        return batch_norm_1d(x, self.weight, self.bias, self.running_mean, self.running_var, self.training, self.momentum, self.eps)
+        return self.batch_norm1d(x, self.weight, self.bias, self.running_mean, self.running_var, self.training, self.momentum, self.eps)
 
 
     def extra_repr(self) -> str:
@@ -150,6 +144,7 @@ class BatchNorm2d(Module):
             self.register_buffer('running_mean', np.zeros(num_features))
             self.register_buffer('running_var', np.ones(num_features))
             self.register_buffer('num_batches_tracked', 0)
+        self.batch_norm2d = convert_to_function(normalization_functional.BatchNorm2d)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -167,7 +162,7 @@ class BatchNorm2d(Module):
         - Resulting mean/var shape: (C,)
         - Apply learnable affine transform with reshaping for broadcasting
         """
-        return batch_norm_2d(x, gamma=self.weight, beta=self.bias, running_mean=self.running_mean, running_var=self.running_var, training=self.training, momentum=self.momentum, eps=self.eps)
+        return self.batch_norm2d(x, gamma=self.weight, beta=self.bias, running_mean=self.running_mean, running_var=self.running_var, training=self.training, momentum=self.momentum, eps=self.eps)
 
     def extra_repr(self) -> str:
         """Extra info for __repr__."""
@@ -232,6 +227,7 @@ class LayerNorm(Module):
         if not self.elementwise_affine:
             self.weight.requires_grad = False
             self.bias.requires_grad = False
+        self.layer_norm = convert_to_function(normalization_functional.LayerNorm)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -250,7 +246,7 @@ class LayerNorm(Module):
         4. Normalize: x̂ = (x - mean) / sqrt(var + eps)
         5. Apply affine: y = γ * x̂ + β
         """
-        return layer_norm(x, gamma=self.weight, beta=self.bias, normalized_shape=self.normalized_shape, eps=self.eps)
+        return self.layer_norm(x, gamma=self.weight, beta=self.bias, normalized_shape=self.normalized_shape, eps=self.eps)
 
     def extra_repr(self) -> str:
         """Extra info for __repr__."""
@@ -345,6 +341,7 @@ class GroupNorm(Module):
         if not self.affine:
             self.weight.requires_grad = False
             self.bias.requires_grad = False
+        self.group_norm = convert_to_function(normalization_functional.GroupNorm)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -365,7 +362,7 @@ class GroupNorm(Module):
         6. Reshape back to (N, C, *spatial_dims)
         7. Apply per-channel affine transformation
         """
-        return group_norm(x, gamma=self.weight, beta=self.bias, num_groups=self.num_groups, eps=self.eps)
+        return self.group_norm(x, gamma=self.weight, beta=self.bias, num_groups=self.num_groups, eps=self.eps)
 
     def extra_repr(self) -> str:
         """Extra info for __repr__."""
@@ -471,6 +468,7 @@ class RMSNorm(Module):
         self.eps = eps
 
         self.weight = Parameter(np.ones(normalized_shape))
+        self.rms_norm = convert_to_function(normalization_functional.RMSNorm)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -494,7 +492,7 @@ class RMSNorm(Module):
         - DO NOT subtract mean before normalizing (key difference from LayerNorm)
         - Compute mean(x²) carefully to avoid numerical overflow
         """
-        return rms_norm(x, gamma=self.weight, normalized_shape=self.normalized_shape, eps=self.eps)
+        return self.rms_norm(x, gamma=self.weight, normalized_shape=self.normalized_shape, eps=self.eps)
 
 
 class RMSNormTransformer(Module):

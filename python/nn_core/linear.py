@@ -38,7 +38,6 @@ class LinearOp(Function):
             self.x = x
             self.weight = weight
             self.has_bias = bias is not None
-            self._grad_buf = _grad_buf
         return out
 
     def backward(self, grad_output):
@@ -47,24 +46,27 @@ class LinearOp(Function):
 
         # grad_weight: (in, B) @ (B, out) = (in, out)
         # Use pre-allocated buffer if available to avoid large malloc
-        if self._grad_buf is not None and self._grad_buf.shape == self.weight.shape:
-            np.matmul(self.x.T, grad_output, out=self._grad_buf)
-            grad_weight = self._grad_buf
+        if '_grad_weight' in self.__dict__:
+            np.matmul(self.x.T, grad_output, out=self._grad_weight)
         else:
             grad_weight = self.x.T @ grad_output
+            self._grad_weight = grad_weight
 
         if self.has_bias:
-            grad_bias = grad_output.sum(axis=0)
-            return grad_x, grad_weight, grad_bias
+            if '_grad_bias' in self.__dict__:
+                np.sum(grad_output, axis=0, out=self._grad_bias)
+            else:
+                grad_bias = grad_output.sum(axis=0)
+                self._grad_bias = grad_bias
+            return grad_x, self._grad_weight, self._grad_bias
 
-        return grad_x, grad_weight
+        return grad_x, self._grad_weight, None
 
 
 # Manual Tensor wrapper (like convert_to_function but handles optional bias
 # and pre-allocated buffer)
-def linear_op(x_tensor, weight_tensor, bias_tensor=None, _grad_buf=None):
+def linear_op(fn, x_tensor, weight_tensor, bias_tensor=None, _grad_buf=None):
     """Functional interface: Tensor in, Tensor out."""
-    fn = LinearOp()
     children = [x_tensor, weight_tensor]
     args = [x_tensor.data, weight_tensor.data]
 
@@ -120,9 +122,10 @@ class Linear(Module):
             self._init_parameters(zeros_)
         else:
             raise ValueError(f"Unknown init method: {init}")
+        self.fn = LinearOp()
 
     def forward(self, x: Tensor) -> Tensor:
-        return linear_op(x, self.weight, self.bias, _grad_buf=self._grad_buf)
+        return linear_op(self.fn, x, self.weight, self.bias, _grad_buf=self._grad_buf)
 
     def extra_repr(self) -> str:
         return f"in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}"

@@ -126,8 +126,8 @@ from .functionals import (
 
 
 def convert_to_function(cls):
+    fn = cls()
     def f(*class_args, **class_kwargs):
-        fn = cls()
         class_args = list(class_args)
         children = []
         for i, arg in enumerate(class_args):
@@ -155,34 +155,6 @@ def convert_to_function(cls):
                      _grad_fn=fn)
         return out
     return f
-
-identity = convert_to_function(Identity)
-set_fn = convert_to_function(Set)
-concat = convert_to_function(Concat)
-add = convert_to_function(Add)
-sub = convert_to_function(Sub)
-neg = convert_to_function(Neg)
-mul = convert_to_function(Mul)
-div = convert_to_function(Div)
-matmul = convert_to_function(MatMul)
-pow = convert_to_function(Pow)
-sum = convert_to_function(Sum)
-clamp = convert_to_function(Clamp)
-exp = convert_to_function(Exp)
-log = convert_to_function(Log)
-reshape = convert_to_function(Reshape)
-transpose = convert_to_function(Transpose)
-max = convert_to_function(Max)
-min = convert_to_function(Min)
-abs = convert_to_function(Abs)
-sigmoid = convert_to_function(Sigmoid)
-logsigmoid = convert_to_function(LogSigmoid)
-softmax = convert_to_function(Softmax)
-logsoftmax = convert_to_function(LogSoftmax)
-split = convert_to_function(Split)
-slice = convert_to_function(Slice)
-mean = convert_to_function(Mean)
-var = convert_to_function(Var)
 
 
 class Tensor:
@@ -333,55 +305,68 @@ class Tensor:
 
     def __add__(self, other: Union['Tensor', float, np.ndarray]) -> 'Tensor':
         """Element-wise addition: self + other."""
+        add = convert_to_function(Add)
         return add(self, other)
 
     def __radd__(self, other: Union[float, np.ndarray]) -> 'Tensor':
         """Reverse addition for scalar + Tensor."""
+        add = convert_to_function(Add)
         return add(other, self)
 
     def __mul__(self, other: Union['Tensor', float, np.ndarray]) -> 'Tensor':
         """Element-wise multiplication: self * other."""
+        mul = convert_to_function(Mul)
         return mul(self, other)
 
     def __rmul__(self, other: Union[float, np.ndarray]) -> 'Tensor':
         """Reverse multiplication."""
+        mul = convert_to_function(Mul)
         return mul(other, self)
 
     def __neg__(self) -> 'Tensor':
         """Negation: -self."""
+        neg = convert_to_function(Neg)
         return neg(self)
 
     def __sub__(self, other: Union['Tensor', float, np.ndarray]) -> 'Tensor':
         """Subtraction: self - other."""
+        sub = convert_to_function(Sub)
         return sub(self, other)
 
     def __rsub__(self, other: Union[float, np.ndarray]) -> 'Tensor':
         """Reverse subtraction."""
-        return other + (-self)
+        sub = convert_to_function(Sub)
+        return sub(Tensor(other), self)
 
     def __truediv__(self, other: Union['Tensor', float, np.ndarray]) -> 'Tensor':
         """Division: self / other."""
+        div = convert_to_function(Div)
         if isinstance(other, (int, np.integer)):
             other = float(other)
         return div(self, other)
 
     def __rtruediv__(self, other: Union[float, np.ndarray]) -> 'Tensor':
         """Reverse division."""
-        return div(other, self)
+        div = convert_to_function(Div)
+        return div(Tensor(other), self)
 
     def __pow__(self, power: float) -> 'Tensor':
         """Power: self ** power."""
+        pow = convert_to_function(Pow)
         return pow(self, power)
 
     def __matmul__(self, other: 'Tensor') -> 'Tensor':
         """Matrix multiplication: self @ other."""
+        matmul = convert_to_function(MatMul)
         return matmul(self, other)
 
     def abs(self) -> 'Tensor':
         """Absolute sum: self + other."""
+        abs = convert_to_function(Abs)
         return abs(self)
 
     def clamp(self, min_val: Optional[Union[float, np.ndarray, int, 'Tensor']] = 0, max_val: Optional[Union[float, np.ndarray, int, 'Tensor']] = 1) -> 'Tensor':
+        clamp = convert_to_function(Clamp)
         return clamp(self, min_val, max_val)
 
     def __ge__(self, other: Union['Tensor', float, int, np.ndarray]) -> 'Tensor':
@@ -409,11 +394,12 @@ class Tensor:
             return Tensor(np.less(self.data, other))
 
     def __invert__(self) -> 'Tensor':
-        if not self.dtype == np.bool_:
-            raise RuntimeError('Cannot invert non bool tensor')
-        return Tensor(~self.data)
+        # if not self.dtype == np.bool_:
+        #     raise RuntimeError('Cannot invert non bool tensor')
+        return Tensor(~(self.data).astype(np.bool))
 
     def copy(self) -> 'Tensor':
+        identity = convert_to_function(Identity)
         return identity(self)
 
     def detach(self) -> 'Tensor':
@@ -430,34 +416,42 @@ class Tensor:
 
     def sum(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
         """Sum elements, optionally along an axis."""
+        sum = convert_to_function(Sum)
         return sum(self, axis=axis, keepdims=keepdims)
 
     def mean(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
         """Mean of elements."""
+        mean = convert_to_function(Mean)
         return mean(self, axis=axis, keepdims=keepdims)
 
     def max(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
         """Max of elements or element-wise max with another tensor."""
+        max = convert_to_function(Max)
         return max(self, axis=axis, keepdims=keepdims)
 
     def min(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
         """Min of elements or element-wise max with another tensor."""
+        min = convert_to_function(Min)
         return min(self, axis=axis, keepdims=keepdims)
     def var(self, axis: Optional[Union[int, Tuple[int, ...]]] = None, keepdims: bool = False) -> 'Tensor':
         """Variance of elements."""
+        var = convert_to_function(Var)
         return var(self, axis=axis, keepdims=keepdims)
 
     # ==================== Shape Operations ====================
 
     def reshape(self, *shape: int) -> 'Tensor':
         """Reshape tensor."""
+        reshape = convert_to_function(Reshape)
         return reshape(self, shape)
 
     def transpose(self, *axes: int) -> 'Tensor':
         """Transpose tensor."""
+        transpose = convert_to_function(Transpose)
         return transpose(self, *axes)
 
     def split(self, indices_or_sections, axis:int = 0) -> 'Tensor':
+        split = convert_to_function(Split)
         return split(self, indices_or_sections, axis=axis)
 
     def fill(self, value: float) -> 'Tensor':
@@ -480,6 +474,7 @@ class Tensor:
         return self
 
     def set(self, indices: Union[int, Tuple[int], List[int], np.ndarray, 'Tensor'], values: Union[float, np.ndarray, 'Tensor']) -> 'Tensor':
+        set_fn = convert_to_function(Set)
         return set_fn(self, indices, values)
 
     @property
@@ -489,32 +484,39 @@ class Tensor:
 
     def __getitem__(self, slices) -> 'Tensor':
         """Indexing/slicing."""
+        slice = convert_to_function(Slice)
         if isinstance(slices, Tensor):
             slices = tuple(slices.data)
         return slice(self, slices)
 
     def sigmoid(self) -> 'Tensor':
         """Sigmoid activation."""
+        sigmoid = convert_to_function(Sigmoid)
         return sigmoid(self)
 
     def log_sigmoid(self) -> 'Tensor':
         """Logarithm sigmoid activation."""
+        logsigmoid = convert_to_function(LogSigmoid)
         return logsigmoid(self)
 
     def exp(self) -> 'Tensor':
         """Exponential."""
+        exp = convert_to_function(Exp)
         return exp(self)
 
     def log(self) -> 'Tensor':
         """Natural logarithm."""
+        log = convert_to_function(Log)
         return log(self)
 
     def softmax(self, axis: int = -1) -> 'Tensor':
         """Softmax activation."""
+        softmax = convert_to_function(Softmax)
         return softmax(self, axis=axis)
 
     def log_softmax(self, axis: int = -1) -> 'Tensor':
         """Logarithm softmax activation."""
+        logsoftmax = convert_to_function(LogSoftmax)
         return logsoftmax(self, axis=axis)
 
 
@@ -552,6 +554,9 @@ def stack(*inputs: Union[Tensor, np.ndarray, float, int], axis: int = 0) -> Tens
                   _children=tuple(inputs),
                   _grad_fn=fn,
     )
+def concat(*inputs: Union[Tensor, np.ndarray, float, int], axis: int = 0) -> Tensor:
+    concat_fn = convert_to_function(Concat)
+    return concat_fn(*inputs, axis=axis)
 
 
 def print_graph(tensor, indent=0, visited=None):
