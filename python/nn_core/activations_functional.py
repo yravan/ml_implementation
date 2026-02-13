@@ -45,19 +45,29 @@ try:
 except ImportError:
     _no_grad = False
 
+# ── buffer helper (same as conv_functional) ──────────────────────────────────
+
+def _get_buf(obj, name, shape, dtype):
+    buf = getattr(obj, name, None)
+    if buf is None or buf.shape != shape or buf.dtype != dtype:
+        buf = np.empty(shape, dtype=dtype)
+        setattr(obj, name, buf)
+    return buf
 
 # =============================================================================
 # Functional Interfaces
 # =============================================================================
-
 class ReLU(Function):
-    def forward(self, x:np.ndarray) -> np.ndarray:
-        global _no_grad;
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        global _no_grad
         if not _no_grad:
-            self.mask = (x > 0).astype(x.dtype)
+            self.mask = (x > 0).astype(x.dtype)  # original mask — fast
             self.mask_overwritten = False
-        return np.maximum(x, 0)
+        np.maximum(x, 0, out=x)  # in-place — the real win
+        return x
+
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, ...]:
+        # Original backward — already optimized, reuses mask buffer as output
         if self.mask_overwritten:
             np.add(grad_output, self.mask, out=self.mask)
         else:

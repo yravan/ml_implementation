@@ -211,14 +211,14 @@ def train(
     # Model Setup
     # =========================================================================
     model = load_model(model_type, train_loader)
-    for i, layer in enumerate(model.conv_layers._modules.values()):
-        if hasattr(layer, 'weight'):
-            w = layer.weight.data
-            b = layer.bias.data if layer.bias is not None else None
-            fan_in = w.shape[1] * (w.shape[2] * w.shape[3] if w.ndim == 4 else 1)
-            expected_std = np.sqrt(2.0 / fan_in)  # kaiming
-            print(f"Layer {i:2d}  w.std={w.std():.4f} (expected ~{expected_std:.4f})  "
-                  f"w.mean={w.mean():.6f}  bias.mean={b.mean():.6f}  bias.max={np.abs(b).max():.6f}")
+    # for i, layer in enumerate(model.conv_layers._modules.values()):
+    #     if hasattr(layer, 'weight'):
+    #         w = layer.weight.data
+    #         b = layer.bias.data if layer.bias is not None else None
+    #         fan_in = w.shape[1] * (w.shape[2] * w.shape[3] if w.ndim == 4 else 1)
+    #         expected_std = np.sqrt(2.0 / fan_in)  # kaiming
+    #         print(f"Layer {i:2d}  w.std={w.std():.4f} (expected ~{expected_std:.4f})  "
+    #               f"w.mean={w.mean():.6f}  bias.mean={b.mean():.6f}  bias.max={np.abs(b).max():.6f}")
 
     # =========================================================================
     # Optimizer and Loss
@@ -370,7 +370,7 @@ if __name__ == '__main__':
         learning_rate=args.lr,
         optimizer_type=args.optimizer,
         optimizer_params=optimizer_params,
-        model_type='alexnet',
+        model_type='resnet18',
         lr_schedule=args.lr_schedule,
         log_interval=10,
         seed=args.seed,

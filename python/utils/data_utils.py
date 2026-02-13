@@ -362,45 +362,38 @@ class Dataset:
         raise NotImplementedError
 
 
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor
+from threading import Thread
+from queue import Queue
+from typing import Optional
+
+
 class DataLoader:
     """
-    A simple data loader class for batch iteration.
+    Multithreaded data loader with prefetching.
 
-    More feature-rich than batch_iterator, supports:
-    - Stateful iteration (can track position)
-    - Length computation
-    - Reset for new epochs
-
-    Attributes:
-        X: Features array
-        y: Labels array (optional)
-        batch_size: Batch size
-        shuffle: Whether to shuffle each epoch
+    Args:
+        dataset: Dataset with load_sample(idx) and __len__
+        batch_size: Samples per batch
+        shuffle: Shuffle each epoch
+        drop_last: Drop incomplete final batch
+        seed: Random seed
+        num_workers: Threads for parallel sample loading
+        prefetch: Number of batches to prefetch ahead (0 = disabled)
 
     Example:
-        >>> loader = DataLoader(X_train, y_train, batch_size=32, shuffle=True)
-        >>> for epoch in range(10):
+        >>> loader = DataLoader(train_dataset, batch_size=128, num_workers=8, prefetch=2)
+        >>> for epoch in range(90):
         ...     for X_batch, y_batch in loader:
-        ...         # Training step
+        ...         # Training step — next batch loads in background
         ...         pass
-        >>> len(loader)  # Number of batches
-        32
     """
 
-    def __init__(self, dataset: Dataset,
+    def __init__(self, dataset,
                  batch_size: int = 32, shuffle: bool = True,
-                 drop_last: bool = False, seed: Optional[int] = None, num_workers: int = 10,):
-        """
-        Initialize DataLoader.
-
-        Args:
-            X: Features array
-            y: Labels array (optional)
-            batch_size: Samples per batch
-            shuffle: Shuffle each epoch
-            drop_last: Drop incomplete final batch
-            seed: Random seed
-        """
+                 drop_last: bool = False, seed: Optional[int] = None,
+                 num_workers: int = 8, prefetch: int = 2):
         self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
@@ -409,53 +402,90 @@ class DataLoader:
         self.n_samples = len(dataset)
         self._rng = np.random.default_rng(seed)
         self._indices = np.arange(self.n_samples)
-        self._current = 0
         self.num_workers = num_workers
+        self.prefetch = prefetch
 
-    def __iter__(self) -> "DataLoader":
-        """Reset and return iterator."""
-        self._current = 0
+        # Persistent thread pool — avoids spawn overhead per batch
+        self._pool = ThreadPoolExecutor(max_workers=num_workers)
+
+    def _load_batch(self, batch_indices):
+        """Load one batch: fan out sample loads across thread pool, collect + stack."""
+        # Fan out — all samples load in parallel
+        futures = [
+            self._pool.submit(self.dataset.load_sample, int(idx))
+            for idx in batch_indices
+        ]
+
+        # Collect results in order, skip failures
+        data_samples = []
+        for f in futures:
+            try:
+                data_samples.append(f.result())
+            except Exception:
+                continue
+
+        if not data_samples:
+            return None
+
+        # Stack into batch arrays: (image_batch, label_batch, ...)
+        num_fields = len(data_samples[0])
+        return tuple(
+            np.stack([s[i] for s in data_samples], axis=0)
+            for i in range(num_fields)
+        )
+
+    def _batch_slices(self):
+        """Pre-compute all batch index arrays for this epoch."""
+        slices = []
+        for start in range(0, self.n_samples, self.batch_size):
+            end = min(start + self.batch_size, self.n_samples)
+            batch_idx = self._indices[start:end]
+            if len(batch_idx) < self.batch_size and self.drop_last:
+                continue
+            slices.append(batch_idx)
+        return slices
+
+    def _prefetch_worker(self, batches, queue):
+        """Background thread: load batches and push to queue."""
+        for batch_indices in batches:
+            batch = self._load_batch(batch_indices)
+            if batch is not None:
+                queue.put(batch)
+        queue.put(None)  # sentinel: iteration done
+
+    def __iter__(self):
         if self.shuffle:
             self._rng.shuffle(self._indices)
-        return self
 
-    def __next__(self):
-        """Return next batch."""
-        if self._current >= self.n_samples:
-            raise StopIteration
+        batches = self._batch_slices()
 
-        end = min(self._current + self.batch_size, self.n_samples)
-        batch_indices = self._indices[self._current:end]
+        if self.prefetch > 0:
+            # Prefetch mode: background thread fills queue while training runs
+            q = Queue(maxsize=self.prefetch)
+            t = Thread(target=self._prefetch_worker, args=(batches, q), daemon=True)
+            t.start()
 
-        # Check if this is an incomplete last batch
-        if len(batch_indices) < self.batch_size and self.drop_last:
-            raise StopIteration
+            while True:
+                batch = q.get()
+                if batch is None:
+                    break
+                yield batch
 
-        self._current = end
-
-        data_samples = []
-        for idx in batch_indices:
-            try:
-                data = self.dataset.load_sample(idx)
-                data_samples.append(data)
-            except Exception as e:
-                continue
-        num_data_types = len(data_samples[0])
-        batched_data = []
-        for i in range(num_data_types):
-            batched_data.append(
-                np.stack(tuple(sample[i] for sample in data_samples), axis=0)
-            )
-
-        return tuple(batched_data)
+            t.join()
+        else:
+            # Synchronous mode (still parallel within each batch)
+            for batch_indices in batches:
+                batch = self._load_batch(batch_indices)
+                if batch is not None:
+                    yield batch
 
     def __len__(self) -> int:
-        """Return number of batches."""
         if self.drop_last:
             return self.n_samples // self.batch_size
-        else:
-            return (self.n_samples + self.batch_size - 1) // self.batch_size
+        return (self.n_samples + self.batch_size - 1) // self.batch_size
 
+    def __del__(self):
+        self._pool.shutdown(wait=False)
 
 def normalize_data(X: np.ndarray, axis: int = 0) -> tuple:
     """

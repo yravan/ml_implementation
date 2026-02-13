@@ -24,6 +24,17 @@ from typing import Tuple, Optional, Union
 
 from python.foundations import Function, convert_to_function, _no_grad
 
+
+# ── buffer helper (same as conv_functional) ──────────────────────────────────
+
+def _get_buf(obj, name, shape, dtype):
+    buf = getattr(obj, name, None)
+    if buf is None or buf.shape != shape or buf.dtype != dtype:
+        buf = np.empty(shape, dtype=dtype)
+        setattr(obj, name, buf)
+    return buf
+
+
 # =============================================================================
 # C Extension loader for BatchNorm
 # =============================================================================
@@ -277,14 +288,10 @@ class BatchNorm1d(Function):
 
 class BatchNorm2d(Function):
     """
-    Batch Normalization 2D functional operation.
+    BatchNorm2d with pre-allocated output buffers.
 
-    Normalizes over batch and spatial dimensions for 4D input (images).
-
-    Math:
-        y = (x - mean) / sqrt(var + eps) * gamma + beta
-
-    Statistics computed per channel over (N, H, W) dimensions.
+    Eliminates np.empty_like allocations for out, norm_x on every call.
+    The C kernel writes directly into pre-existing buffers.
     """
 
     def forward(
@@ -297,7 +304,7 @@ class BatchNorm2d(Function):
         training: bool = True,
         momentum: float = 0.1,
         eps: float = 1e-5
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> np.ndarray:
         if not x.ndim == 4:
             raise RuntimeError("Invalid input for BatchNorm2d", x.shape)
 
@@ -309,10 +316,11 @@ class BatchNorm2d(Function):
         if training:
             if use_c:
                 x_c = np.ascontiguousarray(x)
-                out = np.empty_like(x_c)
-                norm_x = np.empty_like(x_c)
-                mean = np.empty(C, dtype=np.float32)
-                var = np.empty(C, dtype=np.float32)
+                # Pre-allocated buffers
+                out = _get_buf(self, '_out_buf', x_c.shape, x_c.dtype)
+                norm_x = _get_buf(self, '_norm_x_buf', x_c.shape, x_c.dtype)
+                mean = _get_buf(self, '_mean_buf', (C,), np.float32)
+                var = _get_buf(self, '_var_buf', (C,), np.float32)
 
                 lib.batchnorm_forward_train(
                     x_c.ctypes.data_as(_f32p),
@@ -345,7 +353,7 @@ class BatchNorm2d(Function):
         else:
             if use_c:
                 x_c = np.ascontiguousarray(x)
-                out = np.empty_like(x_c)
+                out = _get_buf(self, '_out_buf', x_c.shape, x_c.dtype)
 
                 lib.batchnorm_forward_eval(
                     x_c.ctypes.data_as(_f32p),
@@ -378,7 +386,6 @@ class BatchNorm2d(Function):
 
         return output
 
-
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         if grad_output.ndim != 4:
             raise RuntimeError("Invalid gradient for BatchNorm2d", grad_output.shape)
@@ -389,9 +396,10 @@ class BatchNorm2d(Function):
 
         if lib is not None and grad_output.dtype == np.float32:
             go = np.ascontiguousarray(grad_output)
-            grad_x = np.empty_like(go)
-            grad_gamma = np.empty(C, dtype=np.float32)
-            grad_beta = np.empty(C, dtype=np.float32)
+            # Pre-allocated backward buffer
+            grad_x = _get_buf(self, '_grad_x_buf', go.shape, go.dtype)
+            grad_gamma = _get_buf(self, '_grad_gamma_buf', (C,), np.float32)
+            grad_beta = _get_buf(self, '_grad_beta_buf', (C,), np.float32)
 
             lib.batchnorm_backward(
                 go.ctypes.data_as(_f32p),
@@ -412,9 +420,10 @@ class BatchNorm2d(Function):
                 N * grad_output - grad_output.sum(axis=(0,2,3), keepdims=True)
                 - self.norm_x * (grad_output * self.norm_x).sum(axis=(0,2,3), keepdims=True)
             )
+            grad_gamma = grad_gamma
+            grad_beta = grad_beta
 
         return grad_x, grad_gamma, grad_beta
-
 # =============================================================================
 # Layer Normalization Function Class
 # =============================================================================
