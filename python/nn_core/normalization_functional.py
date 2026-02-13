@@ -341,13 +341,15 @@ class BatchNorm2d(Function):
                 output = norm_x * gamma[None,:,None,None] + beta[None,:,None,None]
 
             if running_mean is not None:
-                running_mean *= momentum
-                running_mean += (1 - momentum) * mean
+                running_mean *= (1 - momentum)
+                running_mean += momentum * mean
             else:
                 running_mean = mean.copy()
             if running_var is not None:
-                running_var *= momentum
-                running_var += (1 - momentum) * var
+                running_var *= (1 - momentum)
+                n = B * H * W
+                unbiased_var = var * n / (n - 1)
+                running_var[:] = (1 - momentum) * running_var + momentum * unbiased_var
             else:
                 running_var = var.copy()
         else:
@@ -424,6 +426,7 @@ class BatchNorm2d(Function):
             grad_beta = grad_beta
 
         return grad_x, grad_gamma, grad_beta
+
 # =============================================================================
 # Layer Normalization Function Class
 # =============================================================================

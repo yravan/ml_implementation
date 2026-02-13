@@ -340,7 +340,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--optimizer', type=str, default='sgd',
+    parser.add_argument('--optimizer', type=str, default='adamw',
                         choices=['sgd', 'adam', 'adamw'])
     parser.add_argument('--model', type=str, default='resnet18',
                         choices=['resnet18', 'resnet34', 'resnet50'])
@@ -351,7 +351,7 @@ if __name__ == '__main__':
     parser.add_argument('--output-dir', type=str, default='./outputs/imagenet')
     parser.add_argument('--log-interval', type=int, default=100)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--weight-decay', type=float, default=1e-5)
+    parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--label-file', type=str, default=None)
 
