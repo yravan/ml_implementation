@@ -731,13 +731,3 @@ class ParameterDict(Module):
         """Return items."""
         return self._parameters.items()
 
-
-class Flatten(Module):
-    """Flatten layer to reshape tensor from (N, C, H, W) to (N, C*H*W)."""
-
-    def forward(self, x: Tensor) -> Tensor:
-        """Flatten all dimensions except batch."""
-        batch_size = x.data.shape[0]
-        # Use Tensor's reshape which has proper autograd support
-        return x.reshape(batch_size, -1)
-

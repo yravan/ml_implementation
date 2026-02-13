@@ -44,6 +44,7 @@ def train_epoch(
     metrics: Optional[Dict[str, Callable]] = None,
     log_interval: int = 50,
     profile: bool = False,
+    debug: bool = False,
 ) -> Dict[str, float]:
     """
     Train for one epoch.
@@ -77,6 +78,33 @@ def train_epoch(
 
         inputs, targets = batch[0], batch[1]
 
+        x = inputs
+        #
+        if debug:
+            for i, layer in enumerate(model.conv_layers._modules.values()):
+                x = layer(x)
+                d = x.data if hasattr(x, "data") else x
+                dead = (d <= 0).mean() * 100
+                print(
+                    f"Layer {i:2d} {layer.__class__.__name__:12s}  "
+                    f"mean={d.mean():.4f}  std={d.std():.4f}  "
+                    f"dead={dead:.1f}%  shape={d.shape}"
+                )
+
+            # Then through classifier
+            x_flat = (
+                x.reshape(x.shape[0], -1)
+                if hasattr(x, "reshape")
+                else Tensor(x.data.reshape(x.data.shape[0], -1))
+            )
+            for i, layer in enumerate(model.classifier._modules.values()):
+                x_flat = layer(x_flat)
+                d = x_flat.data if hasattr(x_flat, "data") else x_flat
+                print(
+                    f"FC {i:2d} {layer.__class__.__name__:12s}  "
+                    f"mean={d.mean():.4f}  std={d.std():.4f}  shape={d.shape}"
+                )
+
         x = Tensor(inputs, requires_grad=True)
         y = Tensor(targets)
 
@@ -95,6 +123,15 @@ def train_epoch(
         start = time.time()
         optimizer.step()
         if profile: print(f"Optimization: {time.time() - start:.3f}s")
+        if debug:
+            for name, p in model.named_parameters():
+                g = p.grad
+                if g is not None:
+                    print(
+                        f"{name:40s}  |grad|={np.abs(g.data).mean():.2e}  max={np.abs(g.data).max():.2e}"
+                    )
+                else:
+                    print(f"{name:40s}  grad=None")
 
         # Track loss
         batch_loss = loss.data.item() if loss.data.ndim == 0 else loss.data.mean()

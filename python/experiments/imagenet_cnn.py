@@ -64,7 +64,7 @@ from python.vision import transforms
 from python.vision.models import resnet18, resnet34, resnet50, alexnet
 
 
-def load_data(subset):
+def load_data(subset, batch_size):
 
     print_header("Loading Data", '-')
 
@@ -86,8 +86,8 @@ def load_data(subset):
     train_dataset = ImageNetDataset(data_dir, train=True, subset=subset, transform=train_transform)
     val_dataset = ImageNetDataset(data_dir, train=False, subset=subset // 10 if subset else None, transform=val_transform)
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     print(f"  Batches/epoch:    train={len(train_loader)}, val={len(val_loader)}")
     return train_loader, val_loader
@@ -205,12 +205,20 @@ def train(
     # =========================================================================
     # Data Loading
     # =========================================================================
-    train_loader, val_loader = load_data(subset)
+    train_loader, val_loader = load_data(subset, batch_size)
 
     # =========================================================================
     # Model Setup
     # =========================================================================
     model = load_model(model_type, train_loader)
+    for i, layer in enumerate(model.conv_layers._modules.values()):
+        if hasattr(layer, 'weight'):
+            w = layer.weight.data
+            b = layer.bias.data if layer.bias is not None else None
+            fan_in = w.shape[1] * (w.shape[2] * w.shape[3] if w.ndim == 4 else 1)
+            expected_std = np.sqrt(2.0 / fan_in)  # kaiming
+            print(f"Layer {i:2d}  w.std={w.std():.4f} (expected ~{expected_std:.4f})  "
+                  f"w.mean={w.mean():.6f}  bias.mean={b.mean():.6f}  bias.max={np.abs(b).max():.6f}")
 
     # =========================================================================
     # Optimizer and Loss
@@ -249,6 +257,7 @@ def train(
             model, train_loader, criterion, opt,
             metrics=metrics, log_interval=log_interval,
             # profile=True,
+            # debug=True,
         )
 
         # Validate
@@ -328,10 +337,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ImageNet Training')
     parser.add_argument('--data-dir', type=str, default='./data/imagenet',
                         help='Path to ImageNet dataset')
-    parser.add_argument('--epochs', type=int, default=90)
+    parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=256)
-    parser.add_argument('--lr', type=float, default=0.002)
-    parser.add_argument('--optimizer', type=str, default='adamw',
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--optimizer', type=str, default='sgd',
                         choices=['sgd', 'adam', 'adamw'])
     parser.add_argument('--model', type=str, default='resnet18',
                         choices=['resnet18', 'resnet34', 'resnet50'])
@@ -342,7 +351,7 @@ if __name__ == '__main__':
     parser.add_argument('--output-dir', type=str, default='./outputs/imagenet')
     parser.add_argument('--log-interval', type=int, default=100)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--weight-decay', type=float, default=1e-4)
+    parser.add_argument('--weight-decay', type=float, default=1e-5)
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--label-file', type=str, default=None)
 
@@ -352,7 +361,7 @@ if __name__ == '__main__':
     if args.optimizer == 'sgd':
         optimizer_params = {'momentum': args.momentum, 'weight_decay': args.weight_decay}
     elif args.optimizer in ('adam', 'adamw'):
-        optimizer_params = {'weight_decay': args.weight_decay, 'betas': (0.99, 0.999)}
+        optimizer_params = {'weight_decay': args.weight_decay, 'betas': (0.9, 0.999)}
 
     results = train(
         data_dir=args.data_dir,

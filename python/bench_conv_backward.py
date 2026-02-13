@@ -1,121 +1,234 @@
 """
-Benchmark different strategies for Conv2d backward matmuls.
-Run this on YOUR machine — results vary hugely by BLAS backend
-(Accelerate vs OpenBLAS vs MKL).
+Benchmark: C direct backward kernels vs matmul-based backward.
+
+The C file has conv2d_backward_weight_f32 and conv2d_backward_input_f32
+that fuse matmul + col2im into a single pass. Let's see if they're faster.
 """
 import numpy as np
-import time
+import ctypes, pathlib, subprocess, os, time
 
-def bench(fn, iters=50, warmup=5):
-    for _ in range(warmup):
-        fn()
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    return (time.perf_counter() - t0) / iters * 1000  # ms
+# ── Compile & load ──────────────────────────────────────────────
+src = pathlib.Path("./nn_core/_conv_c.c")
+so  = pathlib.Path("./nn_core/_conv_c.so")
+
+# Find OpenMP
+omp_prefix = None
+for prefix in ["/opt/homebrew", "/usr/local"]:
+    if os.path.exists(f"{prefix}/opt/libomp/lib/libomp.dylib"):
+        omp_prefix = f"{prefix}/opt/libomp"
+        break
+
+if omp_prefix:
+    cmd = [
+        "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
+        "-Xpreprocessor", "-fopenmp",
+        f"-I{omp_prefix}/include", f"-L{omp_prefix}/lib", "-lomp",
+        "-shared", "-fPIC", "-o", str(so), str(src),
+    ]
+else:
+    cmd = [
+        "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
+        "-shared", "-fPIC", "-o", str(so), str(src),
+    ]
+
+subprocess.check_call(cmd, stderr=subprocess.PIPE)
+lib = ctypes.CDLL(str(so))
+
+_f32p = ctypes.POINTER(ctypes.c_float)
+_ci = ctypes.c_int
+
+# Register im2col
+lib.im2col_f32.argtypes = [_f32p, _f32p] + [_ci]*12
+lib.im2col_f32.restype = None
+
+lib.col2im_f32.argtypes = [_f32p, _f32p] + [_ci]*12
+lib.col2im_f32.restype = None
+
+# Register direct backward kernels
+lib.conv2d_backward_weight_f32.argtypes = [
+    _f32p, _f32p, _f32p,  # x, grad_out, grad_weight
+    _ci, _ci, _ci, _ci,   # B, C, H, W
+    _ci, _ci, _ci,         # C_out, kh, kw
+    _ci, _ci, _ci, _ci,   # sh, sw, dh, dw
+    _ci, _ci, _ci,         # H_out, W_out, groups
+]
+lib.conv2d_backward_weight_f32.restype = None
+
+lib.conv2d_backward_input_f32.argtypes = [
+    _f32p, _f32p, _f32p,  # weight, grad_out, grad_x
+    _ci, _ci, _ci, _ci,   # B, C, H, W
+    _ci, _ci, _ci,         # C_out, kh, kw
+    _ci, _ci, _ci, _ci,   # sh, sw, dh, dw
+    _ci, _ci, _ci,         # H_out, W_out, groups
+]
+lib.conv2d_backward_input_f32.restype = None
+
+# Register direct forward
+lib.conv2d_forward_f32.argtypes = [
+    _f32p, _f32p, _f32p, _f32p,  # x, weight, bias, out
+    _ci, _ci, _ci, _ci,           # B, C, H, W
+    _ci, _ci, _ci,                 # C_out, kh, kw
+    _ci, _ci, _ci, _ci,           # sh, sw, dh, dw
+    _ci, _ci, _ci,                 # H_out, W_out, groups
+]
+lib.conv2d_forward_f32.restype = None
 
 
-def test_layer(B, C_in, C_out, kh, kw, H_out, W_out, label):
-    CKK = C_in * kh * kw
+def im2col_c(x, kh, kw, sh, sw, dh, dw, H_out, W_out):
+    B, C, H, W = x.shape
+    CKK = C * kh * kw
     N = H_out * W_out
+    cols = np.empty((B, CKK, N), dtype=np.float32)
+    lib.im2col_f32(
+        x.ctypes.data_as(_f32p), cols.ctypes.data_as(_f32p),
+        B, C, H, W, kh, kw, sh, sw, dh, dw, H_out, W_out
+    )
+    return cols
 
-    go   = np.random.randn(B, C_out, N).astype(np.float32)
-    cols = np.random.randn(B, CKK, N).astype(np.float32)
-    Wmat = np.random.randn(C_out, CKK).astype(np.float32)
+def col2im_c(cols, B, C, H, W, kh, kw, sh, sw, dh, dw, H_out, W_out):
+    grad_x = np.zeros((B, C, H, W), dtype=np.float32)
+    lib.col2im_f32(
+        cols.ctypes.data_as(_f32p), grad_x.ctypes.data_as(_f32p),
+        B, C, H, W, kh, kw, sh, sw, dh, dw, H_out, W_out
+    )
+    return grad_x
+
+
+def bench_layer(name, B, C_in, H_in, W_in, C_out, kh, kw, sh, sw, pad, n_iter=5):
+    """Compare matmul-based backward vs C direct backward for one layer."""
+    dh, dw = 1, 1
+    H_pad = H_in + 2*pad
+    W_pad = W_in + 2*pad
+    H_out = (H_pad - kh) // sh + 1
+    W_out = (W_pad - kw) // sw + 1
+    N = H_out * W_out
+    CKK = C_in * kh * kw
+
+    # Allocate inputs
+    x_pad = np.random.randn(B, C_in, H_pad, W_pad).astype(np.float32)
+    weight = np.random.randn(C_out, C_in, kh, kw).astype(np.float32)
+    grad_out = np.random.randn(B, C_out, H_out, W_out).astype(np.float32)
+
+    # im2col for matmul path
+    cols = im2col_c(x_pad, kh, kw, sh, sw, dh, dw, H_out, W_out)
+    Wmat = weight.reshape(C_out, -1)
+    Wmat_T = np.ascontiguousarray(Wmat.T)
+    go = grad_out.reshape(B, C_out, N)
+
+    # Pre-allocated buffers for matmul path
+    gw_buf = np.empty((B, C_out, CKK), dtype=np.float32)
+    gw_sum_buf = np.empty((C_out, CKK), dtype=np.float32)
 
     print(f"\n{'='*70}")
-    print(f"{label}")
-    print(f"  go={go.shape}  cols={cols.shape}  Wmat={Wmat.shape}")
-    print(f"  cols memory: {cols.nbytes/1e6:.1f} MB")
+    print(f"  {name}: ({B},{C_in},{H_in},{W_in}) → ({B},{C_out},{H_out},{W_out})")
+    print(f"  kernel={kh}×{kw}, stride={sh}, pad={pad}")
+    cols_mb = cols.nbytes / 1e6
+    xpad_mb = x_pad.nbytes / 1e6
+    print(f"  cols: {cols_mb:.1f} MB  |  x_padded: {xpad_mb:.1f} MB")
     print(f"{'='*70}")
 
-    # ===== GRAD_WEIGHT strategies =====
-    print(f"\n  --- grad_weight: (C_out, CKK) from go @ cols ---")
+    # ── Warmup ──
+    for _ in range(2):
+        np.matmul(go, cols.transpose(0, 2, 1), out=gw_buf)
+        np.sum(gw_buf, axis=0, out=gw_sum_buf)
+        np.matmul(Wmat_T, go, out=cols)
+        cols = im2col_c(x_pad, kh, kw, sh, sw, dh, dw, H_out, W_out)
 
-    # 1. Batched matmul + sum (original)
-    def gw_batched():
-        return np.matmul(go, cols.transpose(0, 2, 1)).sum(axis=0)
-    ms = bench(gw_batched)
-    ref = gw_batched()
-    print(f"  1) batched matmul + sum:    {ms:7.2f} ms")
+    # ── METHOD A: Current matmul approach ──
+    times_a = []
+    for _ in range(n_iter):
+        cols = im2col_c(x_pad, kh, kw, sh, sw, dh, dw, H_out, W_out)
+        go = grad_out.reshape(B, C_out, N)
 
-    # 2. Reshape to single GEMM
-    def gw_reshape():
-        go_flat = go.transpose(1, 0, 2).reshape(C_out, B * N)
-        cols_flat = cols.transpose(1, 0, 2).reshape(CKK, B * N)
-        return go_flat @ cols_flat.T
-    ms = bench(gw_reshape)
-    err = np.abs(gw_reshape() - ref).max()
-    print(f"  2) reshape + single GEMM:   {ms:7.2f} ms  (err={err:.1e})")
+        t0 = time.perf_counter()
 
-    # 3. einsum
-    def gw_einsum():
-        return np.einsum('bon,bkn->ok', go, cols)
-    ms = bench(gw_einsum)
-    err = np.abs(gw_einsum() - ref).max()
-    print(f"  3) einsum('bon,bkn->ok'):   {ms:7.2f} ms  (err={err:.1e})")
+        # grad_weight
+        np.matmul(go, cols.transpose(0, 2, 1), out=gw_buf)
+        np.sum(gw_buf, axis=0, out=gw_sum_buf)
+        gw_a = gw_sum_buf.reshape(weight.shape).copy()
 
-    # 4. tensordot
-    def gw_tensordot():
-        return np.tensordot(go, cols, axes=([0, 2], [0, 2]))
-    ms = bench(gw_tensordot)
-    err = np.abs(gw_tensordot() - ref).max()
-    print(f"  4) tensordot axes=[0,2]:    {ms:7.2f} ms  (err={err:.1e})")
+        # grad_input (overwrite cols)
+        grad_cols = np.matmul(Wmat_T, go)
 
-    # 5. Manual reshape with contiguous copy first
-    go_c = np.ascontiguousarray(go.transpose(1, 0, 2)).reshape(C_out, B * N)
-    cols_c = np.ascontiguousarray(cols.transpose(1, 0, 2)).reshape(CKK, B * N)
-    def gw_precopied():
-        return go_c @ cols_c.T
-    ms_gemm = bench(gw_precopied)
-    err = np.abs(gw_precopied() - ref).max()
-    print(f"  5) pre-transposed GEMM:     {ms_gemm:7.2f} ms  (err={err:.1e})  [GEMM only, no copy]")
+        # col2im
+        gx_a = col2im_c(grad_cols, B, C_in, H_pad, W_pad,
+                         kh, kw, sh, sw, dh, dw, H_out, W_out)
 
-    # Measure copy cost alone
-    def copy_cost():
-        a = np.ascontiguousarray(go.transpose(1, 0, 2)).reshape(C_out, B * N)
-        b = np.ascontiguousarray(cols.transpose(1, 0, 2)).reshape(CKK, B * N)
-        return a, b
-    ms_copy = bench(copy_cost)
-    print(f"     transpose+copy cost:     {ms_copy:7.2f} ms")
-    print(f"     total (copy+GEMM):       {ms_copy + ms_gemm:7.2f} ms")
+        t1 = time.perf_counter()
+        times_a.append((t1 - t0) * 1000)
 
-    # ===== GRAD_COLS strategies =====
-    print(f"\n  --- grad_cols: (B, CKK, N) from Wmat.T @ go ---")
+    # ── METHOD B: C direct backward ──
+    times_b_w = []
+    times_b_x = []
+    times_b = []
+    for _ in range(n_iter):
+        t0 = time.perf_counter()
 
-    # 1. Broadcast matmul (original)
-    def gc_broadcast():
-        return np.matmul(Wmat.T, go)
-    ms = bench(gc_broadcast)
-    ref_gc = gc_broadcast()
-    print(f"  1) broadcast np.matmul:     {ms:7.2f} ms")
+        gw_b = np.empty_like(weight)
+        lib.conv2d_backward_weight_f32(
+            x_pad.ctypes.data_as(_f32p),
+            grad_out.ctypes.data_as(_f32p),
+            gw_b.ctypes.data_as(_f32p),
+            B, C_in, H_pad, W_pad,
+            C_out, kh, kw,
+            sh, sw, dh, dw,
+            H_out, W_out, 1,
+        )
+        t1 = time.perf_counter()
 
-    # 2. Reshape to single GEMM
-    def gc_reshape():
-        go_flat = go.transpose(1, 0, 2).reshape(C_out, B * N)
-        return (Wmat.T @ go_flat).reshape(CKK, B, N).transpose(1, 0, 2)
-    ms = bench(gc_reshape)
-    err = np.abs(gc_reshape() - ref_gc).max()
-    print(f"  2) reshape single GEMM:     {ms:7.2f} ms  (err={err:.1e})")
+        gx_b = np.zeros((B, C_in, H_pad, W_pad), dtype=np.float32)
+        lib.conv2d_backward_input_f32(
+            weight.ctypes.data_as(_f32p),
+            grad_out.ctypes.data_as(_f32p),
+            gx_b.ctypes.data_as(_f32p),
+            B, C_in, H_pad, W_pad,
+            C_out, kh, kw,
+            sh, sw, dh, dw,
+            H_out, W_out, 1,
+        )
+        t2 = time.perf_counter()
 
-    # 3. Reuse pre-transposed go from grad_weight
-    def gc_reuse():
-        return (Wmat.T @ go_c).reshape(CKK, B, N).transpose(1, 0, 2)
-    ms = bench(gc_reuse)
-    err = np.abs(gc_reuse() - ref_gc).max()
-    print(f"  3) reuse pre-transposed go: {ms:7.2f} ms  (err={err:.1e})  [if go_c already computed]")
+        times_b_w.append((t1 - t0) * 1000)
+        times_b_x.append((t2 - t1) * 1000)
+        times_b.append((t2 - t0) * 1000)
 
-    # 4. einsum
-    def gc_einsum():
-        return np.einsum('kc,bcn->bkn', Wmat.T, go)
-    ms = bench(gc_einsum)
-    err = np.abs(gc_einsum() - ref_gc).max()
-    print(f"  4) einsum('kc,bcn->bkn'):   {ms:7.2f} ms  (err={err:.1e})")
+    # ── Correctness check ──
+    gw_ok = np.allclose(gw_a, gw_b, rtol=1e-3, atol=1e-4)
+    gx_ok = np.allclose(gx_a, gx_b, rtol=1e-3, atol=1e-4)
+
+    avg_a = np.median(times_a)
+    avg_b = np.median(times_b)
+    avg_bw = np.median(times_b_w)
+    avg_bx = np.median(times_b_x)
+
+    print(f"  Matmul+col2im:   {avg_a:8.2f} ms")
+    print(f"  C direct total:  {avg_b:8.2f} ms  (gw={avg_bw:.2f}, gx={avg_bx:.2f})")
+    print(f"  Speedup:         {avg_a/avg_b:8.2f}×")
+    print(f"  Correct: gw={gw_ok}, gx={gx_ok}")
+    if not gw_ok:
+        diff = np.abs(gw_a - gw_b)
+        print(f"    gw max diff: {diff.max():.6f}, mean diff: {diff.mean():.6f}")
+    if not gx_ok:
+        diff = np.abs(gx_a - gx_b)
+        print(f"    gx max diff: {diff.max():.6f}, mean diff: {diff.mean():.6f}")
+
+    return avg_a, avg_b
 
 
-# Typical CNN layer shapes
-test_layer(32,   3,  64, 3, 3, 32, 32, "Layer 1:   3→64   3×3  32×32  (early, small C_in)")
-test_layer(32,  64, 128, 3, 3, 16, 16, "Layer 2:  64→128  3×3  16×16  (mid)")
-test_layer(32, 128, 256, 3, 3,  8,  8, "Layer 3: 128→256  3×3   8×8   (deep)")
-test_layer(32, 256, 512, 3, 3,  4,  4, "Layer 4: 256→512  3×3   4×4   (deepest)")
-test_layer(32,  64,  64, 1, 1, 16, 16, "1×1 conv: 64→64   1×1  16×16")
+# ── AlexNet layers (B=128) ──
+B = 128
+results = []
+results.append(bench_layer("Conv1", B, 3,   227, 227, 64,  11, 11, 4, 4, 2))
+results.append(bench_layer("Conv2", B, 64,  27,  27,  192, 5,  5,  1, 1, 2))
+results.append(bench_layer("Conv3", B, 192, 13,  13,  384, 3,  3,  1, 1, 1))
+results.append(bench_layer("Conv4", B, 384, 13,  13,  256, 3,  3,  1, 1, 1))
+results.append(bench_layer("Conv5", B, 256, 13,  13,  256, 3,  3,  1, 1, 1))
+
+print(f"\n{'='*70}")
+print(f"  TOTALS")
+print(f"{'='*70}")
+total_a = sum(r[0] for r in results)
+total_b = sum(r[1] for r in results)
+print(f"  Matmul+col2im: {total_a:.1f} ms")
+print(f"  C direct:      {total_b:.1f} ms")
+print(f"  Speedup:       {total_a/total_b:.2f}×")

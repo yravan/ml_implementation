@@ -511,6 +511,8 @@ class Conv2d(Function):
                 gw_shape = (B, C_out, CKK)
                 if not hasattr(self, '_gw_buf') or self._gw_buf.shape != gw_shape:
                     self._gw_buf = np.empty(gw_shape, dtype=x.dtype)
+                if not hasattr(self, "_gw_sum_buf") or self._gw_sum_buf.shape != (C_out, CKK):
+                    self._gw_sum_buf = np.empty((C_out, CKK), dtype=x.dtype)
 
                 if N <= 64 and N < CKK:
                     go_shape = (C_out, B * N)
@@ -609,7 +611,8 @@ class Conv2d(Function):
                 # Early layers: in-place matmul, reuse cols buffer
                 # 1) grad_weight: write intermediate into pre-allocated buffer
                 np.matmul(go, cols.transpose(0, 2, 1), out=self._gw_buf)
-                grad_weight = self._gw_buf.sum(axis=0).reshape(self.weight.shape)
+                np.sum(self._gw_buf, axis=0, out=self._gw_sum_buf)
+                grad_weight = self._gw_sum_buf.reshape(self.weight.shape)
                 # 2) grad_cols: overwrite cols buffer if we own it (not a view)
                 if self._cols_owned:
                     np.matmul(self._Wmat_T, go, out=cols)

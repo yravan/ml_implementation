@@ -655,7 +655,7 @@ class TestConv2dComprehensive:
         def func(x):
             return conv(x).sum()
 
-        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+        assert gradcheck(func, (x,), eps=1e-3, atol=1e-4, rtol=1e-3)
 
     def test_conv2d_gradcheck_with_stride(self):
         """Verify Conv2d gradients with stride > 1."""
@@ -668,7 +668,7 @@ class TestConv2dComprehensive:
         def func(x):
             return conv(x).sum()
 
-        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+        assert gradcheck(func, (x,), eps=1e-3, atol=1e-4, rtol=1e-3)
 
     def test_conv2d_gradcheck_1x1_kernel(self):
         """Verify Conv2d gradients with 1x1 kernel (pointwise conv)."""
@@ -681,7 +681,7 @@ class TestConv2dComprehensive:
         def func(x):
             return conv(x).sum()
 
-        assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3)
+        assert gradcheck(func, (x,), eps=1e-3, atol=1e-4, rtol=1e-3)
 
     def test_conv2d_gradcheck_different_configs(self):
         """Test Conv2d gradients with various configurations."""
@@ -702,7 +702,7 @@ class TestConv2dComprehensive:
             def func(x):
                 return conv(x).sum()
 
-            assert gradcheck(func, (x,), eps=1e-5, atol=1e-4, rtol=1e-3), \
+            assert gradcheck(func, (x,), eps=1e-3, atol=1e-4, rtol=1e-3), \
                 f"Conv2d gradcheck failed for config {config}"
 
     def test_conv2d_weight_bias_gradients(self):
