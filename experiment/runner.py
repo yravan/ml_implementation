@@ -42,12 +42,23 @@ def _to_numpy(x):
     return np.asarray(x)
 
 
+def _is_torch(x):
+    """Check if x is a PyTorch tensor."""
+    return hasattr(x, 'detach') and hasattr(x, 'argmax')
+
+
 def top1_accuracy(logits, targets) -> float:
+    if _is_torch(logits):
+        return float((logits.argmax(1) == targets).float().mean().item())
     logits, targets = _to_numpy(logits), _to_numpy(targets)
     return float((logits.argmax(axis=1) == targets).mean())
 
 
 def top5_accuracy(logits, targets) -> float:
+    if _is_torch(logits):
+        import torch
+        _, top5 = logits.topk(5, dim=1)
+        return float((top5 == targets.unsqueeze(1)).any(1).float().mean().item())
     logits, targets = _to_numpy(logits), _to_numpy(targets)
     top5 = np.argsort(logits, axis=1)[:, -5:]
     return float(np.any(top5 == targets[:, None], axis=1).mean())
@@ -247,10 +258,11 @@ def train_one_epoch(model, loader, criterion, optimizer, config, logger,
         total_loss += batch_loss * n
         total_samples += n
 
-        logits_np = _to_numpy(logits)
-        targets_np = _to_numpy(batch[1])
+        # Metrics run on-device (GPU or CPU) — only a scalar .item() syncs
+        logits_d = logits.detach() if hasattr(logits, 'detach') else logits
+        targets_d = batch[1]
         for name, fn in metric_fns.items():
-            metric_totals[name] += fn(logits_np, targets_np) * n
+            metric_totals[name] += fn(logits_d, targets_d) * n
 
         # Log batch
         global_step = (epoch - 1) * len(loader) + batch_idx
@@ -293,14 +305,15 @@ def evaluate(model, loader, criterion, metric_fns, backend,
             total_loss += batch_loss * n
             total_samples += n
 
-            logits_np = _to_numpy(logits)
-            targets_np = _to_numpy(batch[1])
+            # Metrics run on-device — only .item() scalar syncs
+            logits_d = logits.detach() if hasattr(logits, 'detach') else logits
+            targets_d = batch[1]
             for name, fn in metric_fns.items():
-                metric_totals[name] += fn(logits_np, targets_np) * n
+                metric_totals[name] += fn(logits_d, targets_d) * n
 
             if collect_predictions:
-                all_logits.append(logits_np)
-                all_labels.append(targets_np)
+                all_logits.append(_to_numpy(logits))
+                all_labels.append(_to_numpy(batch[1]))
 
     results = {'loss': total_loss / total_samples}
     for name in metric_fns:
