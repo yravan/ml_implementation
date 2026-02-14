@@ -13,6 +13,7 @@ Then build by name — registry picks the right one based on config.backend:
 
 from typing import Tuple, Callable, Dict, Any, Optional, TYPE_CHECKING
 
+
 if TYPE_CHECKING:
     from .config import Config
 
@@ -369,14 +370,15 @@ def _pt_imagenette(config):
 def _pt_imagenet(config):
     import torch; from torch.utils.data import DataLoader
     from torchvision import datasets, transforms as T; from pathlib import Path
+    from pytorch.experiments.image_net_data import download_imagenet
     sz = config.model_args.get('img_size', 224)
     t_train = T.Compose([T.RandomResizedCrop(sz), T.RandomHorizontalFlip(), T.ToTensor(),
                          T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
     t_val = T.Compose([T.Resize(256), T.CenterCrop(sz), T.ToTensor(),
                        T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-    root = Path(config.data_dir) / 'imagenet' / 'ILSVRC' / 'Data' / 'CLS-LOC'
-    train_ds = datasets.ImageFolder(str(root / 'train'), transform=t_train)
-    val_ds = datasets.ImageFolder(str(root / 'val'), transform=t_val)
+    data_dir = Path(download_imagenet(variant="imagenet"))
+    train_ds = datasets.ImageFolder(str(data_dir / 'train'), transform=t_train)
+    val_ds = datasets.ImageFolder(str(data_dir / 'val'), transform=t_val)
     if config.subset: train_ds = torch.utils.data.Subset(train_ds, range(config.subset))
     print(f"  ImageNet: {len(train_ds)} train, {len(val_ds)} val")
     kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory)
