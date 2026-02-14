@@ -57,6 +57,7 @@ from python.experiments.train_utils import (
     top1_accuracy,
     top5_accuracy,
     print_metrics,
+    save,
 )
 # Our framework imports
 from python.optimization import SGD, CrossEntropyLoss, AdamW, Adam
@@ -82,7 +83,7 @@ def load_data(subset, batch_size):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    data_dir = download_imagenet(variant='imagenette', size='160')
+    data_dir = download_imagenet(variant='imagenet', size='160')
     train_dataset = ImageNetDataset(data_dir, train=True, subset=subset, transform=train_transform)
     val_dataset = ImageNetDataset(data_dir, train=False, subset=subset // 10 if subset else None, transform=val_transform)
 
@@ -152,6 +153,7 @@ def train(
     model_type: str = 'resnet18',
     lr_schedule: str = 'step',
     log_interval: int = 100,
+    save_interval: int = 1,
     seed: int = 42,
     save_plots: bool = True,
     output_dir: str = './outputs/imagenet',
@@ -277,7 +279,7 @@ def train(
         if val_results["top1"] > best_val_top1:
             best_val_top1 = val_results["top1"]
             best_marker = " ★ New Best!"
-            best_state = model.state_dict()
+            best = model.state_dict()
 
         epoch_time = time.time() - epoch_start
 
@@ -288,15 +290,13 @@ def train(
         print(f"  Time: {format_time(epoch_time)}")
 
         # Save checkpoint periodically
-        if epoch % 10 == 0:
-            checkpoint = {
-                'epoch': epoch,
-                'history': history,
-                'best_val_top1': best_val_top1,
-            }
-            ckpt_path = output_path / f'checkpoint_epoch{epoch}.npy'
-            np.save(str(ckpt_path), checkpoint)
-            print(f"  Saved checkpoint to {ckpt_path}")
+        if epoch % save_interval == 0:
+            ckpt_dir = output_path / 'checkpoints' / model_type
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            save(model, ckpt_dir, epoch)
+            save(best, ckpt_dir, epoch, tag='best')
+
+
 
     total_time = time.time() - start_time
 
@@ -335,7 +335,7 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='ImageNet Training')
-    parser.add_argument('--data-dir', type=str, default='./data/imagenet',
+    parser.add_argument('--data-dir', type=str, default='../data/imagenet',
                         help='Path to ImageNet dataset')
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=256)
@@ -350,6 +350,7 @@ if __name__ == '__main__':
                         help='Use subset of data for debugging')
     parser.add_argument('--output-dir', type=str, default='./outputs/imagenet')
     parser.add_argument('--log-interval', type=int, default=100)
+    parser.add_argument('--save-interval', type=int, default=1)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--momentum', type=float, default=0.9)
@@ -373,6 +374,7 @@ if __name__ == '__main__':
         model_type='resnet18',
         lr_schedule=args.lr_schedule,
         log_interval=10,
+        save_interval=args.save_interval,
         seed=args.seed,
         save_plots=True,
         output_dir=args.output_dir,

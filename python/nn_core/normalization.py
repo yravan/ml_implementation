@@ -141,8 +141,8 @@ class BatchNorm2d(Module):
             self.bias.requires_grad = False
 
         if self.track_running_stats:
-            self.register_buffer('running_mean', np.zeros(num_features))
-            self.register_buffer('running_var', np.ones(num_features))
+            self.register_buffer('running_mean', np.zeros(num_features, dtype=np.float32))
+            self.register_buffer('running_var', np.ones(num_features, dtype=np.float32))
             self.register_buffer('num_batches_tracked', 0)
         self.batch_norm2d = convert_to_function(normalization_functional.BatchNorm2d)
 

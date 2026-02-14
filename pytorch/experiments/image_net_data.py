@@ -46,7 +46,7 @@ from pathlib import Path
 
 from python.utils.data_utils import Dataset
 # Our framework imports
-from python.vision import transforms
+from torchvision import transforms
 
 # =============================================================================
 # ImageNet Constants
@@ -143,12 +143,6 @@ def download_imagenet(data_dir: str = '/Users/yajvanravan/mit/ml_implementation/
         dataset_dir = data_path / 'imagenet' / 'ILSVRC' / 'Data' / 'CLS-LOC'
         train_dir = dataset_dir / 'train'
         val_dir = dataset_dir / 'val'
-        test_dir = dataset_dir / 'test'
-        if test_dir.exists():
-            flat_images = list(test_dir.glob("*.JPEG"))
-            if len(flat_images) > 0:
-                csv_path = _find_file(data_path / "imagenet", ["LOC_test_solution.csv"])
-                _reorganize_test(test_dir, csv_path=csv_path)
 
         # Check if already fully set up
         if train_dir.exists() and val_dir.exists():
@@ -396,41 +390,6 @@ def _load_val_labels_from_devkit(devkit_tar: Path) -> Optional[list]:
     except Exception:
         return None
 
-def _reorganize_test(test_dir: Path, csv_path: Optional[Path] = None):
-    """
-    Reorganize flat test directory into class subdirectories if labels are available.
-    Only possible with Kaggle's LOC_test_solution.csv (released post-competition).
-    """
-    flat_images = sorted(test_dir.glob('*.JPEG'))
-    if len(flat_images) == 0:
-        return False
-
-    if csv_path is None or not csv_path.exists():
-        print(f"  Test directory is flat ({len(flat_images)} images), no labels available.")
-        print(f"  Provide LOC_test_solution.csv to reorganize into class folders.")
-        return False
-
-    import csv
-    print(f"  Using {csv_path.name} for test labels...")
-    synsets = {}
-    with open(csv_path) as f:
-        reader = csv.reader(f)
-        next(reader)
-        for row in reader:
-            fname = row[0]
-            synset = row[1].split()[0]
-            synsets[fname] = synset
-
-    for img_path in flat_images:
-        fname = img_path.stem
-        if fname in synsets:
-            class_dir = test_dir / synsets[fname]
-            class_dir.mkdir(exist_ok=True)
-            img_path.rename(class_dir / img_path.name)
-
-    n_classes = len([d for d in test_dir.iterdir() if d.is_dir()])
-    print(f"  Reorganized {len(flat_images)} images into {n_classes} class folders")
-    return True
 
 def _verify_dataset(dataset_dir: Path):
     """Print dataset statistics."""
@@ -476,7 +435,7 @@ class ImageNetDataset(Dataset):
     Images are loaded on-the-fly (not cached in memory).
     """
 
-    def __init__(self, root: str, type: str = 'train', subset: Optional[int] = None, transform: Optional[Callable] = None):
+    def __init__(self, root: str, train: bool = True, subset: Optional[int] = None, transform: Optional[Callable] = None):
         """
         Args:
             root: Root directory of ImageNet (contains train/ and val/)
@@ -484,8 +443,8 @@ class ImageNetDataset(Dataset):
             subset: If set, only use this many samples (for debugging)
         """
         self.root = Path(root)
-        self.type = type
-        self.split_dir = self.root / type
+        self.train = train
+        self.split_dir = self.root / ('train' if train else 'val')
         self.transform = transform
 
         if not self.split_dir.exists():
@@ -517,10 +476,10 @@ class ImageNetDataset(Dataset):
             indices = np.random.choice(len(self.samples), subset, replace=False)
             self.samples = [self.samples[i] for i in sorted(indices)]
 
-        print(f"  {type} set: {len(self.samples):,} images, "
+        print(f"  {'Train' if train else 'Val'} set: {len(self.samples):,} images, "
               f"{self.num_classes} classes")
 
-        if type == 'train':
+        if train:
             print(f"  Num classes:      {self.num_classes}")
             print(f"  Image size:       {IMAGE_SIZE}x{IMAGE_SIZE}")
             print(f"  Normalization:    mean={IMAGENET_MEAN.flatten()}, std={IMAGENET_STD.flatten()}")

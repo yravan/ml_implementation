@@ -349,7 +349,7 @@ class BatchNorm2d(Function):
                 running_var *= (1 - momentum)
                 n = B * H * W
                 unbiased_var = var * n / (n - 1)
-                running_var[:] = (1 - momentum) * running_var + momentum * unbiased_var
+                running_var[:] += momentum * unbiased_var
             else:
                 running_var = var.copy()
         else:

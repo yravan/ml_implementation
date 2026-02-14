@@ -402,11 +402,11 @@ class Tensor:
         identity = convert_to_function(Identity)
         return identity(self)
 
-    def detach(self) -> 'Tensor':
-        out = self.copy()
-        out.requires_grad = False
-        out.grad = None
-        return out
+    # def detach(self) -> 'Tensor':
+    #     out = self.copy()
+    #     out.requires_grad = False
+    #     out.grad = None
+    #     return out
 
     def argmax(self, axis: Optional[Union[int, List[int]]] = None, keepdims: bool = False) -> 'Tensor':
         arg = np.argmax(self.data, axis=axis, keepdims=keepdims)

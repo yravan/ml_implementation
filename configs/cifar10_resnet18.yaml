@@ -1,0 +1,23 @@
+# =============================================================================
+# CIFAR-10 ResNet-18 — good baseline
+# =============================================================================
+# python -m experiment --config configs/cifar10_resnet18.yaml
+
+name: cifar10-resnet18
+dataset: cifar10
+model: resnet18
+model_args:
+  num_classes: 10
+
+epochs: 50
+batch_size: 128
+lr: 0.01
+optimizer: sgd
+momentum: 0.9
+weight_decay: 0.0005
+scheduler: cosine
+warmup_epochs: 3
+
+logger: tensorboard
+metrics: [top1]
+log_interval: 50
