@@ -64,6 +64,11 @@ class Config:
     debug: bool = False
     subset: Optional[int] = None       # use N samples for quick testing
 
+    # ── Performance ───────────────────────────────────────────────────
+    amp: bool = False                  # automatic mixed precision (fp16/bf16)
+    compile: bool = False              # torch.compile (PyTorch 2.x)
+    cudnn_benchmark: bool = True       # auto-tune convolution algorithms
+
     # ── Derived ──────────────────────────────────────────────────────
     @property
     def run_dir(self) -> Path:

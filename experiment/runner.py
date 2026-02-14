@@ -74,7 +74,7 @@ METRIC_FNS = {'top1': top1_accuracy, 'top5': top5_accuracy}
 class _PyTorchBackend:
     """All PyTorch-specific logic in one place."""
 
-    def __init__(self):
+    def __init__(self, config=None):
         import torch
         import torch.nn.functional as F
         self.torch = torch
@@ -85,6 +85,12 @@ class _PyTorchBackend:
             else 'cpu'
         )
 
+        # AMP (automatic mixed precision)
+        use_amp = config.amp if config else False
+        # AMP only benefits CUDA (tensor cores); skip on MPS/CPU
+        self._use_amp = use_amp and self.device.type == 'cuda'
+        self._scaler = torch.amp.GradScaler('cuda') if self._use_amp else None
+
     def to_device(self, model):
         return model.to(self.device)
 
@@ -93,14 +99,25 @@ class _PyTorchBackend:
         inputs = inputs.to(self.device, non_blocking=True)
         targets = targets.to(self.device, non_blocking=True)
 
-        logits = model(inputs)
-        loss = criterion(logits, targets)
-
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        if config.grad_clip:
-            self.torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-        optimizer.step()
+        if self._use_amp:
+            with self.torch.amp.autocast('cuda'):
+                logits = model(inputs)
+                loss = criterion(logits, targets)
+            optimizer.zero_grad(set_to_none=True)
+            self._scaler.scale(loss).backward()
+            if config.grad_clip:
+                self._scaler.unscale_(optimizer)
+                self.torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+            self._scaler.step(optimizer)
+            self._scaler.update()
+        else:
+            logits = model(inputs)
+            loss = criterion(logits, targets)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            if config.grad_clip:
+                self.torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+            optimizer.step()
 
         return logits, loss.item(), inputs.shape[0]
 
@@ -109,8 +126,13 @@ class _PyTorchBackend:
         inputs = inputs.to(self.device, non_blocking=True)
         targets = targets.to(self.device, non_blocking=True)
 
-        logits = model(inputs)
-        loss = criterion(logits, targets)
+        if self._use_amp:
+            with self.torch.amp.autocast('cuda'):
+                logits = model(inputs)
+                loss = criterion(logits, targets)
+        else:
+            logits = model(inputs)
+            loss = criterion(logits, targets)
         return logits, loss.item(), inputs.shape[0]
 
     def no_grad_context(self):
@@ -232,7 +254,7 @@ class _NumpyBackend:
 
 def _get_backend(config):
     if config.backend == 'pytorch':
-        return _PyTorchBackend()
+        return _PyTorchBackend(config)
     else:
         return _NumpyBackend()
 
@@ -343,6 +365,8 @@ def run(config: Config) -> Dict:
         torch.manual_seed(config.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(config.seed)
+            if config.cudnn_benchmark:
+                torch.backends.cudnn.benchmark = True
         # pin_memory is not supported on MPS — silently disable to
         # avoid the noisy UserWarning from DataLoader.
         if config.pin_memory and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
@@ -353,6 +377,16 @@ def run(config: Config) -> Dict:
     print(f"{'='*70}")
     print(config)
     print(f"  Device: {backend.device}")
+    if config.backend == 'pytorch':
+        parts = []
+        if getattr(backend, '_use_amp', False):
+            parts.append("AMP")
+        if config.cudnn_benchmark and backend.device.type == 'cuda':
+            parts.append("cuDNN benchmark")
+        if config.compile:
+            parts.append("torch.compile")
+        if parts:
+            print(f"  Perf:   {', '.join(parts)}")
 
     # ── Data ─────────────────────────────────────────────────────────
     print(f"\n{'─'*70}\n Data\n{'─'*70}")
@@ -362,6 +396,10 @@ def run(config: Config) -> Dict:
     print(f"\n{'─'*70}\n Model\n{'─'*70}")
     model = build_model(config)
     model = backend.to_device(model)
+    if config.compile and config.backend == 'pytorch':
+        import torch
+        model = torch.compile(model)
+        print("  torch.compile: enabled")
     print(model)
     print(f"  Parameters: {backend.param_count(model):,}")
 
