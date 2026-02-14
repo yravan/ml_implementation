@@ -443,7 +443,7 @@ def _np_imagenette(config):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
     train_ds = ImageNetDataset(root, type='train', subset=config.subset, transform=t_train)
     val_ds = ImageNetDataset(root, type='val', transform=t_val)
-    test_ds = ImageNetDataset(root, type='test', transform=t_val)
+    test_ds = ImageNetDataset(root, type='val', transform=t_val)
     return (NpLoader(train_ds, batch_size=config.batch_size, shuffle=True, num_workers=8),
             NpLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=8),
             NpLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=8))

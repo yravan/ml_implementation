@@ -7,7 +7,7 @@
 name: imagenet-resnet50
 dataset: imagenette
 data_dir: ./data
-backend: pytorch
+backend: numpy
 model: resnet18
 model_args:
   num_classes: 1000
