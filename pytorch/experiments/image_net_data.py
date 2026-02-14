@@ -65,7 +65,7 @@ IMAGE_SIZE = 224
 # =============================================================================
 
 
-def download_imagenet(data_dir: str = '$HOME/ml_implementation/data', variant: str = 'imagenette',
+def download_imagenet(data_dir: str = '/Users/yajvanravan/mit/ml_implementation/data', variant: str = 'imagenette',
                       size: str = '320') -> str:
     """
     Download/prepare ImageNet or ImageNette dataset.
@@ -143,6 +143,12 @@ def download_imagenet(data_dir: str = '$HOME/ml_implementation/data', variant: s
         dataset_dir = data_path / 'imagenet' / 'ILSVRC' / 'Data' / 'CLS-LOC'
         train_dir = dataset_dir / 'train'
         val_dir = dataset_dir / 'val'
+        test_dir = dataset_dir / 'test'
+        if test_dir.exists():
+            flat_images = list(test_dir.glob("*.JPEG"))
+            if len(flat_images) > 0:
+                csv_path = _find_file(data_path / "imagenet", ["LOC_test_solution.csv"])
+                _reorganize_test(test_dir, csv_path=csv_path)
 
         # Check if already fully set up
         if train_dir.exists() and val_dir.exists():
@@ -390,6 +396,41 @@ def _load_val_labels_from_devkit(devkit_tar: Path) -> Optional[list]:
     except Exception:
         return None
 
+def _reorganize_test(test_dir: Path, csv_path: Optional[Path] = None):
+    """
+    Reorganize flat test directory into class subdirectories if labels are available.
+    Only possible with Kaggle's LOC_test_solution.csv (released post-competition).
+    """
+    flat_images = sorted(test_dir.glob('*.JPEG'))
+    if len(flat_images) == 0:
+        return False
+
+    if csv_path is None or not csv_path.exists():
+        print(f"  Test directory is flat ({len(flat_images)} images), no labels available.")
+        print(f"  Provide LOC_test_solution.csv to reorganize into class folders.")
+        return False
+
+    import csv
+    print(f"  Using {csv_path.name} for test labels...")
+    synsets = {}
+    with open(csv_path) as f:
+        reader = csv.reader(f)
+        next(reader)
+        for row in reader:
+            fname = row[0]
+            synset = row[1].split()[0]
+            synsets[fname] = synset
+
+    for img_path in flat_images:
+        fname = img_path.stem
+        if fname in synsets:
+            class_dir = test_dir / synsets[fname]
+            class_dir.mkdir(exist_ok=True)
+            img_path.rename(class_dir / img_path.name)
+
+    n_classes = len([d for d in test_dir.iterdir() if d.is_dir()])
+    print(f"  Reorganized {len(flat_images)} images into {n_classes} class folders")
+    return True
 
 def _verify_dataset(dataset_dir: Path):
     """Print dataset statistics."""
