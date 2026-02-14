@@ -65,7 +65,7 @@ IMAGE_SIZE = 224
 # =============================================================================
 
 
-def download_imagenet(data_dir: str = '/Users/yajvanravan/mit/ml_implementation/data', variant: str = 'imagenette',
+def download_imagenet(data_dir: str = '$HOME/ml_implementation/data', variant: str = 'imagenette',
                       size: str = '320') -> str:
     """
     Download/prepare ImageNet or ImageNette dataset.
