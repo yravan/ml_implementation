@@ -37,6 +37,10 @@ class Logger:
         self._epoch_start = None
         self._train_start = None
 
+        # W&B buffer -- collect all metrics, flush once per step
+        self._wandb_buffer = {}
+        self._wandb_buffer_step = None
+
         backends = config.logger.lower()
         self._use_tb = backends in ('tensorboard', 'tb', 'all')
         self._use_wandb = backends in ('wandb', 'wb', 'all')
@@ -50,7 +54,7 @@ class Logger:
         # Save config
         config.save(self.run_dir / 'config.json')
 
-    # ── Init ─────────────────────────────────────────────────────────
+    # -- Init ---------------------------------------------------------
 
     def _init_tensorboard(self):
         try:
@@ -80,9 +84,28 @@ class Logger:
             print("  [Warning] wandb not installed. pip install wandb")
             self._use_wandb = False
 
-    # ── Scalars ──────────────────────────────────────────────────────
+    # -- W&B Buffering ------------------------------------------------
 
-    def log_scalar(self, tag: str, value: float, step: Optional[int] = None):
+    def _wandb_add(self, tag, value, step):
+        """Buffer a metric for W&B. Flushes automatically when step changes."""
+        if not self._use_wandb or not self._wandb_run:
+            return
+        # If step changed, flush previous buffer first
+        if self._wandb_buffer_step is not None and step != self._wandb_buffer_step:
+            self._wandb_flush()
+        self._wandb_buffer[tag] = value
+        self._wandb_buffer_step = step
+
+    def _wandb_flush(self):
+        """Send all buffered metrics to W&B in a single call."""
+        if self._wandb_buffer and self._wandb_run:
+            import wandb
+            wandb.log(self._wandb_buffer, step=self._wandb_buffer_step)
+            self._wandb_buffer = {}
+
+    # -- Scalars ------------------------------------------------------
+
+    def log_scalar(self, tag, value, step=None):
         """Log a single scalar value."""
         if step is None:
             step = self._step
@@ -90,22 +113,18 @@ class Logger:
         if self._use_tb and self._tb_writer:
             self._tb_writer.add_scalar(tag, value, step)
 
-        if self._use_wandb and self._wandb_run:
-            import wandb
-            wandb.log({tag: value}, step=step)
+        self._wandb_add(tag, value, step)
 
-    def log_scalars(self, prefix: str, values: Dict[str, float],
-                    step: Optional[int] = None):
+    def log_scalars(self, prefix, values, step=None):
         """Log multiple scalars with a common prefix."""
         if step is None:
             step = self._step
-
         for name, val in values.items():
             self.log_scalar(f"{prefix}/{name}", val, step)
 
-    # ── Images ───────────────────────────────────────────────────────
+    # -- Images -------------------------------------------------------
 
-    def log_image(self, tag: str, img: np.ndarray, step: Optional[int] = None):
+    def log_image(self, tag, img, step=None):
         """Log an image. Expects (H, W, C) or (C, H, W) float/uint8."""
         if step is None:
             step = self._step
@@ -121,12 +140,11 @@ class Logger:
             import wandb
             if img.ndim == 3 and img.shape[0] in (1, 3, 4):
                 img = np.transpose(img, (1, 2, 0))
-            wandb.log({tag: wandb.Image(img)}, step=step)
+            self._wandb_add(tag, wandb.Image(img), step)
 
-    # ── Histograms ───────────────────────────────────────────────────
+    # -- Histograms ---------------------------------------------------
 
-    def log_histogram(self, tag: str, values: np.ndarray,
-                      step: Optional[int] = None):
+    def log_histogram(self, tag, values, step=None):
         """Log a histogram of values."""
         if step is None:
             step = self._step
@@ -136,11 +154,11 @@ class Logger:
 
         if self._use_wandb and self._wandb_run:
             import wandb
-            wandb.log({tag: wandb.Histogram(values)}, step=step)
+            self._wandb_add(tag, wandb.Histogram(values), step)
 
-    # ── Model ────────────────────────────────────────────────────────
+    # -- Model --------------------------------------------------------
 
-    def log_model_params(self, model, step: Optional[int] = None):
+    def log_model_params(self, model, step=None):
         """Log weight/gradient histograms for all parameters."""
         for name, p in model.named_parameters():
             data = p.detach().cpu().numpy() if hasattr(p, 'cpu') else p.data
@@ -155,31 +173,34 @@ class Logger:
             import wandb
             wandb.watch(model, log='all', log_freq=100)
 
-    # ── Epoch Tracking ───────────────────────────────────────────────
+    # -- Epoch Tracking -----------------------------------------------
 
     def begin_training(self):
         self._train_start = time.time()
 
-    def begin_epoch(self, epoch: int):
+    def begin_epoch(self, epoch):
         self._epoch = epoch
         self._epoch_start = time.time()
 
-    def end_epoch(self, train_results: Dict[str, float],
-                  val_results: Dict[str, float],
-                  lr: Optional[float] = None,
-                  throughput: Optional[float] = None):
+    def end_epoch(self, train_results, val_results, lr=None, throughput=None,
+                  step=None):
         """Log end-of-epoch results to all backends."""
-        epoch = self._epoch
+        if step is None:
+            step = self._epoch
         epoch_time = time.time() - self._epoch_start if self._epoch_start else 0
 
-        # Log to backends
-        self.log_scalars('train', train_results, step=epoch)
-        self.log_scalars('val', val_results, step=epoch)
+        # Log to backends (buffered for W&B)
+        self.log_scalars('train', train_results, step=step)
+        self.log_scalars('val', val_results, step=step)
         if lr is not None:
-            self.log_scalar('lr', lr, step=epoch)
-        self.log_scalar('epoch_time', epoch_time, step=epoch)
+            self.log_scalar('lr', lr, step=step)
+        self.log_scalar('epoch', self._epoch, step=step)
+        self.log_scalar('epoch_time', epoch_time, step=step)
         if throughput is not None:
-            self.log_scalar('train/throughput', throughput, step=epoch)
+            self.log_scalar('train/throughput', throughput, step=step)
+
+        # Flush all epoch metrics to W&B in one call
+        self._wandb_flush()
 
         # Console output
         if self._use_console:
@@ -201,13 +222,13 @@ class Logger:
                 timing += f" | {throughput:.0f} img/s"
             print(timing)
 
-    # ── Text / Artifacts ─────────────────────────────────────────────
+    # -- Text / Artifacts ---------------------------------------------
 
-    def log_text(self, tag: str, text: str, step: Optional[int] = None):
+    def log_text(self, tag, text, step=None):
         if self._use_tb and self._tb_writer:
             self._tb_writer.add_text(tag, text, step or self._step)
 
-    def log_artifact(self, path: str, name: Optional[str] = None):
+    def log_artifact(self, path, name=None):
         """Log a file as an artifact (W&B only)."""
         if self._use_wandb and self._wandb_run:
             import wandb
@@ -215,12 +236,13 @@ class Logger:
             artifact.add_file(path)
             wandb.log_artifact(artifact)
 
-    # ── Housekeeping ─────────────────────────────────────────────────
+    # -- Housekeeping -------------------------------------------------
 
-    def set_step(self, step: int):
+    def set_step(self, step):
         self._step = step
 
     def flush(self):
+        self._wandb_flush()
         if self._tb_writer:
             self._tb_writer.flush()
 
@@ -230,6 +252,7 @@ class Logger:
         if total:
             print(f"\n  Total training time: {total:.1f}s")
 
+        self._wandb_flush()
         if self._tb_writer:
             self._tb_writer.close()
         if self._wandb_run:

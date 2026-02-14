@@ -455,9 +455,10 @@ def run(config: Config) -> Dict:
         for k, v in val_results.items():
             history[f'val_{k}'].append(v)
 
-        # Log
+        # Log — use end-of-epoch global step so W&B steps are monotonic
+        epoch_global_step = epoch * len(train_loader)
         logger.end_epoch(train_results, val_results, lr=current_lr,
-                         throughput=throughput)
+                         throughput=throughput, step=epoch_global_step)
 
         # Best model tracking
         primary_metric = list(metric_fns.keys())[0] if metric_fns else 'loss'
@@ -494,8 +495,10 @@ def run(config: Config) -> Dict:
         collect_predictions=True,
     )
 
+    final_step = config.epochs * len(train_loader) + 1
     logger.log_scalars('test', {k: v for k, v in test_results.items()
-                                if k not in ('logits', 'labels')})
+                                if k not in ('logits', 'labels')}, step=final_step)
+    logger.flush()
 
     # Summary
     print(f"\n{'='*70}")
