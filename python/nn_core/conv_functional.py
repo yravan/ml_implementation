@@ -25,6 +25,7 @@ Helper Functions:
     - im2col_2d: Image to column transformation (C-accelerated)
     - col2im_2d: Column to image transformation (C-accelerated)
 """
+import platform
 
 import numpy as np
 from typing import List, Tuple, Union, Optional
@@ -64,39 +65,48 @@ def _load_c_extension():
     )
 
     if needs_compile:
-        omp_prefix = None
-        for prefix in ["/opt/homebrew", "/usr/local"]:
-            if os.path.exists(f"{prefix}/opt/libomp/lib/libomp.dylib"):
-                omp_prefix = f"{prefix}/opt/libomp"
-                break
+        system = platform.system()
 
-        if omp_prefix:
+        if system == 'Linux':
             cmd = [
-                "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
-                "-Xpreprocessor", "-fopenmp",
-                f"-I{omp_prefix}/include",
-                f"-L{omp_prefix}/lib", "-lomp",
+                "gcc", "-O3", "-march=native", "-ffast-math", "-fno-finite-math-only",
+                "-fopenmp",
                 "-shared", "-fPIC",
                 "-o", str(so), str(src),
             ]
+        elif system == 'Darwin':
+            # macOS: clang needs a separately installed libomp
+            omp_prefix = None
+            for prefix in ["/opt/homebrew", "/usr/local"]:
+                if os.path.exists(f"{prefix}/opt/libomp/lib/libomp.dylib"):
+                    omp_prefix = f"{prefix}/opt/libomp"
+                    break
+
+            base = ["clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only"]
+            if omp_prefix:
+                cmd = base + [
+                    "-Xpreprocessor", "-fopenmp",
+                    f"-I{omp_prefix}/include",
+                    f"-L{omp_prefix}/lib", "-lomp",
+                    "-shared", "-fPIC",
+                    "-o", str(so), str(src),
+                ]
+            else:
+                warnings.warn(
+                    "libomp not found — compiling without OpenMP. "
+                    "Run 'brew install libomp' for multi-threaded im2col/col2im.",
+                    RuntimeWarning, stacklevel=3,
+                )
+                cmd = base + ["-shared", "-fPIC", "-o", str(so), str(src)]
         else:
             warnings.warn(
-                "libomp not found — compiling without OpenMP. "
-                "Run 'brew install libomp' for multi-threaded im2col/col2im.",
+                f"Unsupported platform '{system}' — using pure-numpy fallback.",
                 RuntimeWarning, stacklevel=3,
             )
-            cmd = [
-                "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
-                "-shared", "-fPIC",
-                "-o", str(so), str(src),
-            ]
+            return None
 
         try:
-            subprocess.check_call(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
+            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except (subprocess.CalledProcessError, FileNotFoundError):
             warnings.warn(
                 "Failed to compile C extension — using pure-numpy fallback.",
@@ -113,7 +123,6 @@ def _load_c_extension():
 
     _c_lib = lib
     return lib
-
 # =============================================================================
 # Buffer Management — the core of the zero-alloc strategy
 # =============================================================================
