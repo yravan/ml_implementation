@@ -7,7 +7,7 @@
 name: imagenet-resnet50
 dataset: imagenette
 data_dir: ./data
-backend: numpy
+backend: pytorch
 model: resnet18
 model_args:
   num_classes: 1000
@@ -22,10 +22,14 @@ optimizer_args:
 scheduler: step
 warmup_epochs: 5
 
-num_workers: 8
+num_workers: 16
 pin_memory: true
+amp: false
+compile: false
+cudnn_benchmark: true   # already default
 
-logger: console               # tensorboard + wandb + console
+
+logger: wandb               # tensorboard + wandb + console
 wandb_project: imagenet
 metrics: [top1, top5]
 log_interval: 10

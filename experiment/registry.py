@@ -13,9 +13,69 @@ Then build by name — registry picks the right one based on config.backend:
 
 from typing import Tuple, Callable, Dict, Any, Optional, TYPE_CHECKING
 
-
 if TYPE_CHECKING:
     from .config import Config
+
+
+# =============================================================================
+# Module-level Dataset Wrappers (must be at module scope for pickling)
+# =============================================================================
+
+class _PtArrayDataset:
+    """Wraps numpy arrays as a PyTorch-compatible dataset.
+
+    Defined at module level so multiprocessing DataLoader workers
+    can pickle it (local/nested classes are not picklable).
+    """
+    def __init__(self, images, labels):
+        import torch
+        self.images = torch.from_numpy(images)
+        self.labels = torch.from_numpy(labels)
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        return self.images[idx], self.labels[idx]
+
+
+class _NpArrayDataset:
+    """Wraps numpy arrays as a numpy-backend-compatible dataset.
+
+    Defined at module level so multiprocessing DataLoader workers
+    can pickle it (local/nested classes are not picklable).
+
+    Implements the ``load_sample`` / ``samples`` interface expected by
+    ``python.utils.data_utils.Dataset``.
+    """
+    def __init__(self, images, labels):
+        import numpy as np
+        self.images = images
+        self.labels = labels
+        self.samples = [(i, int(labels[i])) for i in range(len(labels))]
+
+    def __len__(self):
+        return len(self.labels)
+
+    def load_sample(self, idx):
+        return self.images[idx], int(self.labels[idx])
+
+
+class _NpNormalize:
+    """Channel-wise normalize for CHW numpy arrays (ImageNet stats).
+
+    Works as a transform in ``python.vision.transforms.Compose`` pipelines.
+    Falls back gracefully if the custom transforms module already provides one.
+    """
+    def __init__(self, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
+        import numpy as np
+        # shape (C,1,1) for broadcasting over H,W
+        self.mean = np.array(mean, dtype=np.float32).reshape(-1, 1, 1)
+        self.std = np.array(std, dtype=np.float32).reshape(-1, 1, 1)
+
+    def __call__(self, img):
+        return (img - self.mean) / self.std
+
 
 # =============================================================================
 # Registry Machinery
@@ -280,11 +340,6 @@ def _np_r50(config):
     from python.vision.models.resnet import resnet50
     return resnet50(num_classes=config.model_args.get('num_classes', 1000))
 
-@register_model('alexnet', 'numpy')
-def _np_alexnet(config):
-    from python.vision.models.alexnet import alexnet
-    return alexnet(num_classes=config.model_args.get('num_classes', 1000))
-
 
 # =============================================================================
 # Built-in Datasets — PyTorch
@@ -292,30 +347,38 @@ def _np_alexnet(config):
 
 @register_dataset('mnist', 'pytorch')
 def _pt_mnist(config):
-    import torch
+    import numpy as np, torch
     from torch.utils.data import DataLoader
-    from torchvision import datasets, transforms as T
-
-    t = T.Compose([T.ToTensor()])
-    train_full = datasets.MNIST(config.data_dir, train=True, download=True, transform=t)
-    test_ds = datasets.MNIST(config.data_dir, train=False, download=True, transform=t)
-
-    n = len(train_full)
-    n_val = int(n * config.val_split)
-    train_ds, val_ds = torch.utils.data.random_split(
-        train_full, [n - n_val, n_val],
-        generator=torch.Generator().manual_seed(config.seed),
-    )
-    if config.subset:
-        train_ds = torch.utils.data.Subset(train_ds, range(config.subset))
-
-    print(f"  MNIST: {len(train_ds)} train, {len(val_ds)} val, {len(test_ds)} test")
-    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory)
-    return (
-        DataLoader(train_ds, config.batch_size, shuffle=True, **kw),
-        DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
-        DataLoader(test_ds, config.batch_size, shuffle=False, **kw),
-    )
+    from pathlib import Path
+    import urllib.request, gzip, struct
+    data_path = Path(config.data_dir); data_path.mkdir(parents=True, exist_ok=True)
+    base_url = 'https://ossci-datasets.s3.amazonaws.com/mnist/'
+    files = {'train_img': 'train-images-idx3-ubyte.gz', 'train_lbl': 'train-labels-idx1-ubyte.gz',
+             'test_img': 't10k-images-idx3-ubyte.gz', 'test_lbl': 't10k-labels-idx1-ubyte.gz'}
+    for fname in files.values():
+        fp = data_path / fname
+        if not fp.exists(): urllib.request.urlretrieve(base_url + fname, fp)
+    def load_imgs(p):
+        with gzip.open(p, 'rb') as f:
+            _, n, r, c = struct.unpack('>IIII', f.read(16))
+            return np.frombuffer(f.read(), dtype=np.uint8).reshape(n, 1, r, c).astype(np.float32) / 255.0
+    def load_lbls(p):
+        with gzip.open(p, 'rb') as f:
+            struct.unpack('>II', f.read(8))
+            return np.frombuffer(f.read(), dtype=np.uint8).astype(np.int64)
+    train_imgs = load_imgs(data_path / files['train_img']); train_lbls = load_lbls(data_path / files['train_lbl'])
+    test_imgs = load_imgs(data_path / files['test_img']); test_lbls = load_lbls(data_path / files['test_lbl'])
+    np.random.seed(config.seed); n = len(train_imgs); n_val = int(n * config.val_split); idx = np.random.permutation(n)
+    val_imgs, val_lbls = train_imgs[idx[:n_val]], train_lbls[idx[:n_val]]
+    train_imgs, train_lbls = train_imgs[idx[n_val:]], train_lbls[idx[n_val:]]
+    if config.subset: train_imgs, train_lbls = train_imgs[:config.subset], train_lbls[:config.subset]
+    print(f"  MNIST: {len(train_imgs)} train, {len(val_imgs)} val, {len(test_imgs)} test")
+    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
+              persistent_workers=config.num_workers > 0,
+              prefetch_factor=4 if config.num_workers > 0 else None)
+    return (DataLoader(_PtArrayDataset(train_imgs, train_lbls), config.batch_size, shuffle=True, **kw),
+            DataLoader(_PtArrayDataset(val_imgs, val_lbls), config.batch_size, shuffle=False, **kw),
+            DataLoader(_PtArrayDataset(test_imgs, test_lbls), config.batch_size, shuffle=False, **kw))
 
 
 @register_dataset('cifar10', 'pytorch')
@@ -332,7 +395,9 @@ def _pt_cifar10(config):
                                                       generator=torch.Generator().manual_seed(config.seed))
     if config.subset: train_ds = torch.utils.data.Subset(train_ds, range(config.subset))
     print(f"  CIFAR-10: {len(train_ds)} train, {len(val_ds)} val, {len(test_ds)} test")
-    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory)
+    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
+              persistent_workers=config.num_workers > 0,
+              prefetch_factor=4 if config.num_workers > 0 else None)
     return (DataLoader(train_ds, config.batch_size, shuffle=True, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
             DataLoader(test_ds, config.batch_size, shuffle=False, **kw))
@@ -360,7 +425,9 @@ def _pt_imagenette(config):
     val_ds = datasets.ImageFolder(str(root / 'val'), transform=t_val)
     if config.subset: train_ds = torch.utils.data.Subset(train_ds, range(config.subset))
     print(f"  ImageNette: {len(train_ds)} train, {len(val_ds)} val")
-    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory)
+    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
+              persistent_workers=config.num_workers > 0,
+              prefetch_factor=4 if config.num_workers > 0 else None)
     return (DataLoader(train_ds, config.batch_size, shuffle=True, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw))
@@ -370,18 +437,19 @@ def _pt_imagenette(config):
 def _pt_imagenet(config):
     import torch; from torch.utils.data import DataLoader
     from torchvision import datasets, transforms as T; from pathlib import Path
-    from pytorch.experiments.image_net_data import download_imagenet
     sz = config.model_args.get('img_size', 224)
     t_train = T.Compose([T.RandomResizedCrop(sz), T.RandomHorizontalFlip(), T.ToTensor(),
                          T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
     t_val = T.Compose([T.Resize(256), T.CenterCrop(sz), T.ToTensor(),
                        T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-    data_dir = Path(download_imagenet(variant="imagenet"))
-    train_ds = datasets.ImageFolder(str(data_dir / 'train'), transform=t_train)
-    val_ds = datasets.ImageFolder(str(data_dir / 'val'), transform=t_val)
+    root = Path(config.data_dir) / 'imagenet' / 'ILSVRC' / 'Data' / 'CLS-LOC'
+    train_ds = datasets.ImageFolder(str(root / 'train'), transform=t_train)
+    val_ds = datasets.ImageFolder(str(root / 'val'), transform=t_val)
     if config.subset: train_ds = torch.utils.data.Subset(train_ds, range(config.subset))
     print(f"  ImageNet: {len(train_ds)} train, {len(val_ds)} val")
-    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory)
+    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
+              persistent_workers=config.num_workers > 0,
+              prefetch_factor=4 if config.num_workers > 0 else None)
     return (DataLoader(train_ds, config.batch_size, shuffle=True, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw))
@@ -390,11 +458,6 @@ def _pt_imagenet(config):
 # =============================================================================
 # Built-in Datasets — Numpy
 # =============================================================================
-from python.utils.data_utils import Dataset as NpDataset
-class AD_Np(NpDataset):
-    def __init__(s, i, l): s.imgs, s.lbls = i, l; s.samples = [(j, int(l[j])) for j in range(len(l))]
-    def __len__(s): return len(s.lbls)
-    def load_sample(s, i): return s.imgs[i], int(s.lbls[i])
 
 @register_dataset('mnist', 'numpy')
 def _np_mnist(config):
@@ -424,9 +487,9 @@ def _np_mnist(config):
     train_imgs, train_lbls = train_imgs[idx[n_val:]], train_lbls[idx[n_val:]]
     if config.subset: train_imgs, train_lbls = train_imgs[:config.subset], train_lbls[:config.subset]
     print(f"  MNIST: {len(train_imgs)} train, {len(val_imgs)} val, {len(test_imgs)} test")
-    return (NpLoader(AD_Np(train_imgs, train_lbls), batch_size=config.batch_size, shuffle=True),
-            NpLoader(AD_Np(val_imgs, val_lbls), batch_size=config.batch_size, shuffle=False),
-            NpLoader(AD_Np(test_imgs, test_lbls), batch_size=config.batch_size, shuffle=False))
+    return (NpLoader(_NpArrayDataset(train_imgs, train_lbls), batch_size=config.batch_size, shuffle=True),
+            NpLoader(_NpArrayDataset(val_imgs, val_lbls), batch_size=config.batch_size, shuffle=False),
+            NpLoader(_NpArrayDataset(test_imgs, test_lbls), batch_size=config.batch_size, shuffle=False))
 
 
 @register_dataset('imagenette', 'numpy')
@@ -435,20 +498,18 @@ def _np_imagenette(config):
     from python.utils.data_utils import DataLoader as NpLoader
     from python.vision import transforms
     root = download_imagenet(data_dir=config.data_dir, variant='imagenette', size='320')
-    t_train = transforms.Compose([transforms.ToTensor(),
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
-    t_val = transforms.Compose([transforms.ToTensor(),
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
-    train_ds = ImageNetDataset(root, type='train', subset=config.subset, transform=t_train)
-    val_ds = ImageNetDataset(root, type='val', transform=t_val)
-    test_ds = ImageNetDataset(root, type='val', transform=t_val)
+    norm = getattr(transforms, 'Normalize', None)
+    if norm is not None:
+        norm_t = norm((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+    else:
+        norm_t = _NpNormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+    t_train = transforms.Compose([transforms.RandomResizedCrop(224), transforms.RandomHorizontalFlip(), norm_t])
+    t_val = transforms.Compose([norm_t])
+    train_ds = ImageNetDataset(root, train=True, subset=config.subset, transform=t_train)
+    val_ds = ImageNetDataset(root, train=False, transform=t_val)
     return (NpLoader(train_ds, batch_size=config.batch_size, shuffle=True, num_workers=8),
             NpLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=8),
-            NpLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=8))
+            NpLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=8))
 
 
 @register_dataset('imagenet', 'numpy')
@@ -457,17 +518,15 @@ def _np_imagenet(config):
     from python.utils.data_utils import DataLoader as NpLoader
     from python.vision import transforms
     root = download_imagenet(data_dir=config.data_dir, variant='imagenet')
-    t_train = transforms.Compose([transforms.ToTensor(),
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
-    t_val = transforms.Compose([transforms.ToTensor(),
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
-    train_ds = ImageNetDataset(root, type='train', subset=config.subset, transform=t_train)
-    val_ds = ImageNetDataset(root, type='val', transform=t_val)
-    test_ds = ImageNetDataset(root, type='test', transform=t_val)
+    norm = getattr(transforms, 'Normalize', None)
+    if norm is not None:
+        norm_t = norm((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+    else:
+        norm_t = _NpNormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+    t_train = transforms.Compose([transforms.RandomResizedCrop(224), transforms.RandomHorizontalFlip(), norm_t])
+    t_val = transforms.Compose([norm_t])
+    train_ds = ImageNetDataset(root, train=True, subset=config.subset, transform=t_train)
+    val_ds = ImageNetDataset(root, train=False, transform=t_val)
     return (NpLoader(train_ds, batch_size=config.batch_size, shuffle=True, num_workers=8),
             NpLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=8),
-            NpLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=8))
+            NpLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=8))

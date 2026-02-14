@@ -66,6 +66,7 @@ class Logger:
     def _init_wandb(self):
         try:
             import wandb
+            wandb.login(key=self.config.wandb_api)
             self._wandb_run = wandb.init(
                 project=self.config.wandb_project,
                 entity=self.config.wandb_entity,

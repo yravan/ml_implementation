@@ -28,7 +28,7 @@ class Config:
     dataset: str = "mnist"             # mnist, imagenette, imagenet, cifar10
     data_dir: str = "./data"
     val_split: float = 0.1
-    num_workers: int = 4
+    num_workers: int = 8
     pin_memory: bool = True
 
     # ── Model ────────────────────────────────────────────────────────
@@ -53,6 +53,7 @@ class Config:
     logger: str = "tensorboard"        # tensorboard, wandb, console, all
     wandb_project: str = "dl-experiments"
     wandb_entity: Optional[str] = None
+    wandb_api: str = "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"
     log_interval: int = 50             # batches between prints
     save_every: int = 0                # save checkpoint every N epochs (0 = best only)
 

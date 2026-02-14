@@ -22,8 +22,11 @@ optimizer_args:
 scheduler: step
 warmup_epochs: 5
 
-num_workers: 8
+num_workers: 4
 pin_memory: true
+amp: false
+compile: false
+cudnn_benchmark: true   # already default
 
 logger: console               # tensorboard + wandb + console
 wandb_project: imagenet

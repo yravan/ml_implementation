@@ -5,7 +5,7 @@
 
 name: mnist-cnn
 dataset: mnist
-backend: numpy
+backend: pytorch
 model: cnn
 model_args:
   conv_channels: 32
@@ -18,7 +18,7 @@ optimizer: adamw
 weight_decay: 0.0001
 scheduler: cosine
 
-logger: console
+logger: wandb
 metrics: [top1]
 log_interval: 100
 

@@ -49,19 +49,18 @@ def _is_torch(x):
 
 def top1_accuracy(logits, targets) -> float:
     if _is_torch(logits):
-        return float((logits.argmax(1) == targets).float().mean().item())
+        return (logits.argmax(1) == targets).sum()  # stays on GPU
     logits, targets = _to_numpy(logits), _to_numpy(targets)
-    return float((logits.argmax(axis=1) == targets).mean())
+    return float((logits.argmax(axis=1) == targets).sum())
 
 
 def top5_accuracy(logits, targets) -> float:
     if _is_torch(logits):
-        import torch
         _, top5 = logits.topk(5, dim=1)
-        return float((top5 == targets.unsqueeze(1)).any(1).float().mean().item())
+        return (top5 == targets.unsqueeze(1)).any(1).sum()  # stays on GPU
     logits, targets = _to_numpy(logits), _to_numpy(targets)
     top5 = np.argsort(logits, axis=1)[:, -5:]
-    return float(np.any(top5 == targets[:, None], axis=1).mean())
+    return float(np.any(top5 == targets[:, None], axis=1).sum())
 
 
 METRIC_FNS = {'top1': top1_accuracy, 'top5': top5_accuracy}
@@ -119,7 +118,7 @@ class _PyTorchBackend:
                 self.torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
             optimizer.step()
 
-        return logits, loss.item(), inputs.shape[0]
+        return logits, loss.detach(), inputs.shape[0], targets
 
     def eval_step(self, model, batch, criterion):
         inputs, targets = batch[0], batch[1]
@@ -133,7 +132,7 @@ class _PyTorchBackend:
         else:
             logits = model(inputs)
             loss = criterion(logits, targets)
-        return logits, loss.item(), inputs.shape[0]
+        return logits, loss.detach(), inputs.shape[0], targets
 
     def no_grad_context(self):
         return self.torch.no_grad()
@@ -197,7 +196,7 @@ class _NumpyBackend:
         optimizer.step()
 
         batch_loss = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
-        return logits, batch_loss, len(inputs)
+        return logits, batch_loss, len(inputs), targets
 
     def eval_step(self, model, batch, criterion):
         from python.foundations.computational_graph import Tensor
@@ -215,7 +214,7 @@ class _NumpyBackend:
         loss = criterion(logits, y, reduction='mean')
 
         batch_loss = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
-        return logits, batch_loss, len(inputs)
+        return logits, batch_loss, len(inputs), targets
 
     def no_grad_context(self):
         """Context manager that sets _no_grad flag in custom framework."""
@@ -267,45 +266,45 @@ def train_one_epoch(model, loader, criterion, optimizer, config, logger,
                     metric_fns, backend, epoch):
     """Train for one epoch. Returns dict of averaged metrics."""
     model.train()
-    total_loss = 0.0
+    total_loss = 0.0       # accumulator (GPU tensor for pytorch, float for numpy)
     total_samples = 0
     metric_totals = {name: 0.0 for name in metric_fns}
     epoch_start = time.time()
 
     for batch_idx, batch in enumerate(loader):
-        logits, batch_loss, n = backend.train_step(
+        logits, batch_loss, n, targets_d = backend.train_step(
             model, batch, criterion, optimizer, config
         )
 
-        total_loss += batch_loss * n
+        # Accumulate — stays on GPU for pytorch (no sync)
+        total_loss = total_loss + batch_loss * n
         total_samples += n
 
-        # Metrics run on-device (GPU or CPU) — only a scalar .item() syncs
         logits_d = logits.detach() if hasattr(logits, 'detach') else logits
-        targets_d = batch[1]
         for name, fn in metric_fns.items():
-            metric_totals[name] += fn(logits_d, targets_d) * n
+            metric_totals[name] = metric_totals[name] + fn(logits_d, targets_d)
 
-        # Log batch
+        # Log batch — THIS is where we sync (only every log_interval batches)
         global_step = (epoch - 1) * len(loader) + batch_idx
         if config.log_interval and (batch_idx + 1) % config.log_interval == 0:
-            avg_loss = total_loss / total_samples
+            avg_loss = float(total_loss) / total_samples  # single sync here
             elapsed = time.time() - epoch_start
             ips = total_samples / elapsed if elapsed > 0 else 0.0
             parts = [f"Batch {batch_idx+1:5d}/{len(loader)}", f"Loss: {avg_loss:.4f}"]
             for name in metric_fns:
-                parts.append(f"{name}: {metric_totals[name]/total_samples*100:.2f}%")
+                parts.append(f"{name}: {float(metric_totals[name])/total_samples*100:.2f}%")
             parts.append(f"{ips:.0f} img/s")
             print(f"    {' | '.join(parts)}")
-            logger.log_scalar('train/batch_loss', batch_loss, step=global_step)
+            logger.log_scalar('train/batch_loss', avg_loss, step=global_step)
             logger.log_scalar('train/throughput', ips, step=global_step)
 
+    # Final sync at end of epoch
     epoch_elapsed = time.time() - epoch_start
     throughput = total_samples / epoch_elapsed if epoch_elapsed > 0 else 0.0
 
-    results = {'loss': total_loss / total_samples}
+    results = {'loss': float(total_loss) / total_samples}
     for name in metric_fns:
-        results[name] = metric_totals[name] / total_samples
+        results[name] = float(metric_totals[name]) / total_samples
     results['_throughput'] = throughput
     return results
 
@@ -314,7 +313,7 @@ def evaluate(model, loader, criterion, metric_fns, backend,
              collect_predictions=False):
     """Evaluate model. Returns dict of averaged metrics."""
     model.eval()
-    total_loss = 0.0
+    total_loss = 0.0       # GPU tensor for pytorch, float for numpy
     total_samples = 0
     metric_totals = {name: 0.0 for name in metric_fns}
     all_logits = [] if collect_predictions else None
@@ -322,24 +321,23 @@ def evaluate(model, loader, criterion, metric_fns, backend,
 
     with backend.no_grad_context():
         for batch in loader:
-            logits, batch_loss, n = backend.eval_step(model, batch, criterion)
+            logits, batch_loss, n, targets_d = backend.eval_step(model, batch, criterion)
 
-            total_loss += batch_loss * n
+            total_loss = total_loss + batch_loss * n
             total_samples += n
 
-            # Metrics run on-device — only .item() scalar syncs
             logits_d = logits.detach() if hasattr(logits, 'detach') else logits
-            targets_d = batch[1]
             for name, fn in metric_fns.items():
-                metric_totals[name] += fn(logits_d, targets_d) * n
+                metric_totals[name] = metric_totals[name] + fn(logits_d, targets_d)
 
             if collect_predictions:
                 all_logits.append(_to_numpy(logits))
-                all_labels.append(_to_numpy(batch[1]))
+                all_labels.append(_to_numpy(targets_d))
 
-    results = {'loss': total_loss / total_samples}
+    # Single sync at end of eval
+    results = {'loss': float(total_loss) / total_samples}
     for name in metric_fns:
-        results[name] = metric_totals[name] / total_samples
+        results[name] = float(metric_totals[name]) / total_samples
     if collect_predictions:
         results['logits'] = np.concatenate(all_logits)
         results['labels'] = np.concatenate(all_labels)
