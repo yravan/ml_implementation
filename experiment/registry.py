@@ -13,6 +13,8 @@ Then build by name — registry picks the right one based on config.backend:
 
 from typing import Tuple, Callable, Dict, Any, Optional, TYPE_CHECKING
 
+from pytorch.experiments.image_net_data import download_imagenet
+
 if TYPE_CHECKING:
     from .config import Config
 
@@ -250,25 +252,25 @@ def _pt_cnn(config):
 
 @register_model('resnet18', 'pytorch')
 def _pt_r18(config):
-    import torch.nn as nn; from torchvision.models import resnet18
+    import torch.nn as nn; from pytorch.vision.models import resnet18
     nc = config.model_args.get('num_classes', 1000)
-    m = resnet18(pretrained=config.pretrained)
+    m = resnet18(num_classes=nc)
     if nc != 1000: m.fc = nn.Linear(512, nc)
     return m
 
 @register_model('resnet34', 'pytorch')
 def _pt_r34(config):
-    import torch.nn as nn; from torchvision.models import resnet34
+    import torch.nn as nn; from pytorch.vision.models import resnet34
     nc = config.model_args.get('num_classes', 1000)
-    m = resnet34(pretrained=config.pretrained)
+    m = resnet34(num_classes=nc)
     if nc != 1000: m.fc = nn.Linear(512, nc)
     return m
 
 @register_model('resnet50', 'pytorch')
 def _pt_r50(config):
-    import torch.nn as nn; from torchvision.models import resnet50
+    import torch.nn as nn; from pytorch.vision.models import resnet50
     nc = config.model_args.get('num_classes', 1000)
-    m = resnet50(pretrained=config.pretrained)
+    m = resnet50(num_classes=nc)
     if nc != 1000: m.fc = nn.Linear(2048, nc)
     return m
 
@@ -442,14 +444,15 @@ def _pt_imagenet(config):
                          T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
     t_val = T.Compose([T.Resize(256), T.CenterCrop(sz), T.ToTensor(),
                        T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-    root = Path(config.data_dir) / 'imagenet' / 'ILSVRC' / 'Data' / 'CLS-LOC'
+    root = Path (download_imagenet(config.data_dir, 'imagenet'))
     train_ds = datasets.ImageFolder(str(root / 'train'), transform=t_train)
     val_ds = datasets.ImageFolder(str(root / 'val'), transform=t_val)
     if config.subset: train_ds = torch.utils.data.Subset(train_ds, range(config.subset))
     print(f"  ImageNet: {len(train_ds)} train, {len(val_ds)} val")
     kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
               persistent_workers=config.num_workers > 0,
-              prefetch_factor=4 if config.num_workers > 0 else None)
+              prefetch_factor=2 if config.num_workers > 0 else None,
+              drop_last=True)
     return (DataLoader(train_ds, config.batch_size, shuffle=True, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw))

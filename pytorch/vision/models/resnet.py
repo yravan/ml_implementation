@@ -31,10 +31,8 @@ from torch.nn import (
     MaxPool2d,
     AdaptiveAvgPool2d,
     Linear,
-    kaiming_normal_,
-    ones_,
-    zeros_,
 )
+from torch.nn.init import kaiming_normal_, ones_, zeros_
 
 
 class BasicBlock(Module):

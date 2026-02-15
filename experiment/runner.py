@@ -365,6 +365,10 @@ def run(config: Config) -> Dict:
             torch.cuda.manual_seed_all(config.seed)
             if config.cudnn_benchmark:
                 torch.backends.cudnn.benchmark = True
+            # Use tensor cores for FP32 matmuls (TF32: same range, slightly reduced precision)
+            torch.set_float32_matmul_precision("high")
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
         # pin_memory is not supported on MPS — silently disable to
         # avoid the noisy UserWarning from DataLoader.
         if config.pin_memory and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():

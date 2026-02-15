@@ -171,7 +171,7 @@ class Logger:
         """W&B model watching (auto-logs gradients/params)."""
         if self._use_wandb and self._wandb_run:
             import wandb
-            wandb.watch(model, log='all', log_freq=100)
+            # wandb.watch(model, log='all', log_freq=100)
 
     # -- Epoch Tracking -----------------------------------------------
 

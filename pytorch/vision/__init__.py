@@ -27,7 +27,7 @@ Example:
 """
 
 from . import models
-from . import transforms
-from . import ops
+from torchvision import transforms
+from torchvision import ops
 
 __all__ = ['models', 'transforms', 'ops']
