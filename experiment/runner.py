@@ -95,7 +95,7 @@ class _PyTorchBackend:
 
     def train_step(self, model, batch, criterion, optimizer, config):
         inputs, targets = batch[0], batch[1]
-        inputs = inputs.to(self.device, non_blocking=True)
+        inputs = inputs.to(self.device, non_blocking=True, memory_format=self.torch.channels_last)
         targets = targets.to(self.device, non_blocking=True)
 
         if self._use_amp:
@@ -122,7 +122,7 @@ class _PyTorchBackend:
 
     def eval_step(self, model, batch, criterion):
         inputs, targets = batch[0], batch[1]
-        inputs = inputs.to(self.device, non_blocking=True)
+        inputs = inputs.to(self.device, non_blocking=True, memory_format=self.torch.channels_last)
         targets = targets.to(self.device, non_blocking=True)
 
         if self._use_amp:
@@ -398,10 +398,15 @@ def run(config: Config) -> Dict:
     print(f"\n{'─'*70}\n Model\n{'─'*70}")
     model = build_model(config)
     model = backend.to_device(model)
+    if config.backend == 'pytorch':
+        import torch
+        if torch.cuda.is_available():
+            model = model.to(memory_format=torch.channels_last)
+            print("  memory_format: channels_last (NHWC)")
     if config.compile and config.backend == 'pytorch':
         import torch
-        model = torch.compile(model)
-        print("  torch.compile: enabled")
+        model = torch.compile(model, mode='max-autotune')
+        print("  torch.compile: enabled (max-autotune)")
     print(model)
     print(f"  Parameters: {backend.param_count(model):,}")
 

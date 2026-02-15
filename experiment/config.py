@@ -69,6 +69,7 @@ class Config:
     amp: bool = False                  # automatic mixed precision (fp16/bf16)
     compile: bool = False              # torch.compile (PyTorch 2.x)
     cudnn_benchmark: bool = True       # auto-tune convolution algorithms
+    ffcv: bool = False                 # use FFCV data loading (requires pip install ffcv)
 
     # ── Derived ──────────────────────────────────────────────────────
     @property

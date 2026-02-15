@@ -437,6 +437,8 @@ def _pt_imagenette(config):
 
 @register_dataset('imagenet', 'pytorch')
 def _pt_imagenet(config):
+    if config.ffcv:
+        return _pt_imagenet_ffcv(config)
     import torch; from torch.utils.data import DataLoader
     from torchvision import datasets, transforms as T; from pathlib import Path
     sz = config.model_args.get('img_size', 224)
@@ -456,6 +458,129 @@ def _pt_imagenet(config):
     return (DataLoader(train_ds, config.batch_size, shuffle=True, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw))
+
+
+def _write_beton(split_dir, beton_path, max_resolution=256, num_workers=16,
+                 compress_probability=1.0, jpeg_quality=90):
+    """Convert an ImageFolder split to FFCV .beton format."""
+    from ffcv.writer import DatasetWriter
+    from ffcv.fields import RGBImageField, IntField
+    from torchvision.datasets import ImageFolder
+
+    print(f"  Writing {beton_path} (this is a one-time cost)...")
+    ds = ImageFolder(str(split_dir))
+    writer = DatasetWriter(str(beton_path), {
+        'image': RGBImageField(
+            max_resolution=max_resolution,
+            compress_probability=compress_probability,
+            jpeg_quality=jpeg_quality,
+        ),
+        'label': IntField(),
+    }, num_workers=num_workers)
+    writer.from_indexed_dataset(ds)
+    print(f"  Done: {beton_path} ({beton_path.stat().st_size / 1e9:.1f} GB)")
+
+
+def _pt_imagenet_ffcv(config):
+    """ImageNet via FFCV — fast data loading with .beton files."""
+    import torch
+    import numpy as np
+    from pathlib import Path
+    from ffcv.loader import Loader, OrderOption
+    from ffcv.fields.decoders import (
+        RandomResizedCropRGBImageDecoder,
+        CenterCropRGBImageDecoder,
+        IntDecoder,
+    )
+
+    from ffcv.transforms import (
+        ToTensor, ToDevice, ToTorchImage, NormalizeImage,
+        RandomHorizontalFlip, Squeeze,
+    )
+
+    root = Path(download_imagenet(config.data_dir, 'imagenet'))
+    beton_dir = root / 'ffcv'
+    beton_dir.mkdir(exist_ok=True)
+
+    train_beton = beton_dir / 'train.beton'
+    val_beton = beton_dir / 'val.beton'
+
+    # Write .beton files if they don't exist
+    if not train_beton.exists():
+        _write_beton(root / 'train', train_beton, max_resolution=256,
+                     num_workers=config.num_workers)
+    else:
+        print(f"  FFCV train beton exists: {train_beton}")
+
+    if not val_beton.exists():
+        _write_beton(root / 'val', val_beton, max_resolution=256,
+                     num_workers=config.num_workers)
+    else:
+        print(f"  FFCV val beton exists: {val_beton}")
+
+    # ImageNet normalization (FFCV expects 0-255 scale)
+    MEAN = np.array([0.485, 0.456, 0.406]) * 255
+    STD = np.array([0.229, 0.224, 0.225]) * 255
+
+    sz = config.model_args.get('img_size', 224)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    train_pipeline = {
+        'image': [
+            RandomResizedCropRGBImageDecoder((sz, sz)),
+            RandomHorizontalFlip(),
+            ToTensor(),
+            ToDevice(device, non_blocking=True),
+            ToTorchImage(),
+            NormalizeImage(MEAN, STD, np.float32),
+        ],
+        'label': [
+            IntDecoder(),
+            ToTensor(),
+            Squeeze(),
+            ToDevice(device, non_blocking=True),
+        ],
+    }
+    val_pipeline = {
+        'image': [
+            CenterCropRGBImageDecoder((sz, sz), ratio=sz / 256),
+            ToTensor(),
+            ToDevice(device, non_blocking=True),
+            ToTorchImage(),
+            NormalizeImage(MEAN, STD, np.float32),
+        ],
+        'label': [
+            IntDecoder(),
+            ToTensor(),
+            Squeeze(),
+            ToDevice(device, non_blocking=True),
+        ],
+    }
+
+    train_loader = Loader(
+        str(train_beton),
+        batch_size=config.batch_size,
+        num_workers=config.num_workers,
+        order=OrderOption.RANDOM,
+        os_cache=True,
+        drop_last=True,
+        pipelines=train_pipeline,
+    )
+
+    val_loader = Loader(
+        str(val_beton),
+        batch_size=config.batch_size,
+        num_workers=config.num_workers,
+        order=OrderOption.SEQUENTIAL,
+        os_cache=True,
+        drop_last=False,
+        pipelines=val_pipeline,
+    )
+
+    print(f"  ImageNet FFCV: {len(train_loader) * config.batch_size} train, "
+          f"{len(val_loader) * config.batch_size} val")
+
+    return train_loader, val_loader, val_loader
 
 
 # =============================================================================
