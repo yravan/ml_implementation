@@ -240,7 +240,7 @@ def log_sigmoid(x: np.ndarray) -> np.ndarray:
         Input: (*)
         Output: Same as input
     """
-    return -softplus(x)
+    return -softplus(-x)
 
 
 def softplus(x: np.ndarray) -> np.ndarray:

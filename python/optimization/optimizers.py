@@ -241,9 +241,21 @@ class Optimizer:
         """Restore optimizer state from checkpoint."""
         raise NotImplementedError("Subclasses must implement set_state()")
 
-    def set_lr(self, lr: float) -> None:
+    def set_lr(self, lr: Dict[int, float]) -> None:
         """Update learning rate."""
-        self.defaults['lr'] = lr
+        for group_index, lr in lr.items():
+            if group_index == -1:
+                self.defaults['lr'] = lr
+            else:
+                if 'lr' in self.param_groups[group_index]:
+                    self.param_groups[group_index]["lr"] = lr
+
+    def get_lr(self) -> Dict[int, float]:
+        lr = {-1: self.defaults['lr']}
+        for i, group in enumerate(self.param_groups):
+            if 'lr' in group:
+                lr[i] = group["lr"]
+        return lr
 
 
 # =============================================================================

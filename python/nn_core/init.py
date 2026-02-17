@@ -50,11 +50,24 @@ REFERENCES:
 
 import math
 import numpy as np
-from typing import Literal, Tuple
-
-from numpy import dtype
+from typing import Literal, Tuple, Union
 
 from ..foundations import Tensor
+
+
+def _as_np(tensor):
+    """Return the underlying numpy array for a Tensor or a numpy array."""
+    if isinstance(tensor, np.ndarray):
+        return tensor
+    return tensor.data  # Tensor.data is a numpy array
+
+
+def _set_data(tensor, values):
+    """Write *values* into tensor, works for both Tensor and numpy array."""
+    if isinstance(tensor, np.ndarray):
+        tensor[:] = values
+    else:
+        tensor.data = values
 
 
 # =============================================================================
@@ -221,7 +234,8 @@ def xavier_uniform_(tensor: Tensor, gain: float = 1.0) -> None:
     """
     fan_in, fan_out = calculate_fan_in_fan_out(tensor)
     limit = gain * np.sqrt(6 / (fan_in + fan_out))
-    tensor.data = np.random.uniform(-limit, limit, tensor.data.shape).astype(tensor.data.dtype, copy=False)
+    arr = _as_np(tensor)
+    _set_data(tensor, np.random.uniform(-limit, limit, arr.shape).astype(arr.dtype, copy=False))
 
 
 def xavier_normal_(tensor: Tensor, gain: float = 1.0) -> None:
@@ -249,7 +263,8 @@ def xavier_normal_(tensor: Tensor, gain: float = 1.0) -> None:
     """
     fan_in, fan_out = calculate_fan_in_fan_out(tensor)
     std = gain * np.sqrt(2 / (fan_in + fan_out))
-    tensor.data = np.random.normal(0, std, tensor.data.shape).astype(tensor.data.dtype, copy=False)
+    arr = _as_np(tensor)
+    _set_data(tensor, np.random.normal(0, std, arr.shape).astype(arr.dtype, copy=False))
 
 
 # =============================================================================
@@ -299,7 +314,8 @@ def kaiming_uniform_(
         a = 0.0
     gain = np.sqrt(2 / (1 + a**2))
     limit = gain * np.sqrt(3 / fan)
-    tensor.data = np.random.uniform(-limit, limit, tensor.data.shape).astype(tensor.data.dtype, copy=False)
+    arr = _as_np(tensor)
+    _set_data(tensor, np.random.uniform(-limit, limit, arr.shape).astype(arr.dtype, copy=False))
 
 
 def kaiming_normal_(
@@ -342,7 +358,8 @@ def kaiming_normal_(
         a = 0.0
     gain = np.sqrt(2 / (1 + a**2))
     std = gain * np.sqrt(1 / fan)
-    tensor.data = np.random.normal(0, std, tensor.data.shape).astype(tensor.data.dtype, copy=False)
+    arr = _as_np(tensor)
+    _set_data(tensor, np.random.normal(0, std, arr.shape).astype(arr.dtype, copy=False))
 
 
 # =============================================================================
@@ -368,7 +385,8 @@ def normal_(tensor: Tensor, mean: float = 0.0, std: float = 0.01) -> None:
         >>> normal_(weight, mean=0.0, std=0.01)
         >>> # weight now contains values from N(0, 0.01^2)
     """
-    tensor.data = np.random.normal(mean, std, tensor.data.shape).astype(tensor.data.dtype, copy=False)
+    arr = _as_np(tensor)
+    _set_data(tensor, np.random.normal(mean, std, arr.shape).astype(arr.dtype, copy=False))
 
 
 def uniform_(tensor: Tensor, a: float = 0.0, b: float = 1.0) -> None:
@@ -390,7 +408,8 @@ def uniform_(tensor: Tensor, a: float = 0.0, b: float = 1.0) -> None:
         >>> uniform_(weight, a=-0.1, b=0.1)
         >>> # weight now contains values from U[-0.1, 0.1]
     """
-    tensor.data = np.random.uniform(a, b, tensor.data.shape).astype(tensor.data.dtype, copy=False)
+    arr = _as_np(tensor)
+    _set_data(tensor, np.random.uniform(a, b, arr.shape).astype(arr.dtype, copy=False))
 
 
 def zeros_(tensor: Tensor) -> None:
@@ -490,17 +509,29 @@ def orthogonal_(tensor: Tensor, gain: float = 1.0) -> Tensor:
         >>> # For very deep networks, use gain < 1 to prevent blow-up
         >>> orthogonal_(weight, gain=0.5)
     """
-    raise NotImplementedError(
-        "TODO: Implement orthogonal initialization\n"
-        "1. Get shape from tensor.data.shape\n"
-        "2. Validate len(shape) >= 2, else raise ValueError\n"
-        "3. Flatten to 2D: rows = shape[0], cols = product of shape[1:]\n"
-        "4. Generate random matrix: a = np.random.normal(0.0, 1.0, (rows, cols))\n"
-        "5. QR decomposition:\n"
-        "   - If rows < cols: q, r = np.linalg.qr(a.T); q = q.T\n"
-        "   - Else: q, r = np.linalg.qr(a)\n"
-        "6. Fix signs: d = np.diag(r); ph = np.sign(d); q *= ph\n"
-        "7. Scale: q = gain * q\n"
-        "8. Reshape: tensor.data = q.reshape(shape)\n"
-        "9. Return tensor"
-    )
+    arr = _as_np(tensor)
+    shape = arr.shape
+    if len(shape) < 2:
+        raise ValueError("Orthogonal initialization requires at least 2D tensor")
+
+    rows = shape[0]
+    cols = 1
+    for s in shape[1:]:
+        cols *= s
+
+    # Generate random matrix and compute QR decomposition
+    a = np.random.normal(0.0, 1.0, (rows, cols))
+    if rows < cols:
+        q, r = np.linalg.qr(a.T)
+        q = q.T
+    else:
+        q, r = np.linalg.qr(a)
+
+    # Fix signs to make decomposition unique
+    d = np.diag(r)
+    ph = np.sign(d)
+    q *= ph
+
+    # Scale by gain and reshape back
+    _set_data(tensor, (gain * q).reshape(shape).astype(arr.dtype, copy=False))
+    return tensor

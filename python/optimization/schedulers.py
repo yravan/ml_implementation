@@ -112,11 +112,11 @@ class LRScheduler:
             last_epoch: Index of last epoch (-1 = starting fresh)
         """
         self.optimizer = optimizer
+        self.base_lr = optimizer.get_lr()
         self.last_epoch = last_epoch
-        self.base_lr = optimizer.defaults.get('lr', 0.001)
         self._step_count = 0
 
-    def get_lr(self) -> float:
+    def get_lr(self) -> Dict[int, float]:
         """Compute learning rate for current step."""
         raise NotImplementedError("Subclasses must implement get_lr()")
 
@@ -137,7 +137,7 @@ class LRScheduler:
         lr = self.get_lr()
         self.optimizer.set_lr(lr)
 
-    def get_last_lr(self) -> float:
+    def get_last_lr(self) -> Dict[int, float]:
         """Return last computed learning rate."""
         return self.get_lr()
 
@@ -186,13 +186,14 @@ class StepLR(LRScheduler):
         self.step_size = step_size
         self.gamma = gamma
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement StepLR.get_lr()\n"
-            "Hint:\n"
-            "  num_decays = self.last_epoch // self.step_size\n"
-            "  return self.base_lr * (self.gamma ** num_decays)"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        new_lr = {}
+        num_decays = self._step_count // self.step_size
+        for i, lr in self.base_lr.items():
+            new_lr[i] = lr * self.gamma ** num_decays
+        return new_lr
+
+
 
 
 class MultiStepLR(LRScheduler):
@@ -219,14 +220,12 @@ class MultiStepLR(LRScheduler):
         self.milestones = sorted(milestones)
         self.gamma = gamma
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement MultiStepLR.get_lr()\n"
-            "Hint:\n"
-            "  num_decays = sum(1 for m in self.milestones if self.last_epoch >= m)\n"
-            "  return self.base_lr * (self.gamma ** num_decays)"
-        )
-
+    def get_lr(self) -> Dict[int, float]:
+        num_decays = sum(1 for m in self.milestones if m <= self._step_count)
+        new_lr = {}
+        for i, lr in self.base_lr.items():
+            new_lr[i] = lr * self.gamma ** num_decays
+        return new_lr
 
 # =============================================================================
 # Continuous Decay Schedulers
@@ -250,12 +249,11 @@ class ExponentialLR(LRScheduler):
         super().__init__(optimizer, last_epoch)
         self.gamma = gamma
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement ExponentialLR.get_lr()\n"
-            "Hint:\n"
-            "  return self.base_lr * (self.gamma ** self.last_epoch)"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        new_lr = {}
+        for i, lr in self.base_lr.items():
+            new_lr[i] = lr * self.gamma ** self._step_count
+        return new_lr
 
 
 class LinearLR(LRScheduler):
@@ -289,18 +287,13 @@ class LinearLR(LRScheduler):
         self.end_factor = end_factor
         self.total_iters = total_iters
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement LinearLR.get_lr()\n"
-            "Hint:\n"
-            "  if self.last_epoch >= self.total_iters:\n"
-            "      return self.base_lr * self.end_factor\n"
-            "  \n"
-            "  # Linear interpolation\n"
-            "  progress = self.last_epoch / self.total_iters\n"
-            "  factor = self.start_factor + progress * (self.end_factor - self.start_factor)\n"
-            "  return self.base_lr * factor"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        interp_factor = (self.end_factor - self.start_factor) / self.total_iters * self._step_count + self.start_factor
+        interp_factor = np.clip(interp_factor, self.start_factor, self.end_factor)
+        new_lr = {}
+        for i, lr in self.base_lr.items():
+            new_lr[i] = lr * interp_factor
+        return new_lr
 
 
 class PolynomialLR(LRScheduler):
@@ -328,16 +321,15 @@ class PolynomialLR(LRScheduler):
         self.total_iters = total_iters
         self.power = power
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement PolynomialLR.get_lr()\n"
-            "Hint:\n"
-            "  if self.last_epoch >= self.total_iters:\n"
-            "      return 0.0\n"
-            "  \n"
-            "  progress = self.last_epoch / self.total_iters\n"
-            "  return self.base_lr * ((1 - progress) ** self.power)"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        progress = min(self._step_count / self.total_iters, 1.0)
+        decay_factor = (1 - progress) ** self.power
+        new_lr = {}
+        for i, lr in self.base_lr.items():
+            new_lr[i] = lr * decay_factor
+        return new_lr
+
+
 
 
 # =============================================================================
@@ -378,15 +370,12 @@ class CosineAnnealingLR(LRScheduler):
         self.T_max = T_max
         self.eta_min = eta_min
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement CosineAnnealingLR.get_lr()\n"
-            "Hint:\n"
-            "  # Cosine schedule formula\n"
-            "  progress = self.last_epoch / self.T_max\n"
-            "  cosine_factor = (1 + math.cos(math.pi * progress)) / 2\n"
-            "  return self.eta_min + (self.base_lr - self.eta_min) * cosine_factor"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        interp_factor = (1 + np.cos(np.pi * (self.last_epoch / self.T_max))) / 2
+        new_lr = {}
+        for i, lr in self.base_lr.items():
+            new_lr[i] = (lr - self.eta_min) * interp_factor + self.eta_min
+        return new_lr
 
 
 class CosineAnnealingWarmRestarts(LRScheduler):
@@ -437,24 +426,29 @@ class CosineAnnealingWarmRestarts(LRScheduler):
         self.eta_min = eta_min
         self.T_cur = 0
         self.T_i = T_0
+        self.period = 0
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement CosineAnnealingWarmRestarts.get_lr()\n"
-            "Hint:\n"
-            "  # Find which restart period we're in\n"
-            "  if self.T_mult == 1:\n"
-            "      T_cur = self.last_epoch % self.T_0\n"
-            "      T_i = self.T_0\n"
-            "  else:\n"
-            "      # Geometric series: T_0 * (1 + T_mult + T_mult^2 + ...)\n"
-            "      # Find n such that sum(T_0 * T_mult^k for k in 0..n-1) <= epoch\n"
-            "      # ... compute T_cur and T_i ...\n"
-            "  \n"
-            "  # Cosine within current period\n"
-            "  cosine_factor = (1 + math.cos(math.pi * T_cur / T_i)) / 2\n"
-            "  return self.eta_min + (self.base_lr - self.eta_min) * cosine_factor"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        if self.period > 0:
+            if self.T_mult == 1:
+                num_epochs_before = self.T_0 * self.period
+            else:
+                num_epochs_before = self.T_0 * (self.T_mult ** self.period - 1) / (self.T_mult - 1)
+        else:
+            num_epochs_before = 0
+        T_cur = self._step_count - num_epochs_before
+        new_lr = {}
+        if T_cur <= self.T_i:
+            interp_factor = (1 + np.cos(np.pi * (T_cur / self.T_i))) / 2
+        else:
+            self.period += 1
+            self.T_i *= self.T_mult
+            interp_factor = 1
+        for i, lr in self.base_lr.items():
+            new_lr[i] = (lr - self.eta_min) * interp_factor + self.eta_min
+        return new_lr
+
+
 
 
 # =============================================================================
@@ -485,14 +479,14 @@ class CyclicLR(LRScheduler):
     """
 
     def __init__(self, optimizer: 'Optimizer',
-                 base_lr: float,
-                 max_lr: float,
+                 max_lr: Union[float, Dict[int, float]],
+                 # base_lr: Union[float, Dict[int, float]],
                  step_size_up: int = 2000,
                  step_size_down: Optional[int] = None,
                  mode: str = 'triangular',
                  gamma: float = 1.0,
                  scale_fn: Optional[Callable[[int], float]] = None,
-                 cycle_momentum: bool = True,
+                 cycle_momentum: bool = False,
                  base_momentum: float = 0.8,
                  max_momentum: float = 0.9,
                  last_epoch: int = -1):
@@ -508,7 +502,6 @@ class CyclicLR(LRScheduler):
             cycle_momentum: Also cycle momentum (inversely to LR)
         """
         super().__init__(optimizer, last_epoch)
-        self.base_lr = base_lr
         self.max_lr = max_lr
         self.step_size_up = step_size_up
         self.step_size_down = step_size_down or step_size_up
@@ -518,32 +511,60 @@ class CyclicLR(LRScheduler):
         self.cycle_momentum = cycle_momentum
         self.base_momentum = base_momentum
         self.max_momentum = max_momentum
+        self.cur_cycle_step = 0
+        if self.cycle_momentum:
+            raise NotImplementedError
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement CyclicLR.get_lr()\n"
-            "Hint:\n"
-            "  cycle_length = self.step_size_up + self.step_size_down\n"
-            "  cycle = self.last_epoch // cycle_length\n"
-            "  x = self.last_epoch % cycle_length\n"
-            "  \n"
-            "  if x < self.step_size_up:\n"
-            "      # Increasing phase\n"
-            "      progress = x / self.step_size_up\n"
-            "  else:\n"
-            "      # Decreasing phase\n"
-            "      progress = 1 - (x - self.step_size_up) / self.step_size_down\n"
-            "  \n"
-            "  # Apply scaling based on mode\n"
-            "  if self.mode == 'triangular':\n"
-            "      scale = 1.0\n"
-            "  elif self.mode == 'triangular2':\n"
-            "      scale = 1.0 / (2 ** cycle)\n"
-            "  elif self.mode == 'exp_range':\n"
-            "      scale = self.gamma ** self.last_epoch\n"
-            "  \n"
-            "  return self.base_lr + (self.max_lr - self.base_lr) * progress * scale"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        new_lr = {}
+        # figure out which phase of cycle it's in
+        if self.cur_cycle_step <= self.step_size_up:
+            interp_factor = (self.cur_cycle_step) / (self.step_size_up)
+            for i, base_lr in self.base_lr.items():
+                max_lr = self.max_lr if isinstance(self.max_lr, float) else self.max_lr[i]
+                new_lr[i] = (max_lr - base_lr) * interp_factor + base_lr
+        else:
+            interp_factor = (self.cur_cycle_step - self.step_size_up) / (self.step_size_down)
+            for i, base_lr in self.base_lr.items():
+                max_lr = self.max_lr if isinstance(self.max_lr, float) else self.max_lr[i]
+                new_lr[i] = (base_lr - max_lr) * interp_factor + max_lr
+
+        self.cur_cycle_step += 1
+        self.cur_cycle_step %= (self.step_size_up + self.step_size_down)
+
+        if self.mode == "triangular2" and not self.scale_fn:
+            if self.cur_cycle_step == 0:
+                if isinstance(self.max_lr, float):
+                    self.max_lr *= 0.5
+                else:
+                    for k, v in self.max_lr.items():
+                        self.max_lr[k] = v * 0.5
+
+        if self.mode == "exp_range"  and not self.scale_fn:
+            if self.cur_cycle_step == 0:
+                if isinstance(self.max_lr, float):
+                    self.max_lr *= self.gamma
+                else:
+                    for k, v in self.max_lr.items():
+                        self.max_lr[k] = v * self.gamma
+
+        if self.scale_fn:
+            if self.cur_cycle_step == 0:
+                num_cycles = self._step_count // (self.step_size_up + self.step_size_down)
+                scale_factor = self.scale_fn(num_cycles)
+                if isinstance(self.max_lr, float):
+                    self.max_lr *= scale_factor
+                else:
+                    for k, v in self.max_lr.items():
+                        self.max_lr[k] = v * scale_factor
+
+
+        return new_lr
+
+
+
+
+
 
 
 class OneCycleLR(LRScheduler):
@@ -614,23 +635,32 @@ class OneCycleLR(LRScheduler):
         self.step_size_up = int(total_steps * pct_start)
         self.step_size_down = total_steps - self.step_size_up
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement OneCycleLR.get_lr()\n"
-            "Hint:\n"
-            "  if self.last_epoch < self.step_size_up:\n"
-            "      # Warmup phase: initial_lr -> max_lr\n"
-            "      progress = self.last_epoch / self.step_size_up\n"
-            "      lr = self.initial_lr + progress * (self.max_lr - self.initial_lr)\n"
-            "  else:\n"
-            "      # Annealing phase: max_lr -> final_lr\n"
-            "      progress = (self.last_epoch - self.step_size_up) / self.step_size_down\n"
-            "      if self.anneal_strategy == 'cos':\n"
-            "          lr = self.final_lr + (self.max_lr - self.final_lr) * (1 + math.cos(math.pi * progress)) / 2\n"
-            "      else:  # linear\n"
-            "          lr = self.max_lr - progress * (self.max_lr - self.final_lr)\n"
-            "  return lr"
-        )
+    def _annealing_cos(self, start, end, progress):
+        """Cosine annealing from start to end."""
+        return end + (start - end) * (1 + math.cos(math.pi * progress)) / 2
+
+    def _annealing_linear(self, start, end, progress):
+        """Linear annealing from start to end."""
+        return end + (start - end) * (1 - progress)
+
+    def get_lr(self) -> Dict[int, float]:
+        step = self._step_count
+        anneal = self._annealing_cos if self.anneal_strategy == 'cos' else self._annealing_linear
+
+        if step <= self.step_size_up:
+            # Phase 1: warmup from initial_lr to max_lr
+            progress = step / self.step_size_up if self.step_size_up > 0 else 1.0
+            lr = anneal(self.initial_lr, self.max_lr, progress)
+        else:
+            # Phase 2: anneal from max_lr down to final_lr
+            progress = (step - self.step_size_up) / self.step_size_down if self.step_size_down > 0 else 1.0
+            progress = min(progress, 1.0)
+            lr = anneal(self.max_lr, self.final_lr, progress)
+
+        new_lr = {}
+        for i, base in self.base_lr.items():
+            new_lr[i] = lr
+        return new_lr
 
 
 # =============================================================================
@@ -690,6 +720,19 @@ class ReduceLROnPlateau:
         self.cooldown_counter = 0
         self.last_epoch = 0
 
+    def _is_better(self, metric: float) -> bool:
+        """Check if metric improved beyond threshold."""
+        if self.mode == 'min':
+            if self.threshold_mode == 'rel':
+                return metric < self.best * (1 - self.threshold)
+            else:
+                return metric < self.best - self.threshold
+        else:  # mode == 'max'
+            if self.threshold_mode == 'rel':
+                return metric > self.best * (1 + self.threshold)
+            else:
+                return metric > self.best + self.threshold
+
     def step(self, metric: float) -> None:
         """
         Update scheduler based on metric value.
@@ -697,37 +740,24 @@ class ReduceLROnPlateau:
         Args:
             metric: Value of monitored metric (e.g., validation loss)
         """
-        raise NotImplementedError(
-            "TODO: Implement ReduceLROnPlateau.step()\n"
-            "Hint:\n"
-            "  self.last_epoch += 1\n"
-            "  \n"
-            "  # Check if metric improved\n"
-            "  if self.mode == 'min':\n"
-            "      if self.threshold_mode == 'rel':\n"
-            "          improved = metric < self.best * (1 - self.threshold)\n"
-            "      else:\n"
-            "          improved = metric < self.best - self.threshold\n"
-            "  else:  # mode == 'max'\n"
-            "      # ... similar for maximization\n"
-            "  \n"
-            "  if improved:\n"
-            "      self.best = metric\n"
-            "      self.num_bad_epochs = 0\n"
-            "  else:\n"
-            "      self.num_bad_epochs += 1\n"
-            "  \n"
-            "  # Reduce LR if patience exceeded (and not in cooldown)\n"
-            "  if self.cooldown_counter > 0:\n"
-            "      self.cooldown_counter -= 1\n"
-            "  elif self.num_bad_epochs > self.patience:\n"
-            "      current_lr = self.optimizer.defaults['lr']\n"
-            "      new_lr = max(current_lr * self.factor, self.min_lr)\n"
-            "      if current_lr - new_lr > self.eps:\n"
-            "          self.optimizer.set_lr(new_lr)\n"
-            "      self.cooldown_counter = self.cooldown\n"
-            "      self.num_bad_epochs = 0"
-        )
+        self.last_epoch += 1
+
+        if self._is_better(metric):
+            self.best = metric
+            self.num_bad_epochs = 0
+        else:
+            self.num_bad_epochs += 1
+
+        if self.cooldown_counter > 0:
+            self.cooldown_counter -= 1
+            self.num_bad_epochs = 0  # reset during cooldown
+        elif self.num_bad_epochs > self.patience:
+            current_lr = self.optimizer.defaults['lr']
+            new_lr = max(current_lr * self.factor, self.min_lr)
+            if current_lr - new_lr > self.eps:
+                self.optimizer.set_lr({-1: new_lr})
+            self.cooldown_counter = self.cooldown
+            self.num_bad_epochs = 0
 
 
 # =============================================================================
@@ -761,18 +791,18 @@ class WarmupLR(LRScheduler):
         self.warmup_iters = warmup_iters
         self.warmup_factor = warmup_factor
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement WarmupLR.get_lr()\n"
-            "Hint:\n"
-            "  if self.last_epoch >= self.warmup_iters:\n"
-            "      return self.base_lr\n"
-            "  \n"
-            "  # Linear warmup\n"
-            "  progress = self.last_epoch / self.warmup_iters\n"
-            "  factor = self.warmup_factor + progress * (1 - self.warmup_factor)\n"
-            "  return self.base_lr * factor"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        if self._step_count >= self.warmup_iters:
+            # Warmup complete — return base_lr
+            factor = 1.0
+        else:
+            # Linear ramp from warmup_factor to 1.0
+            alpha = self._step_count / self.warmup_iters if self.warmup_iters > 0 else 1.0
+            factor = self.warmup_factor + (1.0 - self.warmup_factor) * alpha
+        new_lr = {}
+        for i, lr in self.base_lr.items():
+            new_lr[i] = lr * factor
+        return new_lr
 
 
 class WarmupCosineSchedule(LRScheduler):
@@ -803,19 +833,22 @@ class WarmupCosineSchedule(LRScheduler):
         self.total_iters = total_iters
         self.min_lr = min_lr
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement WarmupCosineSchedule.get_lr()\n"
-            "Hint:\n"
-            "  if self.last_epoch < self.warmup_iters:\n"
-            "      # Warmup phase\n"
-            "      return self.base_lr * self.last_epoch / self.warmup_iters\n"
-            "  else:\n"
-            "      # Cosine decay phase\n"
-            "      progress = (self.last_epoch - self.warmup_iters) / (self.total_iters - self.warmup_iters)\n"
-            "      cosine_factor = (1 + math.cos(math.pi * progress)) / 2\n"
-            "      return self.min_lr + (self.base_lr - self.min_lr) * cosine_factor"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        new_lr = {}
+        if self._step_count < self.warmup_iters:
+            # Warmup phase: linear ramp from 0 to base_lr
+            warmup_factor = self._step_count / self.warmup_iters if self.warmup_iters > 0 else 1.0
+            for i, lr in self.base_lr.items():
+                new_lr[i] = lr * warmup_factor
+        else:
+            # Cosine decay phase: from base_lr down to min_lr
+            decay_iters = self.total_iters - self.warmup_iters
+            progress = (self._step_count - self.warmup_iters) / decay_iters if decay_iters > 0 else 1.0
+            progress = min(progress, 1.0)
+            cosine_factor = (1 + math.cos(math.pi * progress)) / 2
+            for i, lr in self.base_lr.items():
+                new_lr[i] = self.min_lr + (lr - self.min_lr) * cosine_factor
+        return new_lr
 
 
 # =============================================================================
@@ -847,19 +880,12 @@ class SequentialLR(LRScheduler):
         self.schedulers = schedulers
         self.milestones = milestones
 
-    def get_lr(self) -> float:
-        raise NotImplementedError(
-            "TODO: Implement SequentialLR.get_lr()\n"
-            "Hint:\n"
-            "  # Find which scheduler is active\n"
-            "  scheduler_idx = 0\n"
-            "  for i, m in enumerate(self.milestones):\n"
-            "      if self.last_epoch >= m:\n"
-            "          scheduler_idx = i + 1\n"
-            "  \n"
-            "  # Get LR from active scheduler\n"
-            "  return self.schedulers[scheduler_idx].get_lr()"
-        )
+    def get_lr(self) -> Dict[int, float]:
+        for i, m in enumerate(self.milestones):
+            if self._step_count < m:
+                return self.schedulers[i].get_lr()
+        # Past all milestones — use the last scheduler
+        return self.schedulers[-1].get_lr()
 
 
 class ChainedScheduler:
@@ -925,15 +951,12 @@ class LRFinder:
             criterion: Loss function
             device: Device to run on
         """
-        raise NotImplementedError(
-            "TODO: Initialize LRFinder\n"
-            "Hint:\n"
-            "  self.model = model\n"
-            "  self.optimizer = optimizer\n"
-            "  self.criterion = criterion\n"
-            "  self.history = {'lr': [], 'loss': []}\n"
-            "  self._original_state = None"
-        )
+        self.model = model
+        self.optimizer = optimizer
+        self.criterion = criterion
+        self.device = device
+        self.history = {'lr': [], 'loss': []}
+        self._original_state = None
 
     def range_test(self, train_loader, start_lr: float = 1e-7,
                    end_lr: float = 10.0, num_iter: int = 100,
@@ -949,59 +972,150 @@ class LRFinder:
             smooth_f: Smoothing factor for loss
             diverge_th: Stop if loss exceeds diverge_th * best_loss
         """
-        raise NotImplementedError(
-            "TODO: Implement LRFinder.range_test()\n"
-            "Hint:\n"
-            "  # Save initial state\n"
-            "  self._original_state = self.model.state_dict().copy()\n"
-            "  \n"
-            "  # Exponential LR schedule\n"
-            "  lr_schedule = np.exp(np.linspace(np.log(start_lr), np.log(end_lr), num_iter))\n"
-            "  \n"
-            "  best_loss = float('inf')\n"
-            "  for i, (inputs, targets) in enumerate(train_loader):\n"
-            "      if i >= num_iter:\n"
-            "          break\n"
-            "      \n"
-            "      # Set LR\n"
-            "      self.optimizer.set_lr(lr_schedule[i])\n"
-            "      \n"
-            "      # Forward + backward + update\n"
-            "      # ... training step ...\n"
-            "      \n"
-            "      # Record history\n"
-            "      self.history['lr'].append(lr_schedule[i])\n"
-            "      self.history['loss'].append(loss)\n"
-            "      \n"
-            "      # Stop if diverging\n"
-            "      if loss > diverge_th * best_loss:\n"
-            "          break\n"
-            "      best_loss = min(best_loss, loss)"
-        )
+        from python.foundations.computational_graph import Tensor
+
+        # Save initial state so we can restore later
+        self._original_state = {k: v.copy() for k, v in self.model.state_dict().items()}
+
+        # Exponential LR schedule: log-spaced from start_lr to end_lr
+        lr_schedule = np.exp(np.linspace(np.log(start_lr), np.log(end_lr), num_iter))
+
+        self.history = {'lr': [], 'loss': []}
+        best_loss = float('inf')
+        smoothed_loss = 0.0
+
+        self.model.train() if hasattr(self.model, 'train') else None
+
+        for i, batch in enumerate(train_loader):
+            if i >= num_iter:
+                break
+
+            inputs, targets = batch[0], batch[1]
+
+            # Set LR for this step
+            lr_val = float(lr_schedule[i])
+            self.optimizer.set_lr({-1: lr_val})
+
+            # Forward pass
+            if hasattr(inputs, 'numpy'):
+                inputs = inputs.numpy()
+            if hasattr(targets, 'numpy'):
+                targets = targets.numpy()
+
+            x = Tensor(inputs, requires_grad=True)
+            y = Tensor(targets)
+
+            logits = self.model(x)
+            loss = self.criterion(logits, y, reduction='mean')
+
+            # Backward + update
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+            # Extract loss value
+            loss_val = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
+
+            # Exponential smoothing
+            if i == 0:
+                smoothed_loss = loss_val
+            else:
+                smoothed_loss = smooth_f * loss_val + (1 - smooth_f) * smoothed_loss
+
+            # Record
+            self.history['lr'].append(lr_val)
+            self.history['loss'].append(smoothed_loss)
+
+            # Check for divergence
+            if smoothed_loss < best_loss:
+                best_loss = smoothed_loss
+            if smoothed_loss > diverge_th * best_loss:
+                print(f"  LRFinder: stopping at iter {i}, loss diverged "
+                      f"({smoothed_loss:.4f} > {diverge_th} * {best_loss:.4f})")
+                break
 
     def suggestion(self, skip_start: int = 10, skip_end: int = 5) -> float:
         """
         Suggest optimal learning rate.
 
+        Finds the LR where d(loss)/d(log_lr) is most negative — the point
+        of steepest loss decrease. This is typically a good learning rate.
+
         Returns:
-            Suggested learning rate (typically where gradient is steepest)
+            Suggested learning rate
         """
-        raise NotImplementedError(
-            "TODO: Implement LRFinder.suggestion()\n"
-            "Hint: Find LR where d(loss)/d(log_lr) is most negative"
-        )
+        lrs = self.history['lr']
+        losses = self.history['loss']
+
+        if len(lrs) < skip_start + skip_end + 2:
+            raise ValueError("Not enough data points. Run range_test with more iterations.")
+
+        # Trim unstable start/end
+        lrs = lrs[skip_start:-skip_end] if skip_end > 0 else lrs[skip_start:]
+        losses = losses[skip_start:-skip_end] if skip_end > 0 else losses[skip_start:]
+
+        # Compute gradient of loss w.r.t. log(lr)
+        log_lrs = np.log(lrs)
+        gradients = np.gradient(losses, log_lrs)
+
+        # Find the LR where gradient is most negative (steepest descent)
+        min_grad_idx = np.argmin(gradients)
+        return lrs[min_grad_idx]
 
     def plot(self, skip_start: int = 10, skip_end: int = 5,
-             log_lr: bool = True) -> None:
-        """Plot loss vs learning rate."""
-        raise NotImplementedError("TODO: Implement LRFinder.plot()")
+             log_lr: bool = True, save_path: Optional[str] = None) -> None:
+        """
+        Plot loss vs learning rate.
+
+        Args:
+            skip_start: Number of initial points to skip (often noisy)
+            skip_end: Number of final points to skip (often diverged)
+            log_lr: Use log scale for LR axis
+            save_path: If provided, save plot to this path instead of showing
+        """
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        lrs = self.history['lr']
+        losses = self.history['loss']
+
+        # Trim unstable start/end
+        lrs = lrs[skip_start:-skip_end] if skip_end > 0 else lrs[skip_start:]
+        losses = losses[skip_start:-skip_end] if skip_end > 0 else losses[skip_start:]
+
+        fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+        ax.plot(lrs, losses, linewidth=1.5)
+        if log_lr:
+            ax.set_xscale('log')
+        ax.set_xlabel('Learning Rate')
+        ax.set_ylabel('Loss')
+        ax.set_title('LR Range Test')
+        ax.grid(True, alpha=0.3)
+
+        # Mark suggested LR
+        try:
+            suggested = self.suggestion(skip_start=0, skip_end=0)
+            ax.axvline(x=suggested, color='r', linestyle='--', alpha=0.7,
+                       label=f'Suggested LR: {suggested:.2e}')
+            ax.legend()
+        except (ValueError, IndexError):
+            pass
+
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=150)
+            print(f"  LRFinder plot saved to {save_path}")
+        else:
+            plt.show()
+        plt.close(fig)
 
     def reset(self) -> None:
-        """Reset model to initial state."""
-        raise NotImplementedError(
-            "TODO: Implement LRFinder.reset()\n"
-            "Hint: self.model.load_state_dict(self._original_state)"
-        )
+        """Reset model to initial state (undo all weight changes from range_test)."""
+        if self._original_state is not None:
+            self.model.load_state_dict(self._original_state)
+        else:
+            raise RuntimeError("No saved state. Run range_test() first.")
 
 
 # =============================================================================
@@ -1026,9 +1140,11 @@ def get_cosine_schedule_with_warmup(optimizer: 'Optimizer',
     Returns:
         Configured scheduler
     """
-    raise NotImplementedError(
-        "TODO: Implement get_cosine_schedule_with_warmup\n"
-        "Hint: Return WarmupCosineSchedule with appropriate params"
+    return WarmupCosineSchedule(
+        optimizer,
+        warmup_iters=num_warmup_steps,
+        total_iters=num_training_steps,
+        min_lr=0.0,
     )
 
 
@@ -1038,6 +1154,8 @@ def get_linear_schedule_with_warmup(optimizer: 'Optimizer',
     """
     Create warmup + linear decay schedule.
 
+    Linear warmup from 0 to base_lr, then linear decay from base_lr to 0.
+
     Args:
         optimizer: Wrapped optimizer
         num_warmup_steps: Steps for linear warmup
@@ -1046,4 +1164,20 @@ def get_linear_schedule_with_warmup(optimizer: 'Optimizer',
     Returns:
         Configured scheduler
     """
-    raise NotImplementedError("TODO: Implement get_linear_schedule_with_warmup")
+    warmup = LinearLR(
+        optimizer,
+        start_factor=1e-8,  # effectively 0
+        end_factor=1.0,
+        total_iters=num_warmup_steps,
+    )
+    decay = LinearLR(
+        optimizer,
+        start_factor=1.0,
+        end_factor=0.0,
+        total_iters=num_training_steps - num_warmup_steps,
+    )
+    return SequentialLR(
+        optimizer,
+        schedulers=[warmup, decay],
+        milestones=[num_warmup_steps],
+    )

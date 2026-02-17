@@ -731,3 +731,7 @@ class ParameterDict(Module):
         """Return items."""
         return self._parameters.items()
 
+class Flatten(Module):
+    def forward(self, x: Tensor) -> Tensor:
+        return x.reshape(x.shape[0], -1)
+

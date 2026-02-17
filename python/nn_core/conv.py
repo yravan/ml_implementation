@@ -546,101 +546,6 @@ class ASPPBlock(Module):
     def extra_repr(self) -> str:
         return f"{self.in_channels}, {self.out_channels}, dilations={self.dilations}"
 
-
-# =============================================================================
-# Transposed Convolution
-# =============================================================================
-
-class TransposedConv2d(Module):
-    """
-    Transposed 2D Convolution - Upsampling Layer.
-
-    Also known as deconvolution or fractionally-strided convolution.
-    Used for upsampling in autoencoders, U-Net, and GANs.
-
-    The forward pass is mathematically equivalent to the backward pass of
-    Conv2d w.r.t. the input.
-
-    Output shape:
-        H_out = (H_in - 1)*stride_h - 2*padding_h + dilation_h*(K_h - 1) + output_padding_h + 1
-
-    Example:
-        >>> up_conv = TransposedConv2d(64, 32, kernel_size=4, stride=2, padding=1)
-        >>> x = Tensor(np.random.randn(8, 64, 28, 28))
-        >>> y = up_conv(x)  # (8, 32, 56, 56) - upsampled 2×
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: Union[int, Tuple[int, int]],
-        stride: Union[int, Tuple[int, int]] = 1,
-        padding: Union[int, Tuple[int, int]] = 0,
-        output_padding: Union[int, Tuple[int, int]] = 0,
-        dilation: Union[int, Tuple[int, int]] = 1,
-        groups: int = 1,
-        bias: bool = True
-    ):
-        super().__init__()
-
-        if isinstance(kernel_size, int):
-            kernel_size = (kernel_size, kernel_size)
-        if isinstance(stride, int):
-            stride = (stride, stride)
-        if isinstance(padding, int):
-            padding = (padding, padding)
-        if isinstance(output_padding, int):
-            output_padding = (output_padding, output_padding)
-        if isinstance(dilation, int):
-            dilation = (dilation, dilation)
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.output_padding = output_padding
-        self.dilation = dilation
-        self.groups = groups
-
-        # Note: Weight shape has channels swapped compared to Conv2d
-        k_h, k_w = kernel_size
-        weight_data = np.random.randn(in_channels, out_channels // groups, k_h, k_w) * np.sqrt(2.0 / (k_h * k_w * out_channels // groups))
-        self.weight = Parameter(weight_data)
-
-        if bias:
-            self.bias = Parameter(np.zeros(out_channels))
-        else:
-            self.register_parameter('bias', None)
-
-    def forward(self, x: Tensor) -> Tensor:
-        """
-        Perform transposed 2D convolution (upsampling).
-
-        Args:
-            x: Input Tensor (batch_size, in_channels, height, width)
-
-        Returns:
-            Upsampled Tensor (batch_size, out_channels, height_out, width_out)
-        """
-        raise NotImplementedError(
-            "TODO: Implement TransposedConv2d forward\n"
-            "Hint: Input dilation approach:\n"
-            "  1. Dilate input: insert (stride-1) zeros between elements\n"
-            "  2. Pad with kernel_size - 1 - original_padding\n"
-            "  3. Perform regular convolution with flipped weights\n"
-            "Or use ConvTranspose2dFunction.apply(...)"
-        )
-
-    def extra_repr(self) -> str:
-        return (
-            f"{self.in_channels}, {self.out_channels}, "
-            f"kernel_size={self.kernel_size}, stride={self.stride}, "
-            f"padding={self.padding}"
-        )
-
-
 # =============================================================================
 # 3D Convolution
 # =============================================================================
@@ -699,7 +604,11 @@ class Conv3d(Module):
 # =============================================================================
 
 class ConvTranspose1d(Module):
-    """1D Transposed Convolution for upsampling sequences."""
+    """
+    1D Transposed Convolution for upsampling sequences.
+
+    Optimized implementation using GEMM + col2im (reuses Conv1d's C kernels).
+    """
 
     def __init__(
         self,
@@ -709,6 +618,7 @@ class ConvTranspose1d(Module):
         stride: int = 1,
         padding: int = 0,
         output_padding: int = 0,
+        dilation: int = 1,
         groups: int = 1,
         bias: bool = True
     ):
@@ -719,6 +629,7 @@ class ConvTranspose1d(Module):
         self.stride = stride
         self.padding = padding
         self.output_padding = output_padding
+        self.dilation = dilation
         self.groups = groups
 
         weight_data = np.random.randn(in_channels, out_channels // groups, kernel_size) * np.sqrt(2.0 / (kernel_size * in_channels))
@@ -729,12 +640,22 @@ class ConvTranspose1d(Module):
         else:
             self.register_parameter('bias', None)
 
+        self.conv_transpose1d = convert_to_function(conv_functional.ConvTranspose1d)
+
     def forward(self, x: Tensor) -> Tensor:
-        raise NotImplementedError("TODO: Implement ConvTranspose1d forward")
+        return self.conv_transpose1d(
+            x, self.weight, self.bias,
+            self.stride, self.padding, self.output_padding,
+            self.dilation, self.groups,
+        )
 
 
 class ConvTranspose2d(Module):
-    """2D Transposed Convolution for upsampling images."""
+    """
+    2D Transposed Convolution for upsampling images.
+
+    Optimized implementation using GEMM + col2im (reuses Conv2d's C kernels).
+    """
 
     def __init__(
         self,
@@ -744,6 +665,7 @@ class ConvTranspose2d(Module):
         stride: Union[int, Tuple[int, int]] = 1,
         padding: Union[int, Tuple[int, int]] = 0,
         output_padding: Union[int, Tuple[int, int]] = 0,
+        dilation: Union[int, Tuple[int, int]] = 1,
         groups: int = 1,
         bias: bool = True
     ):
@@ -755,6 +677,10 @@ class ConvTranspose2d(Module):
             stride = (stride, stride)
         if isinstance(padding, int):
             padding = (padding, padding)
+        if isinstance(output_padding, int):
+            output_padding = (output_padding, output_padding)
+        if isinstance(dilation, int):
+            dilation = (dilation, dilation)
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -762,6 +688,7 @@ class ConvTranspose2d(Module):
         self.stride = stride
         self.padding = padding
         self.output_padding = output_padding
+        self.dilation = dilation
         self.groups = groups
 
         k_h, k_w = kernel_size
@@ -773,8 +700,14 @@ class ConvTranspose2d(Module):
         else:
             self.register_parameter('bias', None)
 
+        self.conv_transpose2d = convert_to_function(conv_functional.ConvTranspose2d)
+
     def forward(self, x: Tensor) -> Tensor:
-        raise NotImplementedError("TODO: Implement ConvTranspose2d forward")
+        return self.conv_transpose2d(
+            x, self.weight, self.bias,
+            self.stride, self.padding, self.output_padding,
+            self.dilation, self.groups,
+        )
 
 
 class ConvTranspose3d(Module):

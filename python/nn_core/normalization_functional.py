@@ -36,78 +36,10 @@ def _get_buf(obj, name, shape, dtype):
 
 
 # =============================================================================
-# C Extension loader for BatchNorm
+# C Extension — loaded from central _c_lib module
 # =============================================================================
-import ctypes
 
-_bn_lib = None
-_f32p = ctypes.POINTER(ctypes.c_float)
-
-def _load_bn_c():
-    global _bn_lib
-    if _bn_lib is not None:
-        return _bn_lib
-
-    import ctypes, subprocess, pathlib, os
-    _f32p = ctypes.POINTER(ctypes.c_float)
-    _ci = ctypes.c_int
-    _cf = ctypes.c_float
-
-    src = pathlib.Path(__file__).parent / "_batchnorm_c.c"
-    so  = pathlib.Path(__file__).parent / "_batchnorm_c.so"
-
-    if not src.exists():
-        return None
-
-    needs_compile = not so.exists() or os.path.getmtime(src) > os.path.getmtime(so)
-
-    if needs_compile:
-        import platform
-        if platform.system() == "Darwin":
-            omp_prefix = None
-            for prefix in ["/opt/homebrew", "/usr/local"]:
-                if os.path.exists(f"{prefix}/opt/libomp/lib/libomp.dylib"):
-                    omp_prefix = f"{prefix}/opt/libomp"
-                    break
-            if omp_prefix:
-                cmd = [
-                    "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
-                    "-Xpreprocessor", "-fopenmp",
-                    f"-I{omp_prefix}/include", f"-L{omp_prefix}/lib", "-lomp",
-                    "-shared", "-fPIC", "-o", str(so), str(src),
-                ]
-            else:
-                cmd = [
-                    "clang", "-O3", "-mcpu=native", "-ffast-math", "-fno-finite-math-only",
-                    "-shared", "-fPIC", "-o", str(so), str(src),
-                ]
-        else:
-            cmd = [
-                "gcc", "-O3", "-march=native", "-ffast-math", "-fno-finite-math-only",
-                "-fopenmp", "-shared", "-fPIC", "-o", str(so), str(src), "-lm",
-            ]
-
-        try:
-            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            return None
-
-    lib = ctypes.CDLL(str(so))
-
-    # forward train: x, out, norm_x, gamma, beta, mean, var, B, C, S, eps
-    lib.batchnorm_forward_train.argtypes = [_f32p]*7 + [_ci]*3 + [_cf]
-    lib.batchnorm_forward_train.restype = None
-
-    # forward eval: x, out, gamma, beta, running_mean, running_var, B, C, S, eps
-    lib.batchnorm_forward_eval.argtypes = [_f32p]*6 + [_ci]*3 + [_cf]
-    lib.batchnorm_forward_eval.restype = None
-
-    # backward: grad_out, norm_x, gamma, var, grad_x, grad_gamma, grad_beta, B, C, S, eps
-    lib.batchnorm_backward.argtypes = [_f32p]*7 + [_ci]*3 + [_cf]
-    lib.batchnorm_backward.restype = None
-
-    _bn_lib = lib
-    return lib
+from ._c_lib import get_c_lib as _load_bn_c, F32P as _f32p, CI as _ci, CF as _cf
 
 
 # =============================================================================
@@ -165,8 +97,8 @@ class BatchNorm1d(Function):
                     beta.ctypes.data_as(_f32p),
                     mean.ctypes.data_as(_f32p),
                     var.ctypes.data_as(_f32p),
-                    ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
-                    ctypes.c_float(eps),
+                    _ci(B), _ci(C), _ci(S),
+                    _cf(eps),
                 )
                 # Reshape back to original ndim
                 out = out.reshape(x.shape)
@@ -206,8 +138,8 @@ class BatchNorm1d(Function):
                     beta.ctypes.data_as(_f32p),
                     running_mean.ctypes.data_as(_f32p),
                     running_var.ctypes.data_as(_f32p),
-                    ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
-                    ctypes.c_float(eps),
+                    _ci(B), _ci(C), _ci(S),
+                    _cf(eps),
                 )
                 output = out.reshape(x.shape)
                 norm_x = None  # not needed in eval
@@ -260,8 +192,8 @@ class BatchNorm1d(Function):
                 grad_x.ctypes.data_as(_f32p),
                 grad_gamma.ctypes.data_as(_f32p),
                 grad_beta.ctypes.data_as(_f32p),
-                ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
-                ctypes.c_float(self.eps),
+                _ci(B), _ci(C), _ci(S),
+                _cf(self.eps),
             )
             grad_x = grad_x.reshape(grad_output.shape)
         else:
@@ -330,8 +262,8 @@ class BatchNorm2d(Function):
                     beta.ctypes.data_as(_f32p),
                     mean.ctypes.data_as(_f32p),
                     var.ctypes.data_as(_f32p),
-                    ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
-                    ctypes.c_float(eps),
+                    _ci(B), _ci(C), _ci(S),
+                    _cf(eps),
                 )
                 output = out
             else:
@@ -364,8 +296,8 @@ class BatchNorm2d(Function):
                     beta.ctypes.data_as(_f32p),
                     running_mean.ctypes.data_as(_f32p),
                     running_var.ctypes.data_as(_f32p),
-                    ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
-                    ctypes.c_float(eps),
+                    _ci(B), _ci(C), _ci(S),
+                    _cf(eps),
                 )
                 output = out
                 norm_x = None
@@ -411,8 +343,8 @@ class BatchNorm2d(Function):
                 grad_x.ctypes.data_as(_f32p),
                 grad_gamma.ctypes.data_as(_f32p),
                 grad_beta.ctypes.data_as(_f32p),
-                ctypes.c_int(B), ctypes.c_int(C), ctypes.c_int(S),
-                ctypes.c_float(self.eps),
+                _ci(B), _ci(C), _ci(S),
+                _cf(self.eps),
             )
         else:
             N = B * H * W

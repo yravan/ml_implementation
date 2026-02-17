@@ -90,7 +90,7 @@ if TYPE_CHECKING:
 
 def numerical_gradient(func: Callable[[Tensor], Union[Tensor, float, np.ndarray]],
                        x: Tensor,
-                       epsilon: float = 1e-5) -> np.ndarray:
+                       epsilon: float = 1e-3) -> np.ndarray:
     """
     Compute numerical gradient using central differences.
 
@@ -415,15 +415,19 @@ def gradcheck(func: Callable, inputs: Tuple[Tensor, ...],
         >>> gradcheck(lambda x, y: (x @ y).sum(), (x, y))
         True
     """
-    output = func(*inputs); output.backward()
+    # Zero gradients before backward to prevent accumulation from prior calls
     inputs = list(inputs)
+    for inp in inputs:
+        if hasattr(inp, 'grad') and inp.grad is not None:
+            inp.grad = None
+    output = func(*inputs); output.backward()
     for i, input in enumerate(inputs):
         if not input.requires_grad: continue
         def f(x: Tensor, _i=i):  # capture i by value
             inputs[_i] = x
             x.requires_grad = True
             return func(*inputs)
-        analytical = input.grad
+        analytical = input.grad.copy()  # copy to avoid mutation from later calls
         numerical = numerical_gradient(f, input, epsilon=eps)
         abs_err = np.abs(analytical - numerical).max()
         rel_err = compute_relative_error(analytical, numerical, eps=eps)

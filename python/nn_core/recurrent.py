@@ -19,25 +19,10 @@ import numpy as np
 import math
 from typing import Tuple, Optional, Union
 
+from . import recurrent_functional, Dropout
 from .module import Module, Parameter
 from ..foundations.functionals import Function
-from ..foundations import Tensor
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-def sigmoid(x: np.ndarray) -> np.ndarray:
-    """Numerically stable sigmoid."""
-    return np.where(x >= 0,
-                    1 / (1 + np.exp(-x)),
-                    np.exp(x) / (1 + np.exp(x)))
-
-
-def tanh(x: np.ndarray) -> np.ndarray:
-    """Hyperbolic tangent."""
-    return np.tanh(x)
+from ..foundations import Tensor, convert_to_function
 
 
 # ============================================================================
@@ -63,7 +48,7 @@ class RNNCell(Module):
         b_o (Parameter): Output bias [d_out]
     """
 
-    def __init__(self, d_in, d_h, d_out):
+    def __init__(self, d_in, d_h, nonlinearity: str = 'tanh', bias: bool = True):
         """
         Initialize RNN cell.
 
@@ -75,22 +60,19 @@ class RNNCell(Module):
         super().__init__()
         self.d_in = d_in
         self.d_h = d_h
-        self.d_out = d_out
 
-        # Weight initialization (Xavier/Glorot)
-        # For RNN, spectral radius of W_hh should be ~1 for stability
-        init_scale_ih = math.sqrt(2.0 / (d_in + d_h))
-        init_scale_hh = math.sqrt(2.0 / (2 * d_h))  # More conservative for recurrent
-        init_scale_ho = math.sqrt(2.0 / (d_h + d_out))
+        self.W_ih = Parameter(np.zeros(d_h, d_in))
+        self.W_hh = Parameter(np.zeros(d_h, d_h))
 
-        self.W_ih = Parameter(np.random.randn(d_h, d_in) * init_scale_ih)
-        self.W_hh = Parameter(np.random.randn(d_h, d_h) * init_scale_hh)
-        self.b_h = Parameter(np.zeros(d_h))
+        self.nonlinearity = nonlinearity
+        if bias:
+            self.b_h = Parameter(np.zeros(d_h))
+        else:
+            self.b_h = Tensor(np.zeros(d_h), requires_grad=False)
 
-        self.W_ho = Parameter(np.random.randn(d_out, d_h) * init_scale_ho)
-        self.b_o = Parameter(np.zeros(d_out))
+        self.rnn_func = convert_to_function(recurrent_functional.RNNCell)
 
-    def forward(self, x_t: Tensor, h_prev: Tensor) -> Tuple[Tensor, Tensor, dict]:
+    def forward(self, x_t: Tensor, h_prev: Tensor) -> Tuple[Tensor, Tensor]:
         """
         Forward pass for single time step.
 
@@ -118,24 +100,8 @@ class RNNCell(Module):
 
             4. Cache values for backward pass
         """
-        raise NotImplementedError(
-            "RNNCell.forward() requires implementation.\n"
-            "Hints:\n"
-            "  1. Convert Tensor inputs to numpy if needed (use .data attribute)\n"
-            "  2. Compute hidden pre-activation:\n"
-            "     z_h = x_t.data @ self.W_ih.data.T + h_prev.data @ self.W_hh.data.T + self.b_h.data\n"
-            "     Shape: [batch_size, d_h]\n"
-            "  3. Apply tanh:\n"
-            "     h_t = np.tanh(z_h)\n"
-            "  4. Compute output:\n"
-            "     y_t = h_t @ self.W_ho.data.T + self.b_o.data\n"
-            "     Shape: [batch_size, d_out]\n"
-            "  5. Wrap outputs as Tensors if needed\n"
-            "  6. Cache for backward:\n"
-            "     cache = {'x_t': x_t, 'h_prev': h_prev, 'h_t': h_t,\n"
-            "              'z_h': z_h, 'tanh_deriv': 1 - h_t**2}\n"
-            "  7. Return y_t, h_t, cache\n"
-        )
+        return self.rnn_func(x_t, h_prev, self.W_ih, self.W_hh, self.b_h, self.nonlinearity)
+
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
@@ -550,12 +516,10 @@ class RNN(Module):
 
     def _create_cells(self):
         """Create RNN cells for all layers."""
-        raise NotImplementedError(
-            "TODO: Create RNN cells for each layer\n"
-            "For layer 0: input_dim = input_size\n"
-            "For layer > 0: input_dim = hidden_size * num_directions\n"
-            "If bidirectional, create forward and backward cells"
-        )
+        layers = [RNNCell(self.input_size, self.hidden_size * self.num_directions, self.hidden_size  * self.num_directions)]
+        for _ in range(self.num_layers - 1):
+            layers.append(Dropout(self.dropout))
+            layers.append(RNNCell(self.hidden_size, self.hidden_size, self.hidden_size))
 
     def forward(
         self,

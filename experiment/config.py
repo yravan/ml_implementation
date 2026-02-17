@@ -48,6 +48,7 @@ class Config:
     weight_decay: float = 1e-4
     momentum: float = 0.9             # for SGD
     grad_clip: Optional[float] = None
+    label_smoothing: float = 0.0       # cross-entropy label smoothing (0.1 recommended)
 
     # ── Logging ──────────────────────────────────────────────────────
     logger: str = "tensorboard"        # tensorboard, wandb, console, all
@@ -68,6 +69,7 @@ class Config:
     # ── Performance ───────────────────────────────────────────────────
     amp: bool = False                  # automatic mixed precision (fp16/bf16)
     compile: bool = False              # torch.compile (PyTorch 2.x)
+    compile_mode: str = 'default'
     cudnn_benchmark: bool = True       # auto-tune convolution algorithms
     ffcv: bool = False                 # use FFCV data loading (requires pip install ffcv)
 

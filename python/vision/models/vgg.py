@@ -24,8 +24,17 @@ Architecture pattern:
 """
 
 from typing import List, Union, Optional
-from python.nn_core import Module
-
+from python.nn_core import (
+    Module,
+    Sequential,
+    AdaptiveAvgPool2d,
+    ReLU,
+    Dropout,
+    Linear,
+    Conv2d,
+    MaxPool2d,
+)
+from python.nn_core.module import Flatten
 
 # VGG configurations
 # Numbers = conv output channels, 'M' = MaxPool
@@ -57,18 +66,20 @@ class VGG(Module):
         self.features = features
         self.num_classes = num_classes
 
-        # TODO: Implement classifier
-        # AdaptiveAvgPool2d((7, 7))
-        # Flatten
-        # Linear(512 * 7 * 7, 4096), ReLU, Dropout
-        # Linear(4096, 4096), ReLU, Dropout
-        # Linear(4096, num_classes)
+        self.classifier = Sequential(
+            AdaptiveAvgPool2d((7, 7)),
+            Flatten(),
+            Linear(512 * 7 * 7, 4096), ReLU(), Dropout(dropout),
+            Linear(4096, 4096), ReLU(), Dropout(dropout),
+            Linear(4096, num_classes)
+        )
 
-        raise NotImplementedError("TODO: Implement VGG")
 
     def forward(self, x):
         """Forward pass."""
-        raise NotImplementedError("TODO: Implement forward pass")
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
 
 
 def make_layers(cfg: List[Union[int, str]], batch_norm: bool = False) -> Module:
@@ -82,7 +93,17 @@ def make_layers(cfg: List[Union[int, str]], batch_norm: bool = False) -> Module:
     Returns:
         Sequential module of feature layers
     """
-    raise NotImplementedError("TODO: Implement make_layers")
+    feature_layers = []
+    prev_channels = 3
+    for channels in cfg:
+        if isinstance(channels, int):
+            feature_layers.append(Conv2d(prev_channels, channels, kernel_size=3, padding=1))
+            feature_layers.append(ReLU())
+        elif isinstance(channels, str) and channels == 'M':
+            feature_layers.append(MaxPool2d(kernel_size=2, stride=2))
+        else:
+            raise ValueError("Unknown channel number {}".format(channels))
+    return Sequential(*feature_layers)
 
 
 def _vgg(cfg: str, batch_norm: bool, num_classes: int, **kwargs) -> VGG:

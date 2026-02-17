@@ -358,7 +358,7 @@ class NLLLoss(Module):
         B = log_probs.shape[0]
         # one-hot labels
         labels_data = np.zeros(log_probs.shape)
-        labels_data[np.arange(B), targets.data] = 1.0
+        labels_data[np.arange(B), targets.data.astype(np.int64)] = 1.0
         labels = Tensor(labels_data)
 
         # label smoothing
@@ -370,7 +370,7 @@ class NLLLoss(Module):
 
         # per-class weights
         if weight is not None:
-            loss = loss * weight[targets.data]
+            loss = loss * weight[targets.data.astype(np.int64)]
 
         # mask ignored samples
         valid = targets.data != ignore_index
@@ -423,7 +423,7 @@ class FocalLoss(Module):
         B = logits.shape[0]
         # one-hot labels
         labels_data = np.zeros(logits.shape)
-        labels_data[np.arange(B), targets.data] = 1.0
+        labels_data[np.arange(B), targets.data.astype(np.int64)] = 1.0
         labels = Tensor(labels_data)
 
         # use log softmax for numerical stability

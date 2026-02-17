@@ -24,7 +24,19 @@ Architecture pattern:
 """
 
 from typing import List, Union, Optional
-from python.nn_core import Module
+
+import torch.nn
+from torch.nn import (
+    Conv2d,
+    ReLU,
+    MaxPool2d,
+    Sequential,
+    Dropout,
+    Linear,
+    AdaptiveAvgPool2d,
+    Flatten,
+)
+
 
 
 # VGG configurations
@@ -37,7 +49,7 @@ cfgs = {
 }
 
 
-class VGG(Module):
+class VGG(torch.nn.Module):
     """
     VGG model.
 
@@ -49,7 +61,7 @@ class VGG(Module):
 
     def __init__(
         self,
-        features: Module,
+        features: torch.nn.Module,
         num_classes: int = 1000,
         dropout: float = 0.5,
     ):
@@ -57,21 +69,23 @@ class VGG(Module):
         self.features = features
         self.num_classes = num_classes
 
-        # TODO: Implement classifier
-        # AdaptiveAvgPool2d((7, 7))
-        # Flatten
-        # Linear(512 * 7 * 7, 4096), ReLU, Dropout
-        # Linear(4096, 4096), ReLU, Dropout
-        # Linear(4096, num_classes)
+        self.classifier = Sequential(
+            AdaptiveAvgPool2d((7, 7)),
+            Flatten(),
+            Linear(512 * 7 * 7, 4096), ReLU(), Dropout(dropout),
+            Linear(4096, 4096), ReLU(), Dropout(dropout),
+            Linear(4096, num_classes)
+        )
 
-        raise NotImplementedError("TODO: Implement VGG")
 
     def forward(self, x):
         """Forward pass."""
-        raise NotImplementedError("TODO: Implement forward pass")
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
 
 
-def make_layers(cfg: List[Union[int, str]], batch_norm: bool = False) -> Module:
+def make_layers(cfg: List[Union[int, str]], batch_norm: bool = False) -> torch.nn.Module:
     """
     Create VGG feature layers from config.
 
@@ -82,7 +96,17 @@ def make_layers(cfg: List[Union[int, str]], batch_norm: bool = False) -> Module:
     Returns:
         Sequential module of feature layers
     """
-    raise NotImplementedError("TODO: Implement make_layers")
+    feature_layers = []
+    prev_channels = 3
+    for channels in cfg:
+        if isinstance(channels, int):
+            feature_layers.append(Conv2d(prev_channels, channels, kernel_size=3, padding=1))
+            feature_layers.append(ReLU())
+        elif isinstance(channels, str) and channels == 'M':
+            feature_layers.append(MaxPool2d(kernel_size=2, stride=2))
+        else:
+            raise ValueError("Unknown channel number {}".format(channels))
+    return Sequential(feature_layers)
 
 
 def _vgg(cfg: str, batch_norm: bool, num_classes: int, **kwargs) -> VGG:

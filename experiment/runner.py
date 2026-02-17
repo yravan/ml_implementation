@@ -137,7 +137,10 @@ class _PyTorchBackend:
     def no_grad_context(self):
         return self.torch.no_grad()
 
-    def criterion(self):
+    def criterion(self, config=None):
+        ls = config.label_smoothing if config else 0.0
+        if ls > 0:
+            return lambda logits, targets: self.F.cross_entropy(logits, targets, label_smoothing=ls)
         return self.F.cross_entropy
 
     def get_lr(self, optimizer):
@@ -270,6 +273,8 @@ def train_one_epoch(model, loader, criterion, optimizer, config, logger,
     total_samples = 0
     metric_totals = {name: 0.0 for name in metric_fns}
     epoch_start = time.time()
+    interval_start = epoch_start
+    interval_samples = 0
 
     for batch_idx, batch in enumerate(loader):
         logits, batch_loss, n, targets_d = backend.train_step(
@@ -279,6 +284,7 @@ def train_one_epoch(model, loader, criterion, optimizer, config, logger,
         # Accumulate — stays on GPU for pytorch (no sync)
         total_loss = total_loss + batch_loss * n
         total_samples += n
+        interval_samples += n
 
         logits_d = logits.detach() if hasattr(logits, 'detach') else logits
         for name, fn in metric_fns.items():
@@ -288,8 +294,11 @@ def train_one_epoch(model, loader, criterion, optimizer, config, logger,
         global_step = (epoch - 1) * len(loader) + batch_idx
         if config.log_interval and (batch_idx + 1) % config.log_interval == 0:
             avg_loss = float(total_loss) / total_samples  # single sync here
-            elapsed = time.time() - epoch_start
-            ips = total_samples / elapsed if elapsed > 0 else 0.0
+            now = time.time()
+            interval_elapsed = now - interval_start
+            ips = interval_samples / interval_elapsed if interval_elapsed > 0 else 0.0
+            interval_start = now
+            interval_samples = 0
             parts = [f"Batch {batch_idx+1:5d}/{len(loader)}", f"Loss: {avg_loss:.4f}"]
             for name in metric_fns:
                 parts.append(f"{name}: {float(metric_totals[name])/total_samples*100:.2f}%")
@@ -405,7 +414,7 @@ def run(config: Config) -> Dict:
             print("  memory_format: channels_last (NHWC)")
     if config.compile and config.backend == 'pytorch':
         import torch
-        model = torch.compile(model, mode='max-autotune')
+        model = torch.compile(model, mode=config.compile_mode)
         print("  torch.compile: enabled (max-autotune)")
     print(model)
     print(f"  Parameters: {backend.param_count(model):,}")
@@ -414,7 +423,7 @@ def run(config: Config) -> Dict:
     optimizer = build_optimizer(model, config)
     scheduler = build_scheduler(optimizer, config)
     warmup = build_warmup_scheduler(optimizer, config)
-    criterion = backend.criterion()
+    criterion = backend.criterion(config)
 
     # ── Logger ───────────────────────────────────────────────────────
     print(f"\n{'─'*70}\n Logger\n{'─'*70}")

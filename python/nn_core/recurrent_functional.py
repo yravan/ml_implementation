@@ -20,26 +20,8 @@ Helper Functions:
 import numpy as np
 from typing import Tuple, Optional, Union
 
-from python.foundations import Function, convert_to_function
-
-# Global flag for gradient tracking
-_no_grad = False
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def sigmoid(x: np.ndarray) -> np.ndarray:
-    """Numerically stable sigmoid."""
-    return np.where(x >= 0,
-                    1 / (1 + np.exp(-x)),
-                    np.exp(x) / (1 + np.exp(x)))
-
-
-def tanh(x: np.ndarray) -> np.ndarray:
-    """Hyperbolic tangent."""
-    return np.tanh(x)
+from python.foundations import Function, convert_to_function, _no_grad
+from python.nn_core.activations_functional import tanh
 
 
 # =============================================================================
@@ -72,8 +54,8 @@ class RNNCell(Function):
         h: np.ndarray,
         W_ih: np.ndarray,
         W_hh: np.ndarray,
-        b_ih: np.ndarray,
-        b_hh: np.ndarray
+        b_h: np.ndarray,
+        nonlinearity: str = 'tanh',
     ) -> np.ndarray:
         """
         Compute one RNN cell step.
@@ -89,31 +71,27 @@ class RNNCell(Function):
         Returns:
             New hidden state (batch, hidden_size)
         """
-        raise NotImplementedError(
-            "TODO: Implement RNNCell forward\n"
-            "Hint:\n"
-            "  global _no_grad\n"
-            "  \n"
-            "  # Compute pre-activation\n"
-            "  pre_act = x @ W_ih.T + b_ih + h @ W_hh.T + b_hh\n"
-            "  \n"
-            "  # Apply activation\n"
-            "  h_new = tanh(pre_act)\n"
-            "  \n"
-            "  if not _no_grad:\n"
-            "      self.x = x\n"
-            "      self.h = h\n"
-            "      self.W_ih = W_ih\n"
-            "      self.W_hh = W_hh\n"
-            "      self.h_new = h_new\n"
-            "  \n"
-            "  return h_new"
-        )
+        pre_act = x @ W_ih + h @ W_hh + b_h
+        if nonlinearity == 'tanh':
+            h_new = np.tanh(pre_act)
+        elif nonlinearity == 'relu':
+            h_new =  np.maximum(0, pre_act)
+        else:
+            raise ValueError('Nonlinearity not recognized', nonlinearity)
+        global _no_grad
+        if not _no_grad:
+            self.x = x
+            self.W_ih = W_ih
+            self.h = h
+            self.W_hh = W_hh
+            self.nonlinearity = nonlinearity
+            self.h_new = h_new
+        return h_new
 
     def backward(
         self,
         grad_h_new: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Compute gradients for RNN cell.
 
@@ -123,24 +101,20 @@ class RNNCell(Function):
         Returns:
             Tuple of (grad_x, grad_h, grad_W_ih, grad_W_hh, grad_b_ih, grad_b_hh)
         """
-        raise NotImplementedError(
-            "TODO: Implement RNNCell backward\n"
-            "Hint:\n"
-            "  # Gradient through tanh: d/dx tanh(x) = 1 - tanh(x)^2\n"
-            "  grad_pre_act = grad_h_new * (1 - self.h_new ** 2)\n"
-            "  \n"
-            "  # Gradients w.r.t. weights and biases\n"
-            "  grad_W_ih = grad_pre_act.T @ self.x\n"
-            "  grad_W_hh = grad_pre_act.T @ self.h\n"
-            "  grad_b_ih = np.sum(grad_pre_act, axis=0)\n"
-            "  grad_b_hh = np.sum(grad_pre_act, axis=0)\n"
-            "  \n"
-            "  # Gradients w.r.t. inputs\n"
-            "  grad_x = grad_pre_act @ self.W_ih\n"
-            "  grad_h = grad_pre_act @ self.W_hh\n"
-            "  \n"
-            "  return grad_x, grad_h, grad_W_ih, grad_W_hh, grad_b_ih, grad_b_hh"
-        )
+        if self.nonlinearity == 'tanh':
+            grad_pre_act = (1 - self.h_new ** 2) * grad_h_new
+        if self.nonlinearity == 'relu':
+            grad_pre_act = (self.h_new > 0).astype(grad_h_new.dtype) * grad_h_new
+
+        grad_b_h = grad_pre_act.sum(axis=0)
+
+        grad_W_ih = self.x.T @ grad_h_new
+        grad_W_hh = self.h.T @ grad_h_new
+
+        grad_x = (self.W_ih @ grad_h_new).T
+        grad_h = (self.W_hh @ grad_h_new).T
+
+        return grad_x, grad_h, grad_W_ih, grad_W_hh, grad_b_h
 
 
 # =============================================================================
@@ -520,12 +494,3 @@ class Bidirectional(Function):
             "TODO: Implement Bidirectional backward\n"
             "Hint: Backprop through both directions and accumulate gradients"
         )
-
-
-# =============================================================================
-# Functional Interfaces
-# =============================================================================
-
-rnn_cell = convert_to_function(RNNCell)
-lstm_cell = convert_to_function(LSTMCell)
-gru_cell = convert_to_function(GRUCell)
