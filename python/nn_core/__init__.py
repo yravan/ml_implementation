@@ -108,7 +108,6 @@ from . import regularization_functional
 from .recurrent import (
     RNNCell, LSTMCell, GRUCell,
     RNN, LSTM, GRU,
-    BidirectionalRNN, BidirectionalLSTM, BidirectionalGRU,
 )
 
 # Recurrent functional
@@ -193,7 +192,6 @@ __all__ = [
     # Recurrent
     'RNNCell', 'LSTMCell', 'GRUCell',
     'RNN', 'LSTM', 'GRU',
-    'BidirectionalRNN', 'BidirectionalLSTM', 'BidirectionalGRU',
 
     # Functional modules
     'activations_functional',

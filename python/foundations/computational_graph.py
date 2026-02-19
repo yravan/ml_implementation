@@ -128,6 +128,7 @@ from .functionals import (
 def convert_to_function(cls):
     fn = cls()
     def f(*class_args, **class_kwargs):
+        f.fn = fn
         class_args = list(class_args)
         children = []
         for i, arg in enumerate(class_args):
@@ -292,9 +293,9 @@ class Tensor:
                 for child, child_grad in zip(node._children, child_grads):
                     if child.requires_grad:
                         if child.grad is None:
-                            child.grad = child_grad
+                            child.grad = np.array(child_grad) if isinstance(child_grad, np.ndarray) else child_grad
                         else:
-                            child.grad += child_grad
+                            child.grad = child.grad + child_grad
 
     def zero_grad(self) -> None:
         """Zero out gradients. Call before each backward pass in training."""
@@ -449,6 +450,11 @@ class Tensor:
         """Transpose tensor."""
         transpose = convert_to_function(Transpose)
         return transpose(self, *axes)
+
+    def permute(self, *axes: int) -> 'Tensor':
+        """Permute tensor dimensions (alias for transpose with axes)."""
+        transpose = convert_to_function(Transpose)
+        return transpose(self, axes)
 
     def split(self, indices_or_sections, axis:int = 0) -> 'Tensor':
         split = convert_to_function(Split)

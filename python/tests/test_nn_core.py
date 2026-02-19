@@ -25,6 +25,7 @@ from typing import Callable, Tuple
 
 # Import gradient checking utilities and Tensor
 from python.foundations import Tensor, gradcheck, numerical_gradient, gradient_check
+from python.nn_core import xavier_normal_
 
 
 # =============================================================================
@@ -8677,14 +8678,24 @@ def lstmcell_numpy(x, h_prev, c_prev, W_if, W_hf, b_f, W_ii, W_hi, b_i, W_io, W_
     return y, h, c
 
 
-def grucell_numpy(x, h, W_ir, W_hr, b_r, W_iz, W_hz, b_z, W_ig, W_hg, b_g, W_hy, b_y):
-    """Reference GRU cell computation."""
-    r = sigmoid(x @ W_ir.T + h @ W_hr.T + b_r)
-    z = sigmoid(x @ W_iz.T + h @ W_hz.T + b_z)
-    g = np.tanh(x @ W_ig.T + (r * h) @ W_hg.T + b_g)
-    h_new = (1 - z) * g + z * h
-    y = h_new @ W_hy.T + b_y
-    return y, h_new
+def grucell_numpy(x, h, W_ih, W_hh, b_ih, b_hh):
+    """Reference GRU cell computation with combined weights.
+
+    W_ih: (3*d_h, d_in) - combined input weights [reset, update, new]
+    W_hh: (3*d_h, d_h)  - combined hidden weights [reset, update, new]
+    b_ih: (3*d_h,)       - combined input bias
+    b_hh: (3*d_h,)       - combined hidden bias
+    """
+    d_h = h.shape[1]
+    gi = x @ W_ih.T + b_ih
+    gh = h @ W_hh.T + b_hh
+    i_r, i_z, i_n = gi[:, :d_h], gi[:, d_h:2*d_h], gi[:, 2*d_h:]
+    h_r, h_z, h_n = gh[:, :d_h], gh[:, d_h:2*d_h], gh[:, 2*d_h:]
+    r = sigmoid(i_r + h_r)
+    z = sigmoid(i_z + h_z)
+    n = np.tanh(i_n + r * h_n)
+    h_new = (1 - z) * n + z * h
+    return h_new
 
 
 # ============================================================================
@@ -8821,6 +8832,7 @@ class TestRNNCell:
         np.random.seed(42)
         d_in, d_h, batch_size = 3, 4, 2
         cell = RNNCell(d_in, d_h)
+        cell._init_parameters(xavier_normal_)
         h_prev = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
         h_states = [h_prev.data.copy()]
         for _ in range(3):
@@ -8882,10 +8894,9 @@ class TestLSTMCell:
         """Test LSTMCell creation."""
         np.random.seed(42)
         d_in, d_h, d_out = 3, 4, 3
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         assert cell.d_in == d_in
         assert cell.d_h == d_h
-        assert cell.d_out == d_out
 
     def test_lstmcell_param_shapes(self):
         from python.nn_core import LSTMCell
@@ -8893,21 +8904,11 @@ class TestLSTMCell:
         """Test LSTMCell parameter shapes."""
         np.random.seed(42)
         d_in, d_h, d_out = 3, 4, 3
-        cell = LSTMCell(d_in, d_h, d_out)
-        assert cell.W_if.shape == (d_h, d_in)
-        assert cell.W_hf.shape == (d_h, d_h)
-        assert cell.b_f.shape == (d_h,)
-        assert cell.W_ii.shape == (d_h, d_in)
-        assert cell.W_hi.shape == (d_h, d_h)
-        assert cell.b_i.shape == (d_h,)
-        assert cell.W_io.shape == (d_h, d_in)
-        assert cell.W_ho.shape == (d_h, d_h)
-        assert cell.b_o.shape == (d_h,)
-        assert cell.W_ic.shape == (d_h, d_in)
-        assert cell.W_hc.shape == (d_h, d_h)
-        assert cell.b_c.shape == (d_h,)
-        assert cell.W_hy.shape == (d_out, d_h)
-        assert cell.b_y.shape == (d_out,)
+        cell = LSTMCell(d_in, d_h)
+        assert cell.W_ih.shape == (d_h * 4, d_in)
+        assert cell.W_hh.shape == (d_h * 4, d_h)
+        assert cell.b_ih.shape == (d_h * 4,)
+        assert cell.b_hh.shape == (d_h * 4,)
 
     def test_lstmcell_forward_shape(self):
         from python.foundations import Tensor
@@ -8916,12 +8917,11 @@ class TestLSTMCell:
         """Test LSTMCell forward output shapes."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
         c = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-        y_t, h_t, c_t, _ = cell.forward(x, h, c)
-        assert y_t.shape == (batch_size, d_out)
+        h_t, c_t = cell.forward(x, h, c)
         assert h_t.shape == (batch_size, d_h)
         assert c_t.shape == (batch_size, d_h)
 
@@ -8929,28 +8929,31 @@ class TestLSTMCell:
         from python.foundations import Tensor
         from python.nn_core import LSTMCell
         import numpy as np
-        """Test LSTMCell forward correctness."""
+        """Test LSTMCell forward correctness using numpy reference with combined weights."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size = 3, 4, 2
+        cell = LSTMCell(d_in, d_h)
         x_data = np.random.randn(batch_size, d_in).astype(np.float64)
         h_data = np.random.randn(batch_size, d_h).astype(np.float64)
         c_data = np.random.randn(batch_size, d_h).astype(np.float64)
         x = Tensor(x_data)
         h = Tensor(h_data)
         c = Tensor(c_data)
-        y_t, h_t, c_t, _ = cell.forward(x, h, c)
-        expected_y, expected_h, expected_c = lstmcell_numpy(
-            x_data, h_data, c_data,
-            cell.W_if.data, cell.W_hf.data, cell.b_f.data,
-            cell.W_ii.data, cell.W_hi.data, cell.b_i.data,
-            cell.W_io.data, cell.W_ho.data, cell.b_o.data,
-            cell.W_ic.data, cell.W_hc.data, cell.b_c.data,
-            cell.W_hy.data, cell.b_y.data
-        )
-        assert np.allclose(y_t.data, expected_y, atol=1e-6)
-        assert np.allclose(h_t.data, expected_h, atol=1e-6)
-        assert np.allclose(c_t.data, expected_c, atol=1e-6)
+        h_t, c_t = cell.forward(x, h, c)
+        # Numpy reference: LSTM gates with combined weight matrices
+        W_ih = cell.W_ih.data  # (4*d_h, d_in)
+        W_hh = cell.W_hh.data  # (4*d_h, d_h)
+        b_ih = cell.b_ih.data  # (4*d_h,)
+        b_hh = cell.b_hh.data  # (4*d_h,)
+        gates = x_data @ W_ih.T + h_data @ W_hh.T + b_ih + b_hh
+        i_gate = 1.0 / (1.0 + np.exp(-gates[:, :d_h]))
+        f_gate = 1.0 / (1.0 + np.exp(-gates[:, d_h:2*d_h]))
+        g_gate = np.tanh(gates[:, 2*d_h:3*d_h])
+        o_gate = 1.0 / (1.0 + np.exp(-gates[:, 3*d_h:]))
+        expected_c = f_gate * c_data + i_gate * g_gate
+        expected_h = o_gate * np.tanh(expected_c)
+        assert np.allclose(h_t.data, expected_h, atol=1e-5)
+        assert np.allclose(c_t.data, expected_c, atol=1e-5)
 
     def test_lstmcell_forget_gate_verify(self):
         from python.foundations import Tensor
@@ -8960,14 +8963,14 @@ class TestLSTMCell:
         """Test LSTM forget gate behavior."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         x_data = np.random.randn(batch_size, d_in).astype(np.float64)
         h_data = np.random.randn(batch_size, d_h).astype(np.float64)
         c_data = np.random.randn(batch_size, d_h).astype(np.float64)
         x = Tensor(x_data)
         h = Tensor(h_data)
         c = Tensor(c_data)
-        y_t, h_t, c_t, _ = cell.forward(x, h, c)
+        h_t, c_t = cell.forward(x, h, c)
         assert c_t.data is not None
 
     def test_lstmcell_input_gate_verify(self):
@@ -8978,11 +8981,11 @@ class TestLSTMCell:
         """Test LSTM input gate behavior."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
         c = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-        y_t, h_t, c_t, _ = cell.forward(x, h, c)
+        h_t, c_t = cell.forward(x, h, c)
         assert h_t.data is not None
 
     def test_lstmcell_cell_state_update(self):
@@ -8993,12 +8996,12 @@ class TestLSTMCell:
         """Test LSTM cell state is updated."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         c_prev_data = np.random.randn(batch_size, d_h).astype(np.float64)
         c_prev = Tensor(c_prev_data)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-        y_t, h_t, c_t, _ = cell.forward(x, h, c_prev)
+        h_t, c_t = cell.forward(x, h, c_prev)
         assert not np.allclose(c_t.data, c_prev_data)
 
     def test_lstmcell_hidden_state(self):
@@ -9009,11 +9012,11 @@ class TestLSTMCell:
         """Test LSTM hidden state computation."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
         c = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-        y_t, h_t, c_t, _ = cell.forward(x, h, c)
+        h_t, c_t = cell.forward(x, h, c)
         assert np.all(h_t.data >= -1.0) and np.all(h_t.data <= 1.0)
 
     def test_lstmcell_backward(self):
@@ -9023,14 +9026,14 @@ class TestLSTMCell:
         """Test LSTMCell backward pass."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64), requires_grad=True)
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64), requires_grad=True)
         c = Tensor(np.random.randn(batch_size, d_h).astype(np.float64), requires_grad=True)
-        y_t, h_t, c_t, _ = cell.forward(x, h, c)
-        loss = y_t.sum() + h_t.sum() + c_t.sum()
+        h_t, c_t = cell.forward(x, h, c)
+        loss = h_t.sum() + c_t.sum()
         loss.backward()
-        assert cell.W_if.grad is not None
+        assert cell.W_ih.grad is not None
 
     def test_lstmcell_gradcheck(self):
         from python.foundations import Tensor
@@ -9040,12 +9043,12 @@ class TestLSTMCell:
         """Test LSTMCell gradient check."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64), requires_grad=True)
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64), requires_grad=True)
         c = Tensor(np.random.randn(batch_size, d_h).astype(np.float64), requires_grad=True)
         def f(x_var, h_var, c_var):
-            y, _, _, _ = cell.forward(x_var, h_var, c_var)
+            y, _ = cell.forward(x_var, h_var, c_var)
             return y.sum()
         assert gradcheck(f, (x, h, c), eps=1e-4, atol=1e-3)
 
@@ -9057,11 +9060,11 @@ class TestLSTMCell:
         """Test LSTM cell state preserves gradients."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         c = Tensor(np.random.randn(batch_size, d_h).astype(np.float64), requires_grad=True)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64), requires_grad=True)
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64), requires_grad=True)
-        y_t, h_t, c_t, _ = cell.forward(x, h, c)
+        h_t, c_t = cell.forward(x, h, c)
         loss = c_t.sum()
         loss.backward()
         assert c.grad is not None
@@ -9074,12 +9077,12 @@ class TestLSTMCell:
         """Test LSTM cell over sequence."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size, T = 3, 4, 3, 2, 3
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         h = Tensor(np.zeros((batch_size, d_h), dtype=np.float64))
         c = Tensor(np.zeros((batch_size, d_h), dtype=np.float64))
         for t in range(T):
             x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
-            y_t, h, c, _ = cell.forward(x, h, c)
+            h, c = cell.forward(x, h, c)
         assert h.shape == (batch_size, d_h)
         assert c.shape == (batch_size, d_h)
 
@@ -9090,13 +9093,13 @@ class TestLSTMCell:
         """Test LSTMCell with different batch sizes."""
         np.random.seed(42)
         d_in, d_h, d_out = 3, 4, 3
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         for batch_size in [1, 2, 4]:
             x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
             h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
             c = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-            y_t, h_t, c_t, _ = cell.forward(x, h, c)
-            assert y_t.shape == (batch_size, d_out)
+            h_t, c_t = cell.forward(x, h, c)
+            assert h_t.shape == (batch_size, d_h)
 
     def test_lstmcell_zero_initial_states(self):
         from python.foundations import Tensor
@@ -9105,46 +9108,38 @@ class TestLSTMCell:
         """Test LSTMCell with zero initial states."""
         np.random.seed(42)
         d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = LSTMCell(d_in, d_h, d_out)
+        cell = LSTMCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
         h = Tensor(np.zeros((batch_size, d_h), dtype=np.float64))
         c = Tensor(np.zeros((batch_size, d_h), dtype=np.float64))
-        y_t, h_t, c_t, _ = cell.forward(x, h, c)
-        assert y_t.shape == (batch_size, d_out)
+        h_t, c_t = cell.forward(x, h, c)
+        assert h_t.shape == (batch_size, d_h)
 
 
 class TestGRUCell:
-    """Test GRUCell module."""
+    """Test GRUCell module (combined weights, like LSTMCell)."""
 
     def test_grucell_creation(self):
         from python.nn_core import GRUCell
         import numpy as np
         """Test GRUCell creation."""
         np.random.seed(42)
-        d_in, d_h, d_out = 3, 4, 3
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h = 3, 4
+        cell = GRUCell(d_in, d_h)
         assert cell.d_in == d_in
         assert cell.d_h == d_h
-        assert cell.d_out == d_out
 
     def test_grucell_param_shapes(self):
         from python.nn_core import GRUCell
         import numpy as np
-        """Test GRUCell parameter shapes."""
+        """Test GRUCell parameter shapes (combined weights)."""
         np.random.seed(42)
-        d_in, d_h, d_out = 3, 4, 3
-        cell = GRUCell(d_in, d_h, d_out)
-        assert cell.W_ir.shape == (d_h, d_in)
-        assert cell.W_hr.shape == (d_h, d_h)
-        assert cell.b_r.shape == (d_h,)
-        assert cell.W_iz.shape == (d_h, d_in)
-        assert cell.W_hz.shape == (d_h, d_h)
-        assert cell.b_z.shape == (d_h,)
-        assert cell.W_ih.shape == (d_h, d_in)
-        assert cell.W_hh.shape == (d_h, d_h)
-        assert cell.b_h.shape == (d_h,)
-        assert cell.W_hy.shape == (d_out, d_h)
-        assert cell.b_y.shape == (d_out,)
+        d_in, d_h = 3, 4
+        cell = GRUCell(d_in, d_h)
+        assert cell.W_ih.shape == (3 * d_h, d_in)
+        assert cell.W_hh.shape == (3 * d_h, d_h)
+        assert cell.b_ih.shape == (3 * d_h,)
+        assert cell.b_hh.shape == (3 * d_h,)
 
     def test_grucell_forward_shape(self):
         from python.foundations import Tensor
@@ -9152,64 +9147,58 @@ class TestGRUCell:
         import numpy as np
         """Test GRUCell forward output shapes."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size = 3, 4, 2
+        cell = GRUCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-        y_t, h_t, _ = cell.forward(x, h)
-        assert y_t.shape == (batch_size, d_out)
-        assert h_t.shape == (batch_size, d_h)
+        h_new = cell.forward(x, h)
+        assert h_new.shape == (batch_size, d_h)
 
     def test_grucell_forward_correctness(self):
         from python.foundations import Tensor
         from python.nn_core import GRUCell
         import numpy as np
-        """Test GRUCell forward correctness."""
+        """Test GRUCell forward correctness against numpy reference."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size = 3, 4, 2
+        cell = GRUCell(d_in, d_h)
         x_data = np.random.randn(batch_size, d_in).astype(np.float64)
         h_data = np.random.randn(batch_size, d_h).astype(np.float64)
         x = Tensor(x_data)
         h = Tensor(h_data)
-        y_t, h_t, _ = cell.forward(x, h)
-        expected_y, expected_h = grucell_numpy(
+        h_new = cell.forward(x, h)
+        expected_h = grucell_numpy(
             x_data, h_data,
-            cell.W_ir.data, cell.W_hr.data, cell.b_r.data,
-            cell.W_iz.data, cell.W_hz.data, cell.b_z.data,
-            cell.W_ih.data, cell.W_hh.data, cell.b_h.data,
-            cell.W_hy.data, cell.b_y.data
+            cell.W_ih.data, cell.W_hh.data,
+            cell.b_ih.data, cell.b_hh.data
         )
-        assert np.allclose(y_t.data, expected_y, atol=1e-6)
-        assert np.allclose(h_t.data, expected_h, atol=1e-6)
+        assert np.allclose(h_new.data, expected_h, atol=1e-6)
 
     def test_grucell_reset_gate_effect(self):
         from python.foundations import Tensor
-        from python.nn_core import GRU
         from python.nn_core import GRUCell
         import numpy as np
         """Test GRU reset gate behavior."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size = 3, 4, 2
+        cell = GRUCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-        y_t, h_t, _ = cell.forward(x, h)
-        assert h_t.data is not None
+        h_new = cell.forward(x, h)
+        assert h_new.data is not None
 
     def test_grucell_update_gate_effect(self):
         from python.foundations import Tensor
-        from python.nn_core import GRU
         from python.nn_core import GRUCell
         import numpy as np
         """Test GRU update gate behavior."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size = 3, 4, 2
+        cell = GRUCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-        y_t, h_t, _ = cell.forward(x, h)
-        assert y_t.data is not None
+        h_new = cell.forward(x, h)
+        assert h_new.data is not None
 
     def test_grucell_backward(self):
         from python.foundations import Tensor
@@ -9217,14 +9206,14 @@ class TestGRUCell:
         import numpy as np
         """Test GRUCell backward pass."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size = 3, 4, 2
+        cell = GRUCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64), requires_grad=True)
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64), requires_grad=True)
-        y_t, h_t, _ = cell.forward(x, h)
-        loss = y_t.sum() + h_t.sum()
+        h_new = cell.forward(x, h)
+        loss = h_new.sum()
         loss.backward()
-        assert cell.W_ir.grad is not None
+        assert cell.W_ih.grad is not None
 
     def test_grucell_gradcheck(self):
         from python.foundations import Tensor
@@ -9233,28 +9222,27 @@ class TestGRUCell:
         import numpy as np
         """Test GRUCell gradient check."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size = 3, 4, 2
+        cell = GRUCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64), requires_grad=True)
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64), requires_grad=True)
         def f(x_var, h_var):
-            y, _, _ = cell.forward(x_var, h_var)
-            return y.sum()
+            h_new = cell.forward(x_var, h_var)
+            return h_new.sum()
         assert gradcheck(f, (x, h), eps=1e-4, atol=1e-3)
 
     def test_grucell_sequence_processing(self):
         from python.foundations import Tensor
-        from python.nn_core import GRU
         from python.nn_core import GRUCell
         import numpy as np
         """Test GRU cell over sequence."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size, T = 3, 4, 3, 2, 3
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size, T = 3, 4, 2, 3
+        cell = GRUCell(d_in, d_h)
         h = Tensor(np.zeros((batch_size, d_h), dtype=np.float64))
         for t in range(T):
             x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
-            y_t, h, _ = cell.forward(x, h)
+            h = cell.forward(x, h)
         assert h.shape == (batch_size, d_h)
 
     def test_grucell_zero_hidden(self):
@@ -9263,12 +9251,12 @@ class TestGRUCell:
         import numpy as np
         """Test GRUCell with zero hidden state."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size = 3, 4, 2
+        cell = GRUCell(d_in, d_h)
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
         h = Tensor(np.zeros((batch_size, d_h), dtype=np.float64))
-        y_t, h_t, _ = cell.forward(x, h)
-        assert y_t.shape == (batch_size, d_out)
+        h_new = cell.forward(x, h)
+        assert h_new.shape == (batch_size, d_h)
 
     def test_grucell_different_batch_sizes(self):
         from python.foundations import Tensor
@@ -9276,26 +9264,27 @@ class TestGRUCell:
         import numpy as np
         """Test GRUCell with different batch sizes."""
         np.random.seed(42)
-        d_in, d_h, d_out = 3, 4, 3
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h = 3, 4
+        cell = GRUCell(d_in, d_h)
         for batch_size in [1, 2, 4]:
             x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
             h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-            y_t, h_t, _ = cell.forward(x, h)
-            assert y_t.shape == (batch_size, d_out)
+            h_new = cell.forward(x, h)
+            assert h_new.shape == (batch_size, d_h)
 
     def test_grucell_tanh_range(self):
         from python.foundations import Tensor
         from python.nn_core import GRUCell
         import numpy as np
-        """Test GRUCell hidden state in valid range."""
+        """Test GRUCell hidden state in valid range with zero initial state."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size = 3, 4, 3, 2
-        cell = GRUCell(d_in, d_h, d_out)
+        d_in, d_h, batch_size = 3, 4, 2
+        cell = GRUCell(d_in, d_h)
+        # Start from zero hidden state so h_t = (1-z)*tanh(...) which IS in [-1,1]
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64))
-        h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64))
-        y_t, h_t, _ = cell.forward(x, h)
-        assert np.all(h_t.data >= -1.0) and np.all(h_t.data <= 1.0)
+        h = Tensor(np.zeros((batch_size, d_h), dtype=np.float64))
+        h_new = cell.forward(x, h)
+        assert np.all(h_new.data >= -1.0) and np.all(h_new.data <= 1.0)
 
 
 class TestLSTM:
@@ -9330,8 +9319,8 @@ class TestLSTM:
         x = Tensor(np.random.randn(seq_len, batch_size, input_size).astype(np.float64))
         output, (h_n, c_n) = lstm.forward(x)
         assert output.shape == (seq_len, batch_size, hidden_size)
-        assert h_n.shape == (batch_size, hidden_size)
-        assert c_n.shape == (batch_size, hidden_size)
+        assert h_n.shape == (1, batch_size, hidden_size)
+        assert c_n.shape == (1, batch_size, hidden_size)
 
     def test_lstm_forward_correctness_vs_manual_loop(self):
         from python.foundations import Tensor
@@ -9456,7 +9445,7 @@ class TestGRU:
         x = Tensor(np.random.randn(seq_len, batch_size, input_size).astype(np.float64))
         output, h_n = gru.forward(x)
         assert output.shape == (seq_len, batch_size, hidden_size)
-        assert h_n.shape == (batch_size, hidden_size)
+        assert h_n.shape == (1, batch_size, hidden_size)
 
     def test_gru_forward_correctness_vs_manual_loop(self):
         from python.foundations import Tensor
@@ -9643,63 +9632,66 @@ class TestBidirectionalRNNCell:
 
 
 class TestStackedLSTM:
-    """Test StackedLSTM module."""
+    """Test multi-layer LSTM (using LSTM with num_layers > 1)."""
 
     def test_stacked_lstm_creation(self):
-        from python.nn_core import StackedLSTM
+        from python.nn_core import LSTM
         import numpy as np
-        """Test StackedLSTM creation."""
+        """Test multi-layer LSTM creation."""
         np.random.seed(42)
-        d_in, d_h, num_layers, d_out = 3, 4, 2, 3
-        lstm = StackedLSTM(d_in, d_h, num_layers, d_out)
-        assert lstm.d_in == d_in
-        assert lstm.d_h == d_h
+        input_size, hidden_size, num_layers = 3, 4, 2
+        lstm = LSTM(input_size, hidden_size, num_layers=num_layers)
+        assert lstm.input_size == input_size
+        assert lstm.hidden_size == hidden_size
         assert lstm.num_layers == num_layers
 
     def test_stacked_lstm_num_layers(self):
-        from python.nn_core import StackedLSTM
+        from python.nn_core import LSTM
         import numpy as np
-        """Test StackedLSTM has correct number of layers."""
+        """Test multi-layer LSTM has correct number of layers."""
         np.random.seed(42)
-        d_in, d_h, num_layers, d_out = 3, 4, 3, 3
-        lstm = StackedLSTM(d_in, d_h, num_layers, d_out)
-        assert len(lstm.lstm_cells) == num_layers
+        input_size, hidden_size, num_layers = 3, 4, 3
+        lstm = LSTM(input_size, hidden_size, num_layers=num_layers)
+        assert lstm.num_layers == num_layers
 
     def test_stacked_lstm_forward_shape(self):
         from python.foundations import Tensor
-        from python.nn_core import StackedLSTM
+        from python.nn_core import LSTM
         import numpy as np
-        """Test StackedLSTM forward output shape."""
+        """Test multi-layer LSTM forward output shape."""
         np.random.seed(42)
-        d_in, d_h, num_layers, d_out, batch_size, seq_len = 3, 4, 2, 3, 2, 3
-        lstm = StackedLSTM(d_in, d_h, num_layers, d_out)
-        x = Tensor(np.random.randn(seq_len, batch_size, d_in).astype(np.float64))
-        output, hidden_states, cell_states = lstm.forward(x)
-        assert output.shape == (seq_len, batch_size, d_out)
+        input_size, hidden_size, num_layers, batch_size, seq_len = 3, 4, 2, 2, 3
+        lstm = LSTM(input_size, hidden_size, num_layers=num_layers)
+        x = Tensor(np.random.randn(seq_len, batch_size, input_size).astype(np.float64))
+        output, (h_n, c_n) = lstm.forward(x)
+        assert output.shape == (seq_len, batch_size, hidden_size)
+        assert h_n.shape == (num_layers, batch_size, hidden_size)
+        assert c_n.shape == (num_layers, batch_size, hidden_size)
 
     def test_stacked_lstm_layer_connectivity(self):
         from python.foundations import Tensor
-        from python.nn_core import StackedLSTM
+        from python.nn_core import LSTM
         import numpy as np
-        """Test StackedLSTM layer connectivity."""
+        """Test multi-layer LSTM returns per-layer hidden/cell states."""
         np.random.seed(42)
-        d_in, d_h, num_layers, d_out, batch_size, seq_len = 3, 4, 2, 3, 2, 3
-        lstm = StackedLSTM(d_in, d_h, num_layers, d_out)
-        x = Tensor(np.random.randn(seq_len, batch_size, d_in).astype(np.float64))
-        output, hidden_states, cell_states = lstm.forward(x)
-        assert len(hidden_states) == num_layers
-        assert len(cell_states) == num_layers
+        input_size, hidden_size, num_layers, batch_size, seq_len = 3, 4, 2, 2, 3
+        lstm = LSTM(input_size, hidden_size, num_layers=num_layers)
+        x = Tensor(np.random.randn(seq_len, batch_size, input_size).astype(np.float64))
+        output, (h_n, c_n) = lstm.forward(x)
+        # h_n has one entry per layer
+        assert h_n.shape[0] == num_layers
+        assert c_n.shape[0] == num_layers
 
     def test_stacked_lstm_backward(self):
         from python.foundations import Tensor
-        from python.nn_core import StackedLSTM
+        from python.nn_core import LSTM
         import numpy as np
-        """Test StackedLSTM backward pass."""
+        """Test multi-layer LSTM backward pass."""
         np.random.seed(42)
-        d_in, d_h, num_layers, d_out, batch_size, seq_len = 3, 4, 2, 3, 2, 3
-        lstm = StackedLSTM(d_in, d_h, num_layers, d_out)
-        x = Tensor(np.random.randn(seq_len, batch_size, d_in).astype(np.float64), requires_grad=True)
-        output, hidden_states, cell_states = lstm.forward(x)
+        input_size, hidden_size, num_layers, batch_size, seq_len = 3, 4, 2, 2, 3
+        lstm = LSTM(input_size, hidden_size, num_layers=num_layers)
+        x = Tensor(np.random.randn(seq_len, batch_size, input_size).astype(np.float64), requires_grad=True)
+        output, (h_n, c_n) = lstm.forward(x)
         loss = output.sum()
         loss.backward()
         assert x.grad is not None
@@ -9707,29 +9699,29 @@ class TestStackedLSTM:
     def test_stacked_lstm_gradcheck(self):
         from python.foundations import Tensor
         from python.foundations import gradcheck
-        from python.nn_core import StackedLSTM
+        from python.nn_core import LSTM
         import numpy as np
-        """Test StackedLSTM gradient check."""
+        """Test multi-layer LSTM gradient check."""
         np.random.seed(42)
-        d_in, d_h, num_layers, d_out, batch_size, seq_len = 3, 4, 2, 3, 2, 3
-        lstm = StackedLSTM(d_in, d_h, num_layers, d_out)
-        x = Tensor(np.random.randn(seq_len, batch_size, d_in).astype(np.float64), requires_grad=True)
+        input_size, hidden_size, num_layers, batch_size, seq_len = 3, 4, 2, 2, 3
+        lstm = LSTM(input_size, hidden_size, num_layers=num_layers)
+        x = Tensor(np.random.randn(seq_len, batch_size, input_size).astype(np.float64), requires_grad=True)
         def f(x_var):
-            output, _, _ = lstm.forward(x_var)
+            output, _ = lstm.forward(x_var)
             return output.sum()
         assert gradcheck(f, (x,), eps=1e-4, atol=1e-3)
 
     def test_stacked_lstm_single_layer(self):
         from python.foundations import Tensor
-        from python.nn_core import StackedLSTM
+        from python.nn_core import LSTM
         import numpy as np
-        """Test StackedLSTM with single layer."""
+        """Test multi-layer LSTM with single layer matches regular LSTM."""
         np.random.seed(42)
-        d_in, d_h, d_out, batch_size, seq_len = 3, 4, 3, 2, 3
-        lstm = StackedLSTM(d_in, d_h, 1, d_out)
-        x = Tensor(np.random.randn(seq_len, batch_size, d_in).astype(np.float64))
-        output, hidden_states, cell_states = lstm.forward(x)
-        assert output.shape == (seq_len, batch_size, d_out)
+        input_size, hidden_size, batch_size, seq_len = 3, 4, 2, 3
+        lstm = LSTM(input_size, hidden_size, num_layers=1)
+        x = Tensor(np.random.randn(seq_len, batch_size, input_size).astype(np.float64))
+        output, (h_n, c_n) = lstm.forward(x)
+        assert output.shape == (seq_len, batch_size, hidden_size)
 
 
 # ======================================================================
