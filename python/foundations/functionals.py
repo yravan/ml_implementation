@@ -260,8 +260,8 @@ class MatMul(Function):
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Compute gradients for matrix multiplication."""
-        dx = grad_output @ self.y.T
-        dy = self.x.T @ grad_output
+        dx = grad_output @ self.y.swapaxes(-1, -2)
+        dy = self.x.swapaxes(-1, -2) @ grad_output
         return dx, dy
 
 
@@ -393,14 +393,16 @@ class Reshape(Function):
 class Transpose(Function):
     """Transpose operation."""
 
-    def forward(self, x: np.ndarray, axes: Optional[Tuple[int, ...]] = None) -> np.ndarray:
+    def forward(self, x: np.ndarray, *axes: Optional[Tuple[int, ...]]) -> np.ndarray:
         if isinstance(x, (float, int)):
             x = np.array([x])
+        if len(axes) == 0:
+            axes = None
         global _no_grad
         if not _no_grad:
             self.axes = axes
             self.x = x
-        return x.transpose(axes)
+        return x.transpose(*axes)
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
         if self.axes is None:

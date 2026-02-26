@@ -54,7 +54,9 @@ import math
 import numpy as np
 from typing import Tuple, Optional
 
+from . import normal_, uniform_, xavier_normal_
 from .module import Module, Parameter
+from ..foundations import Tensor
 
 
 # =============================================================================
@@ -93,18 +95,9 @@ class SinusoidalPositionalEncoding(Module):
         Raises:
             ValueError: If d_model is not positive
         """
-        raise NotImplementedError(
-            "TODO: Initialize sinusoidal positional encoding\n"
-            "1. Call super().__init__()\n"
-            "2. Validate d_model > 0\n"
-            "3. Store d_model and max_seq_length\n"
-            "4. Create PE matrix of shape (max_seq_length, d_model):\n"
-            "   - position = np.arange(max_seq_length)[:, np.newaxis]\n"
-            "   - div_term = np.exp(np.arange(0, d_model, 2) * -(log(10000) / d_model))\n"
-            "   - pe[:, 0::2] = sin(position * div_term)\n"
-            "   - pe[:, 1::2] = cos(position * div_term)\n"
-            "5. Register pe as buffer using self.register_buffer('pe', pe)"
-        )
+        self.d_model = d_model
+        self.max_seq_length = max_seq_length
+        self.pe = self.compute_pe(d_model=d_model, seq_length=max_seq_length)
 
     def get_encoding(self, seq_length: int) -> np.ndarray:
         """
@@ -119,13 +112,9 @@ class SinusoidalPositionalEncoding(Module):
         Raises:
             ValueError: If seq_length > max_seq_length
         """
-        raise NotImplementedError(
-            "TODO: Return positional encoding slice\n"
-            "1. Validate seq_length <= max_seq_length\n"
-            "2. Return self.pe[:seq_length]"
-        )
+        return self.pe[:seq_length]
 
-    def forward(self, x: np.ndarray) -> np.ndarray:
+    def forward(self, x: Tensor) -> Tensor:
         """
         Add positional encoding to embeddings.
 
@@ -139,13 +128,8 @@ class SinusoidalPositionalEncoding(Module):
             ValueError: If x.shape[-1] != d_model
             ValueError: If seq_length > max_seq_length
         """
-        raise NotImplementedError(
-            "TODO: Add positional encoding to input\n"
-            "1. Validate x.shape[-1] == d_model\n"
-            "2. Get seq_length from x.shape[1]\n"
-            "3. Get encoding via get_encoding(seq_length)\n"
-            "4. Return x + pe[np.newaxis, :, :]  # broadcast over batch"
-        )
+        seq_length = x.shape[1]
+        return x + self.get_encoding(seq_length)
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
@@ -167,16 +151,15 @@ class SinusoidalPositionalEncoding(Module):
             PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
             PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
         """
-        raise NotImplementedError(
-            "TODO: Compute sinusoidal positional encoding\n"
-            "1. Create pe = np.zeros((seq_length, d_model))\n"
-            "2. position = np.arange(seq_length)[:, np.newaxis]\n"
-            "3. div_term = np.exp(np.arange(0, d_model, 2) * -(log(10000) / d_model))\n"
-            "4. pe[:, 0::2] = np.sin(position * div_term)\n"
-            "5. pe[:, 1::2] = np.cos(position * div_term)\n"
-            "   (handle odd d_model: pe[:, 1::2] = cos(position * div_term[:-1]))\n"
-            "6. Return pe"
-        )
+        pe = np.zeros([seq_length, d_model])
+        half = d_model // 2
+        freq = 1 / (10000 ** (np.arange(half) * 2 / d_model))
+        table = np.arange(seq_length)[:, None] * freq[None, :] # seq_len, half
+        sin_table = np.sin(table)
+        cos_table = np.cos(table)
+        pe[:, ::2] = sin_table
+        pe[:, 1::2] = cos_table
+        return pe
 
 
 def create_sinusoidal_encoding(seq_length: int, d_model: int) -> np.ndarray:
@@ -239,21 +222,20 @@ class LearnedPositionalEmbedding(Module):
             ValueError: If seq_length or d_model are not positive
             ValueError: If padding_idx is out of range
         """
-        raise NotImplementedError(
-            "TODO: Initialize learned positional embeddings\n"
-            "1. Call super().__init__()\n"
-            "2. Validate seq_length > 0, d_model > 0\n"
-            "3. Validate padding_idx in range if provided\n"
-            "4. Store attributes\n"
-            "5. Initialize weights based on initialization scheme:\n"
-            "   - 'normal': np.random.normal(0, 0.02, (seq_length, d_model))\n"
-            "   - 'uniform': np.random.uniform(-0.02, 0.02, ...)\n"
-            "   - 'xavier': limit = sqrt(6/(seq_length+d_model)), uniform(-limit, limit)\n"
-            "6. Create self.pe = Parameter(weight)\n"
-            "7. Zero out padding_idx if specified"
-        )
+        self.d_model = d_model
+        self.seq_length = seq_length
+        self.padding_idx = padding_idx
+        self.pe = Parameter(np.zeros([seq_length, d_model]))
+        if initialization == "normal":
+            normal_(self.pe)
+        elif initialization == "uniform":
+            uniform_(self.pe)
+        elif initialization == "xavier":
+            xavier_normal_(self.pe)
+        else:
+            raise ValueError(f"Initialization scheme {initialization} not supported")
 
-    def forward(self, position_ids: np.ndarray) -> np.ndarray:
+    def forward(self, position_ids: np.ndarray) -> Tensor:
         """
         Get positional embeddings for given position indices.
 
@@ -272,12 +254,7 @@ class LearnedPositionalEmbedding(Module):
             >>> pos_ids = np.array([0, 1, 2, 3, 4])  # shape (5,)
             >>> embeddings = pos_embed(pos_ids)  # shape (5, 768)
         """
-        raise NotImplementedError(
-            "TODO: Look up positional embeddings\n"
-            "1. Validate position_ids >= 0\n"
-            "2. Validate position_ids < seq_length\n"
-            "3. Return self.pe.data[position_ids]"
-        )
+        return self.pe[position_ids]
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
@@ -322,17 +299,19 @@ class RelativePositionalEmbedding(Module):
         Raises:
             ValueError: If num_buckets or d_model not positive
         """
-        raise NotImplementedError(
-            "TODO: Initialize relative positional embeddings\n"
-            "1. Call super().__init__()\n"
-            "2. Validate num_buckets > 0, d_model > 0\n"
-            "3. Store attributes\n"
-            "4. vocab_size = 2*num_buckets if bidirectional else num_buckets\n"
-            "5. Initialize embedding weights with normal(0, d_model^-0.5)\n"
-            "6. Create self.embedding = Parameter(weight)"
-        )
+        super().__init__()
+        self.num_buckets = num_buckets
+        self.d_model = d_model
+        self.bidirectional = bidirectional
+        self.max_distance = max_distance
+        if self.bidirectional:
+            vocab_size = 2 * self.num_buckets
+        else:
+            vocab_size = self.num_buckets
+        self.embedding = Parameter(np.zeros([vocab_size, d_model]))
+        normal_(self.embedding, std=np.sqrt(d_model))
 
-    def forward(self, seq_length: int) -> np.ndarray:
+    def forward(self, seq_length: int) -> Tensor:
         """
         Compute relative position embeddings matrix.
 
@@ -348,14 +327,12 @@ class RelativePositionalEmbedding(Module):
             >>> pos_matrix = rel_pos(seq_length=128)
             >>> assert pos_matrix.shape == (128, 128, 64)
         """
-        raise NotImplementedError(
-            "TODO: Compute relative position embeddings\n"
-            "1. query_pos = np.arange(seq_length)[:, None]\n"
-            "2. key_pos = np.arange(seq_length)[None, :]\n"
-            "3. relative_pos = key_pos - query_pos\n"
-            "4. bucket_ids = _get_position_buckets(relative_pos, ...)\n"
-            "5. Return self.embedding.data[bucket_ids]"
-        )
+        query_pos = np.arange(seq_length)[:, None]
+        key_pos = np.arange(seq_length)[None, :]
+        distances = query_pos - key_pos
+        buckets = self._get_position_buckets(distances, self.num_buckets, self.max_distance, self.bidirectional)
+        return self.embedding[buckets]
+
 
     @staticmethod
     def _get_position_buckets(
@@ -376,17 +353,31 @@ class RelativePositionalEmbedding(Module):
         Returns:
             Array of bucket indices (same shape as relative_pos)
         """
-        raise NotImplementedError(
-            "TODO: Map relative positions to bucket indices\n"
-            "1. Create buckets array of zeros\n"
-            "2. If bidirectional:\n"
-            "   - Handle negative positions: bucket = num_buckets//2 - 1 - dist\n"
-            "   - Handle positive positions: bucket = num_buckets//2 + dist\n"
-            "3. If not bidirectional:\n"
-            "   - bucket = min(abs(relative_pos), max_distance-1)\n"
-            "4. Clip buckets to valid range\n"
-            "5. Return buckets"
-        )
+        ret = 0
+        n = -relative_pos
+        if bidirectional:
+            num_buckets //= 2
+            ret += (n < 0).astype(np.int32) * num_buckets
+            n = np.abs(n)
+        else:
+            n = np.maximum(n, 0)
+
+        # half buckets are exact (small distances)
+        max_exact = num_buckets // 2
+        is_small = n < max_exact
+
+        # other half are log-spaced (clamp to avoid log(0))
+        n_clamped = np.maximum(n, 1)
+        val_if_large = max_exact + (
+            np.log(n_clamped.astype(np.float32) / max_exact)
+            / np.log(max_distance / max_exact)
+            * (num_buckets - max_exact)
+        ).astype(np.int32)
+        val_if_large = np.minimum(val_if_large, num_buckets - 1)
+
+        ret += np.where(is_small, n, val_if_large)
+        return ret
+
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
@@ -434,64 +425,69 @@ class RotaryPositionalEmbedding(Module):
             ValueError: If d_model is odd
             ValueError: If base <= 0
         """
-        raise NotImplementedError(
-            "TODO: Initialize RoPE\n"
-            "1. Call super().__init__()\n"
-            "2. Validate d_model is even\n"
-            "3. Validate base > 0\n"
-            "4. Store attributes\n"
-            "5. Compute inverse frequencies:\n"
-            "   inv_freq = 1.0 / (base ** (np.arange(0, d_model, 2) / d_model))\n"
-            "6. Pre-compute cos/sin tables for efficiency:\n"
-            "   t = np.arange(max_seq_length)\n"
-            "   freqs = np.outer(t, inv_freq)  # (seq_len, d_model/2)\n"
-            "   Register cos_cached = np.cos(freqs), sin_cached = np.sin(freqs)"
-        )
+        super().__init__()
+        self.d_model = d_model
+        self.base = base
+        inv_freq = 1.0 / (base ** (np.arange(0, d_model, 2) / d_model))
+        t = np.arange(max_seq_length)
+        freqs = np.outer(t, inv_freq)
+        self.cos = np.cos(freqs)
+        self.sin = np.sin(freqs)
+
+    def _rotate(self, x, offset: int = 0):
+        """
+        Apply rotary embedding to a single tensor.
+
+        Args:
+            x: Tensor of shape (..., seq_length, d_model)
+            offset: Position offset for KV cache
+
+        Returns:
+            Rotated tensor with same shape
+        """
+        if isinstance(x, Tensor):
+            data = x.data
+        else:
+            data = x
+        L = data.shape[-2]
+        pairs = data.reshape(*(data.shape[:-1] + (self.d_model // 2, 2)))
+        cos = self.cos[offset:L + offset]
+        sin = self.sin[offset:L + offset]
+        rotated = np.empty_like(pairs)
+        rotated[..., 0] = cos * pairs[..., 0] - sin * pairs[..., 1]
+        rotated[..., 1] = sin * pairs[..., 0] + cos * pairs[..., 1]
+        result = rotated.reshape(*data.shape)
+        if isinstance(x, Tensor):
+            return Tensor(result, requires_grad=x.requires_grad)
+        return result
 
     def forward(
         self,
-        q: np.ndarray,
-        k: np.ndarray,
-        seq_length: int,
+        q: Tensor,
+        k: Tensor = None,
+        seq_length: int = None,
         offset: int = 0,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tensor:
         """
-        Apply rotary embeddings to query and key.
+        Apply rotary embeddings to query (and optionally key).
 
         Args:
-            q: Query array of shape (..., seq_length, d_model)
-            k: Key array of shape (..., seq_length, d_model)
-            seq_length: Sequence length
-            offset: Position offset for batched inference
+            q: Query tensor of shape (..., seq_length, d_model)
+            k: Optional key tensor of shape (..., seq_length, d_model)
+            seq_length: Sequence length (inferred from q if not given)
+            offset: Position offset for KV cache
 
         Returns:
-            Tuple of (rotated_q, rotated_k) with same shapes
+            If k is provided: Tuple of (rotated_q, rotated_k)
+            If k is None: rotated_q only
         """
-        raise NotImplementedError(
-            "TODO: Apply RoPE to query and key\n"
-            "1. Get cos/sin for positions [offset : offset+seq_length]\n"
-            "2. Reshape q and k to pair adjacent dimensions:\n"
-            "   q_reshaped = q.reshape(..., seq_length, d_model//2, 2)\n"
-            "3. Apply rotation:\n"
-            "   q_rotated[..., 0] = q[..., 0] * cos - q[..., 1] * sin\n"
-            "   q_rotated[..., 1] = q[..., 0] * sin + q[..., 1] * cos\n"
-            "4. Reshape back to original shape\n"
-            "5. Return (q_rotated, k_rotated)"
-        )
-
-    @staticmethod
-    def rotate_half(x: np.ndarray) -> np.ndarray:
-        """
-        Rotate half the hidden dims of x.
-
-        Splits x into two halves and rotates:
-        [x1, x2] -> [-x2, x1]
-        """
-        raise NotImplementedError(
-            "TODO: Rotate half dimensions\n"
-            "x1, x2 = x[..., :d//2], x[..., d//2:]\n"
-            "return np.concatenate([-x2, x1], axis=-1)"
-        )
+        if seq_length is None:
+            seq_length = q.shape[-2] if isinstance(q, Tensor) else q.shape[-2]
+        q_rotated = self._rotate(q, offset)
+        if k is not None:
+            k_rotated = self._rotate(k, offset)
+            return q_rotated, k_rotated
+        return q_rotated
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
@@ -514,13 +510,14 @@ def create_rope_encoding(
     Returns:
         Tuple of (cos_table, sin_table), each of shape (seq_length, d_model//2)
     """
-    raise NotImplementedError(
-        "TODO: Create RoPE encoding tables\n"
-        "1. inv_freq = 1.0 / (base ** (np.arange(0, d_model, 2) / d_model))\n"
-        "2. t = np.arange(seq_length)\n"
-        "3. freqs = np.outer(t, inv_freq)\n"
-        "4. Return (np.cos(freqs), np.sin(freqs))"
-    )
+    half = d_model // 2
+    inv_freq = 1 / (base ** (np.arange(half) / half))
+    timesteps = np.arange(seq_length)
+    cos_table = np.outer(timesteps, inv_freq)
+    sin_table = np.outer(timesteps, -inv_freq)
+    cos_table = np.cos(cos_table)
+    sin_table = np.sin(sin_table)
+    return cos_table, sin_table
 
 
 # =============================================================================
@@ -556,26 +553,35 @@ class ALiBiPositionalBias(Module):
         Raises:
             ValueError: If num_heads is not positive
         """
-        raise NotImplementedError(
-            "TODO: Initialize ALiBi\n"
-            "1. Call super().__init__()\n"
-            "2. Validate num_heads > 0\n"
-            "3. Store num_heads\n"
-            "4. Compute slopes for each head:\n"
-            "   - Slopes are geometric sequence: 2^(-8/n), 2^(-16/n), ...\n"
-            "   - ratio = 2 ** (-8 / num_heads)\n"
-            "   - slopes = ratio ** np.arange(1, num_heads + 1)\n"
-            "5. Register slopes as buffer"
-        )
+        self.num_heads = num_heads
+        self.slopes = self.get_slopes(num_heads)
+
+    @staticmethod
+    def get_slopes(num_heads: int) -> np.ndarray:
+        """
+        Compute ALiBi slopes for each attention head.
+
+        Slopes follow a geometric sequence: 2^(-8/n), 2^(-16/n), ...
+
+        Args:
+            num_heads: Number of attention heads
+
+        Returns:
+            Array of shape (num_heads,) with slope values (decreasing)
+        """
+        ratio = 2 ** (-8 / num_heads)
+        return ratio ** np.arange(1, num_heads + 1)
 
     def forward(
         self,
-        attention_scores: np.ndarray,
+        attention_scores: Tensor,
         seq_length: int,
         offset: int = 0,
-    ) -> np.ndarray:
+    ) -> Tensor:
         """
         Apply ALiBi biases to attention scores.
+
+        ALiBi penalizes distant positions: bias(i,j) = -m * |i - j|
 
         Args:
             attention_scores: Shape (batch, num_heads, seq_len, seq_len)
@@ -585,35 +591,12 @@ class ALiBiPositionalBias(Module):
         Returns:
             Attention scores with ALiBi biases added
         """
-        raise NotImplementedError(
-            "TODO: Apply ALiBi biases\n"
-            "1. Create position indices:\n"
-            "   query_pos = np.arange(seq_length) + offset\n"
-            "   key_pos = np.arange(seq_length) + offset\n"
-            "2. Compute distances: dist = |query_pos[:, None] - key_pos[None, :]|\n"
-            "3. Compute biases: bias = -slopes[:, None, None] * dist\n"
-            "4. Return attention_scores + bias"
-        )
-
-    @staticmethod
-    def get_slopes(num_heads: int) -> np.ndarray:
-        """
-        Compute ALiBi slopes for given number of heads.
-
-        The slopes follow a geometric sequence that works well empirically.
-
-        Args:
-            num_heads: Number of attention heads
-
-        Returns:
-            Array of shape (num_heads,) with slope values
-        """
-        raise NotImplementedError(
-            "TODO: Compute ALiBi slopes\n"
-            "1. ratio = 2 ** (-8 / num_heads)\n"
-            "2. slopes = ratio ** np.arange(1, num_heads + 1)\n"
-            "3. Return slopes"
-        )
+        query_pos = np.arange(seq_length)[:, None] + offset
+        key_pos = np.arange(seq_length)[None, :]
+        distances = np.abs(query_pos - key_pos)
+        # Negative bias: penalize distant positions
+        biases = -distances[None, :, :] * self.slopes[:, None, None]
+        return attention_scores + biases[None, ...]
 
     def extra_repr(self) -> str:
         """Return extra representation string."""

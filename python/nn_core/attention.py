@@ -27,33 +27,15 @@ import numpy as np
 from typing import Tuple, Optional, Union, Dict, List
 from abc import ABC, abstractmethod
 
+from . import attention_functional
 from .module import Module, Parameter
+from ..foundations import convert_to_function, concat
 from ..foundations.functionals import Function
 
 
 # ============================================================================
 # Utility Functions
 # ============================================================================
-
-def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
-    """
-    Numerically stable softmax implementation.
-
-    Args:
-        x (np.ndarray): Input array
-        axis (int): Axis along which to normalize
-
-    Returns:
-        np.ndarray: Softmax output with sum of 1 along the specified axis
-
-    Numerical Stability:
-        Subtracts max value before exponentiation to prevent overflow:
-        softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))
-    """
-    x_max = np.max(x, axis=axis, keepdims=True)
-    exp_x = np.exp(x - x_max)
-    return exp_x / np.sum(exp_x, axis=axis, keepdims=True)
-
 
 def split_heads(x: np.ndarray, num_heads: int, d_k: int) -> np.ndarray:
     """
@@ -125,12 +107,13 @@ class ScaledDotProductAttention(Module):
         """
         super().__init__()
         self.dropout_p = dropout_p
+        self.fn = convert_to_function(attention_functional.ScaledDotProductAttention)
 
     def extra_repr(self) -> str:
         """Extra representation for printing module details."""
         return f"dropout_p={self.dropout_p}"
 
-    def forward(self, query, key, value, mask=None, training=False):
+    def forward(self, query, key, value, mask=None):
         """
         Compute scaled dot-product attention.
 
@@ -165,19 +148,7 @@ class ScaledDotProductAttention(Module):
             5. Compute output: output = weights @ V
                Shape: [batch_size, seq_len_q, d_v]
         """
-        raise NotImplementedError(
-            "ScaledDotProductAttention.forward() requires implementation.\n"
-            "Hints:\n"
-            "  1. Extract d_k from query.shape[-1]\n"
-            "  2. Compute scores = (query @ key.swapaxes(-2, -1)) / sqrt(d_k)\n"
-            "  3. If mask is provided:\n"
-            "     - If boolean mask: scores = np.where(mask, scores, -1e9)\n"
-            "     - If float mask: scores = scores + mask (assumes -inf in mask)\n"
-            "  4. Apply softmax along last dimension: weights = softmax(scores)\n"
-            "  5. If training and dropout_p > 0: apply dropout to weights\n"
-            "  6. Compute output = weights @ value\n"
-            "  7. Return output and weights for visualization/analysis\n"
-        )
+        return self.fn(query, key, value, mask=mask, dropout_p=self.dropout_p, training=self.training)
 
 
 # ============================================================================
@@ -187,6 +158,8 @@ class ScaledDotProductAttention(Module):
 class MultiHeadAttention(Module):
     """
     Multi-Head Attention mechanism with learnable projections.
+
+    Also supports Cross Attention
 
     Reference: "Attention Is All You Need" (Vaswani et al., 2017)
     https://arxiv.org/abs/1706.03762
@@ -240,7 +213,7 @@ class MultiHeadAttention(Module):
         # For scaled dot-product attention
         self.attention = ScaledDotProductAttention(dropout_p=dropout_p)
 
-    def forward(self, query, key, value, mask=None, training=False):
+    def forward(self, query, key, value, mask=None):
         """
         Forward pass of multi-head attention.
 
@@ -288,119 +261,19 @@ class MultiHeadAttention(Module):
             After concat: [B, L, d_model]
             Output: [B, L, d_model]
         """
-        raise NotImplementedError(
-            "MultiHeadAttention.forward() requires implementation.\n"
-            "Hints:\n"
-            "  1. Get batch_size and seq_len from query.shape[0:2]\n"
-            "  2. Project: Q = query @ W_q, K = key @ W_k, V = value @ W_v\n"
-            "  3. Reshape to separate heads:\n"
-            "     Q = Q.reshape(batch_size, seq_len_q, num_heads, d_k)\n"
-            "     K = K.reshape(batch_size, seq_len_k, num_heads, d_k)\n"
-            "     V = V.reshape(batch_size, seq_len_v, num_heads, d_k)\n"
-            "  4. Transpose to [batch, num_heads, seq_len, d_k]:\n"
-            "     Q = Q.transpose(0, 2, 1, 3)  # [B, h, L_q, d_k]\n"
-            "     K = K.transpose(0, 2, 1, 3)  # [B, h, L_k, d_k]\n"
-            "     V = V.transpose(0, 2, 1, 3)  # [B, h, L_v, d_k]\n"
-            "  5. Apply attention per head (loop or vectorized):\n"
-            "     For each head i:\n"
-            "       attn_out_i = self.attention.forward(Q[:, i], K[:, i], V[:, i], mask, training)\n"
-            "  6. Concatenate heads: concat shape [B, L_q, d_model]\n"
-            "  7. Output projection: output = concat @ W_o\n"
-            "  8. Return output and dict of attention_weights per head\n"
-        )
+        query = split_heads(query @ self.W_q, self.num_heads, self.d_k)
+        key = split_heads(key @ self.W_k, self.num_heads, self.d_k)
+        value = split_heads(value @ self.W_v, self.num_heads, self.d_k)
+        output = self.attention(query, key, value, mask=mask)
+        output = combine_heads(output, self.d_model)
+        return output @ self.W_o
 
     def extra_repr(self) -> str:
         """Extra representation for printing module details."""
         return f"d_model={self.d_model}, num_heads={self.num_heads}, dropout_p={self.dropout_p}"
 
 
-# ============================================================================
-# Cross-Attention for Encoder-Decoder Models
-# ============================================================================
-
-class CrossAttention(MultiHeadAttention):
-    """
-    Cross-Attention module for encoder-decoder attention.
-
-    Reference: "Attention Is All You Need" (Vaswani et al., 2017)
-    https://arxiv.org/abs/1706.03762
-
-    Allows decoder to attend to encoder outputs. Inherits from MultiHeadAttention
-    but with different query vs key/value sources.
-
-    Attributes:
-        Same as MultiHeadAttention, but projections handle different source spaces.
-    """
-
-    def forward(self, query, encoder_output, mask=None, training=False):
-        """
-        Forward pass of cross-attention.
-
-        Args:
-            query (Tensor): Decoder hidden state [batch_size, tgt_len, d_model]
-            encoder_output (Tensor): Encoder output [batch_size, src_len, d_model]
-            mask (Tensor, optional): Mask for encoder positions
-                                    Shape: [batch_size, 1, src_len] for broadcasting
-                                    or [batch_size, tgt_len, src_len]
-                                    Default: None (no masking)
-            training (bool): Whether in training mode
-
-        Returns:
-            output (Tensor): Cross-attention output [batch_size, tgt_len, d_model]
-            attention_weights (dict): Attention weights for visualization
-
-        Algorithm (same as MultiHeadAttention, just different inputs):
-            1. Project query from decoder:
-               Q_proj = query @ W_q  [B, L_t, d_model]
-
-            2. Project key/value from encoder:
-               K_proj = encoder_output @ W_k  [B, L_s, d_model]
-               V_proj = encoder_output @ W_v  [B, L_s, d_model]
-
-            3. Split heads and apply attention per head:
-               For head i:
-                   head_output_i = Attention(Q_proj_i, K_proj_i, V_proj_i)
-                   with optional encoder padding mask
-
-            4. Concatenate and project output:
-               output = Concat(heads) @ W_o  [B, L_t, d_model]
-
-        Note:
-            No causal masking applied here. Decoder can attend to all encoder positions.
-            If encoder has variable lengths, padding_mask should be provided.
-
-        Shape Notes:
-            - query (decoder): [B, tgt_len, d_model]
-            - encoder_output: [B, src_len, d_model]
-            - tgt_len != src_len in general
-            - Attention matrix: [B, num_heads, tgt_len, src_len]
-            - Output: [B, tgt_len, d_model]
-        """
-        raise NotImplementedError(
-            "CrossAttention.forward() requires implementation.\n"
-            "Hints:\n"
-            "  Same as MultiHeadAttention.forward(), but:\n"
-            "  - Query comes from decoder: query (first arg)\n"
-            "  - Key and Value come from encoder: encoder_output (second arg)\n"
-            "  - No causal masking (decoder can attend to all encoder positions)\n"
-            "  - May have padding mask for variable-length sequences in encoder\n"
-            "  Implementation steps:\n"
-            "  1. Get shapes: batch_size, tgt_len = query.shape[0:2]\n"
-            "  2. Project:\n"
-            "     Q = query @ W_q  [B, tgt_len, d_model]\n"
-            "     K = encoder_output @ W_k  [B, src_len, d_model]\n"
-            "     V = encoder_output @ W_v  [B, src_len, d_model]\n"
-            "  3. Split heads: Q -> [B, h, L_t, d_k], K -> [B, h, L_s, d_k], etc.\n"
-            "  4. Apply attention per head with mask\n"
-            "  5. Concatenate and project output\n"
-        )
-
-    def extra_repr(self) -> str:
-        """Extra representation for printing module details."""
-        return f"d_model={self.d_model}, num_heads={self.num_heads}, dropout_p={self.dropout_p}"
-
-
-class CachedCrossAttention(CrossAttention):
+class CachedMultiHeadAttention(MultiHeadAttention):
     """
     Cross-Attention with K/V caching for efficient decoding.
 
@@ -424,23 +297,20 @@ class CachedCrossAttention(CrossAttention):
         """Extra representation for printing module details."""
         return f"d_model={self.d_model}, num_heads={self.num_heads}, dropout_p={self.dropout_p}, cached=True"
 
-    def forward(self, query, encoder_output=None, mask=None, training=False, use_cache=True):
+    def forward(self, query, key=None, value=None, mask=None, use_cache=True):
         """
         Forward pass with optional K/V caching.
 
         Args:
             query (Tensor): Decoder query [batch_size, tgt_len, d_model]
-            encoder_output (Tensor, optional): Encoder output [batch_size, src_len, d_model]
-                                              Required on first call, can be None on subsequent calls
-                                              if use_cache=True
+            key (Tensor): Encoder key [batch_size, tgt_len or 1, d_model]
+            value (Tensor): Encoder value [batch_size, tgt_len or 1, d_model]
             mask (Tensor, optional): Encoder padding mask
             training (bool): Whether in training mode
             use_cache (bool): Whether to use/create K/V cache. Default: True
 
         Returns:
             output (Tensor): Cross-attention output [batch_size, tgt_len, d_model]
-            attention_weights (dict): Attention weights
-            cache (dict): Cache dict with 'K' and 'V' if use_cache=True, else None
 
         Caching Strategy:
             First call (encoder_output provided):
@@ -458,95 +328,32 @@ class CachedCrossAttention(CrossAttention):
             With cache: O(src_len) once + O(src_len) per step (loading from cache)
             Total savings over tgt_len steps: O(tgt_len * src_len) - O(src_len)
         """
-        raise NotImplementedError(
-            "CachedCrossAttention.forward() requires implementation.\n"
-            "Hints:\n"
-            "  1. If encoder_output is provided:\n"
-            "     - Project K/V from encoder: K = encoder @ W_k, V = encoder @ W_v\n"
-            "     - Split heads for multi-head attention\n"
-            "     - If use_cache: store self.cached_K and self.cached_V\n"
-            "  2. If encoder_output is None:\n"
-            "     - Retrieve from cache: K = self.cached_K, V = self.cached_V\n"
-            "     - If cache is None, raise error\n"
-            "  3. Project query and split heads\n"
-            "  4. Apply attention using cached/computed K/V\n"
-            "  5. Return output, attention_weights, and cache dict\n"
-        )
+        query = split_heads(query @ self.W_q, self.num_heads, self.d_k)
+        if key is not None:
+            key = split_heads(key @ self.W_k, self.num_heads, self.d_k)
+            if use_cache:
+                if self.cached_K is not None:
+                    key = concat(self.cached_K, key, axis=-2)
+                self.cached_K = key
+        else:
+            key = self.cached_K
+        if value is not None:
+            value = split_heads(value @ self.W_v, self.num_heads, self.d_k)
+            if use_cache:
+                if self.cached_V is not None:
+                    value = concat(self.cached_V, value, axis=-2)
+                self.cached_V = value
+        else:
+            value = self.cached_V
+        output = self.attention(query, key, value, mask=mask)
+        output = combine_heads(output, self.d_model)
+        return output @ self.W_o
 
     def clear_cache(self):
         """Clear cached K/V projections."""
         self.cached_K = None
         self.cached_V = None
         self.encoder_output_cached = None
-
-
-class MultimodalCrossAttention(CrossAttention):
-    """
-    Cross-Attention for multimodal inputs (e.g., text to image, image to text).
-
-    Extends cross-attention to handle inputs from different modalities
-    (text, image, audio, etc.) with different projection spaces.
-
-    Useful for:
-    - Image captioning (attend from text to image features)
-    - Visual question answering (attend from question to image)
-    - Audio-visual learning (attend from audio to video or vice versa)
-    """
-
-    def __init__(self, d_model: int, num_heads: int, encoder_modality: str = 'vision',
-                 decoder_modality: str = 'text', dropout_p: float = 0.0):
-        """
-        Initialize multimodal cross-attention.
-
-        Args:
-            d_model (int): Output embedding dimension
-            num_heads (int): Number of attention heads
-            encoder_modality (str): Type of encoder modality ('vision', 'audio', 'text', etc.)
-            decoder_modality (str): Type of decoder modality
-            dropout_p (float): Dropout probability
-        """
-        super().__init__(d_model, num_heads, dropout_p)
-        self.encoder_modality = encoder_modality
-        self.decoder_modality = decoder_modality
-
-    def extra_repr(self) -> str:
-        """Extra representation for printing module details."""
-        return f"d_model={self.d_model}, num_heads={self.num_heads}, encoder_modality={self.encoder_modality}, decoder_modality={self.decoder_modality}"
-
-    def forward(self, decoder_input, encoder_output, encoder_modality_type=None,
-                mask=None, training=False):
-        """
-        Forward pass for multimodal cross-attention.
-
-        Args:
-            decoder_input (Tensor): Decoder tensor (typically text embeddings)
-            encoder_output (Tensor): Encoder tensor (possibly different modality)
-            encoder_modality_type (str, optional): Override stored modality type
-            mask (Tensor, optional): Padding mask for encoder
-            training (bool): Whether in training mode
-
-        Returns:
-            output (Tensor): Cross-modality attended output
-            attention_weights (dict): Attention weights (useful for visualization)
-
-        Notes:
-            - Encoder/decoder may have different d_model dimensions
-            - Projections adapt to modality-specific dimensions
-            - Attention mechanism itself is modality-agnostic
-        """
-        raise NotImplementedError(
-            "MultimodalCrossAttention.forward() requires implementation.\n"
-            "Hints:\n"
-            "  1. Similar to standard CrossAttention.forward()\n"
-            "  2. May need modality-specific preprocessing:\n"
-            "     - Vision: patch embeddings, pooling, or CNN features\n"
-            "     - Audio: spectral processing or audio embeddings\n"
-            "     - Text: standard token embeddings\n"
-            "  3. Project decoder_input as query\n"
-            "  4. Project encoder_output as key/value\n"
-            "  5. Apply standard multi-head attention\n"
-            "  6. May include modality-specific normalization or scaling\n"
-        )
 
 
 # ============================================================================
@@ -610,19 +417,13 @@ class CausalMask(Module):
              [True, True,  False],
              [True, True,  True]]
         """
-        raise NotImplementedError(
-            "CausalMask.create_causal_mask() requires implementation.\n"
-            "Hints:\n"
-            "  1. Create indices: i, j = np.ogrid[0:seq_len, 0:seq_len]\n"
-            "     This creates row and column index matrices\n"
-            "  2. Create lower triangular: mask_bool = i >= j\n"
-            "  3. If dtype is bool: return mask_bool\n"
-            "  4. If dtype is float:\n"
-            "     - Create float array: mask_float = np.zeros((seq_len, seq_len), dtype=dtype)\n"
-            "     - Set masked positions: mask_float[~mask_bool] = -1e9\n"
-            "     - Or use: mask_float = np.where(mask_bool, 0, -1e9).astype(dtype)\n"
-            "     - Return mask_float\n"
-        )
+        if dtype is np.float32:
+            mask = np.triu(np.ones((seq_len, seq_len)), k=1) * (-np.inf)
+        elif dtype is bool or dtype is np.bool:
+            mask = (1 - np.triu(np.ones((seq_len, seq_len)), k=1)).astype(np.bool)
+        else:
+            raise TypeError(f"dtype {dtype} is not supported")
+        return mask
 
     @staticmethod
     def create_padding_mask(sequence_lengths: np.ndarray, max_seq_len: int,
@@ -659,19 +460,16 @@ class CausalMask(Module):
             Combine with causal mask using element-wise operations:
             combined_mask = causal_mask + padding_mask
         """
-        raise NotImplementedError(
-            "CausalMask.create_padding_mask() requires implementation.\n"
-            "Hints:\n"
-            "  1. Create position indices: positions = np.arange(max_seq_len)[np.newaxis, :]\n"
-            "     Shape: [1, max_seq_len]\n"
-            "  2. Create valid mask:\n"
-            "     valid_mask = positions < sequence_lengths[:, np.newaxis]\n"
-            "     Shape: [batch_size, max_seq_len]\n"
-            "  3. Reshape for broadcasting: [batch_size, 1, max_seq_len]\n"
-            "  4. Convert to dtype:\n"
-            "     - If bool: return as is\n"
-            "     - If float: np.where(valid_mask, 0, -1e9)\n"
-        )
+        B = sequence_lengths.shape[0]
+        # valid[b, j] = True if j < sequence_lengths[b]
+        valid = np.arange(max_seq_len)[None, :] < sequence_lengths[:, None]
+        if dtype is np.float32:
+            mask = np.where(valid, 0.0, -np.inf).astype(np.float32)
+        elif dtype is bool or dtype is np.bool:
+            mask = valid
+        else:
+            raise TypeError(f"dtype {dtype} is not supported")
+        return mask[:, np.newaxis, :]
 
     @staticmethod
     def create_causal_padding_mask(sequence_lengths: np.ndarray, max_seq_len: int,
@@ -704,62 +502,20 @@ class CausalMask(Module):
             Combined: [batch_size, max_seq_len, max_seq_len]
                       Each batch element gets causal mask + its padding
         """
-        raise NotImplementedError(
-            "CausalMask.create_causal_padding_mask() requires implementation.\n"
-            "Hints:\n"
-            "  1. Create causal mask: causal = create_causal_mask(max_seq_len, dtype)\n"
-            "     Shape: [max_seq_len, max_seq_len]\n"
-            "  2. Create padding mask: padding = create_padding_mask(sequence_lengths, max_seq_len, dtype)\n"
-            "     Shape: [batch_size, 1, max_seq_len]\n"
-            "  3. Combine with broadcasting:\n"
-            "     if dtype is float:\n"
-            "       combined = causal[np.newaxis, :, :] + padding[:, np.newaxis, :]\n"
-            "     else (bool):\n"
-            "       combined = causal[np.newaxis, :, :] & padding[:, np.newaxis, :]\n"
-            "  4. Reshape if needed: [batch_size, max_seq_len, max_seq_len]\n"
-        )
-
-    @staticmethod
-    def apply_causal_mask(attention_scores: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        Apply causal (or any other) mask to attention scores before softmax.
-
-        Args:
-            attention_scores (np.ndarray): Attention logits of shape
-                                          [batch_size, num_heads, seq_len_q, seq_len_k]
-            mask (np.ndarray, optional): Pre-computed mask. If None, creates causal mask.
-                                        Expected shape for broadcasting:
-                                        [1, 1, seq_len_q, seq_len_k] or [seq_len_q, seq_len_k]
-
-        Returns:
-            np.ndarray: Masked attention scores (ready for softmax)
-
-        Algorithm:
-            1. If no mask provided: create_causal_mask(seq_len_k)
-            2. Apply mask with broadcasting:
-               - If mask is float: masked_scores = scores + mask
-               - If mask is bool: masked_scores = np.where(mask, scores, -1e9)
-            3. Return masked scores
-
-        Important:
-            - Masking must happen BEFORE softmax
-            - Masked positions should have -inf or very large negative values
-            - Softmax of -inf naturally becomes 0
-        """
-        raise NotImplementedError(
-            "CausalMask.apply_causal_mask() requires implementation.\n"
-            "Hints:\n"
-            "  1. Extract seq_len_k from attention_scores.shape[-1]\n"
-            "  2. If mask is None:\n"
-            "     mask = create_causal_mask(seq_len_k, dtype=attention_scores.dtype)\n"
-            "  3. If mask is float:\n"
-            "     return attention_scores + mask[np.newaxis, np.newaxis, :, :]\n"
-            "     (Broadcasting: [B, h, L_q, L_k] + [L_q, L_k])\n"
-            "  4. If mask is bool:\n"
-            "     masked = np.where(mask[np.newaxis, np.newaxis, :, :],\n"
-            "                       attention_scores, -1e9)\n"
-            "     return masked\n"
-        )
+        B = sequence_lengths.shape[0]
+        valid = np.arange(max_seq_len)[None, :] < sequence_lengths[:, None]
+        if dtype is np.float32:
+            mask = np.ones((B, max_seq_len, max_seq_len))
+            mask[np.arange(B), :sequence_lengths, :sequence_lengths] = 0.0
+            mask *= -np.inf
+        elif dtype is bool or dtype is np.bool:
+            mask = np.ones((B, max_seq_len, max_seq_len))
+            mask[np.arange(B), :sequence_lengths] = 0.0
+            mask = 1 - mask
+            mask = mask.astype(np.bool)
+        else:
+            raise TypeError(f"dtype {dtype} is not supported")
+        return mask
 
     @staticmethod
     def create_sliding_window_mask(seq_len: int, window_size: int,
@@ -798,16 +554,12 @@ class CausalMask(Module):
             - Efficient transformer variants (Longformer, BigBird)
             - Time series with local temporal dependencies
         """
-        raise NotImplementedError(
-            "CausalMask.create_sliding_window_mask() requires implementation.\n"
-            "Hints:\n"
-            "  1. Create row/col indices: i, j = np.ogrid[0:seq_len, 0:seq_len]\n"
-            "  2. Create mask: mask_bool = (j <= i) & (j > i - window_size)\n"
-            "     (causal AND within window)\n"
-            "  3. Convert to dtype:\n"
-            "     - If bool: return mask_bool\n"
-            "     - If float: np.where(mask_bool, 0, -1e9).astype(dtype)\n"
-        )
+        i, j = np.ogrid[0:seq_len, 0:seq_len]
+        mask_bool = (j <= i) & (j > i - window_size)
+        if dtype is bool or dtype is np.bool:
+            return mask_bool
+        else:
+            return np.where(mask_bool, 0.0, -1e9).astype(dtype)
 
     @staticmethod
     def create_local_attention_mask(seq_len: int, local_size: int, stride: Optional[int] = None,
@@ -893,30 +645,27 @@ class MultiQueryAttention(Module):
 
         self.d_model = d_model
         self.num_heads = num_heads
+        self.num_kv_heads = 1
         self.d_k = d_model // num_heads
         self.d_v = d_model // num_heads
         self.dropout_p = dropout_p
 
-        # Query projections: one per head
-        scale_q = np.sqrt(2.0 / (d_model + self.d_k))
-        self.W_q_list = [
-            Parameter(np.random.randn(d_model, self.d_k) * scale_q)
-            for _ in range(num_heads)
-        ]
+        # Query projection: single combined matrix [d_model, d_model]
+        scale = np.sqrt(2.0 / (d_model + d_model))
+        self.W_q = Parameter(np.random.randn(d_model, d_model) * scale)
 
-        # Shared key/value projections
+        # Shared key/value projections: [d_model, d_k]
         scale_kv = np.sqrt(2.0 / (d_model + self.d_k))
         self.W_k = Parameter(np.random.randn(d_model, self.d_k) * scale_kv)
         self.W_v = Parameter(np.random.randn(d_model, self.d_v) * scale_kv)
 
         # Output projection
-        scale_o = np.sqrt(2.0 / (d_model + d_model))
-        self.W_o = Parameter(np.random.randn(d_model, d_model) * scale_o)
+        self.W_o = Parameter(np.random.randn(d_model, d_model) * scale)
 
         # Attention object
         self.attention = ScaledDotProductAttention(dropout_p=dropout_p)
 
-    def forward(self, query, key, value, mask=None, training=False):
+    def forward(self, query, key, value, mask=None):
         """
         Forward pass of multi-query attention.
 
@@ -925,78 +674,35 @@ class MultiQueryAttention(Module):
             key (Tensor): Key of shape [batch_size, seq_len_k, d_model]
             value (Tensor): Value of shape [batch_size, seq_len_v, d_model]
             mask (Tensor, optional): Attention mask
-            training (bool): Whether in training mode
 
         Returns:
             output (Tensor): Output of shape [batch_size, seq_len_q, d_model]
-            attention_weights (list): Attention weights for each query head
 
         Algorithm:
-            1. Project shared key and value (computed once):
-               K = key @ W_k  [B, L_k, d_k]
-               V = value @ W_v  [B, L_v, d_v]
+            1. Project Q with combined matrix, split into heads:
+               Q = split_heads(query @ W_q)  [B, num_heads, L_q, d_k]
 
-            2. For each query head i:
-               Q_i = query @ W_q_i  [B, L_q, d_k]
-               head_i = Attention(Q_i, K, V)  [B, L_q, d_v]
+            2. Project shared K and V (single head, broadcast):
+               K = (key @ W_k)[:, None, :, :]    [B, 1, L_k, d_k]
+               V = (value @ W_v)[:, None, :, :]  [B, 1, L_v, d_v]
 
-            3. Concatenate all query head outputs:
-               concat = [head_0, ..., head_{h-1}]  [B, L_q, d_model]
+            3. Apply attention (K/V broadcast across all Q heads):
+               output = Attention(Q, K, V)  [B, num_heads, L_q, d_v]
 
-            4. Output projection:
-               output = concat @ W_o
-
-        Key-Value Cache Efficiency:
-            The shared K and V mean during inference, we only cache:
-            - 1 key tensor: [seq_len, d_k]
-            - 1 value tensor: [seq_len, d_v]
-            Instead of h copies each. Savings are h x for memory and bandwidth.
+            4. Combine heads and project:
+               output = combine_heads(output) @ W_o  [B, L_q, d_model]
         """
-        raise NotImplementedError(
-            "MultiQueryAttention.forward() requires implementation.\n"
-            "Hints:\n"
-            "  1. Project shared K and V once:\n"
-            "     K = key @ W_k  [B, L_k, d_k]\n"
-            "     V = value @ W_v  [B, L_v, d_v]\n"
-            "  2. For each head i (loop or vectorize):\n"
-            "     Q_i = query @ W_q_list[i]  [B, L_q, d_k]\n"
-            "     head_output_i = self.attention.forward(Q_i, K, V, mask, training)\n"
-            "  3. Concatenate head outputs along last dim: [B, L_q, num_heads * d_v]\n"
-            "     concat shape should be [B, L_q, d_model]\n"
-            "  4. Apply output projection: output = concat @ W_o\n"
-            "  5. Return output and list of attention_weights from each head\n"
-        )
+        query = split_heads(query @ self.W_q, self.num_heads, self.d_k)
+        key = (key @ self.W_k)[:, None, :, :]
+        value = (value @ self.W_v)[:, None, :, :]
+        output = self.attention(query, key, value, mask=mask)
+        output = combine_heads(output, self.d_model)
+        return output @ self.W_o
 
     def extra_repr(self) -> str:
         """Extra representation for printing module details."""
         return f"d_model={self.d_model}, num_heads={self.num_heads}, dropout_p={self.dropout_p}"
 
-    def get_kv_cache_size(self, max_seq_len: int) -> Dict:
-        """
-        Compute key-value cache size compared to multi-head attention.
-
-        Args:
-            max_seq_len (int): Maximum sequence length
-
-        Returns:
-            dict: Cache statistics including MQA vs MHA comparison
-
-        Analysis:
-            MQA cache: [seq_len, d_k + d_v] = seq_len * 2*d_k
-            MHA cache: [h, seq_len, d_k + d_v] = seq_len * h * 2*d_k
-            Savings: h-fold reduction in memory
-        """
-        raise NotImplementedError(
-            "MultiQueryAttention.get_kv_cache_size() requires implementation.\n"
-            "Hints:\n"
-            "  1. MQA cache per sequence position: d_k + d_v (shared across heads)\n"
-            "  2. Total MQA cache: max_seq_len * (d_k + d_v) bytes (float32)\n"
-            "  3. Compare with MHA: max_seq_len * num_heads * (d_k + d_v) bytes\n"
-            "  4. Return dict with:\n"
-            "     - 'mqa_bytes': MQA cache size\n"
-            "     - 'mha_bytes': equivalent MHA cache size\n"
-            "     - 'speedup_factor': num_heads (theoretical bandwidth improvement)\n"
-        )
 
 
 # ============================================================================
@@ -1047,37 +753,28 @@ class GroupedQueryAttention(Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_kv_groups = num_kv_groups
-        self.queries_per_group = num_heads // num_kv_groups
+        self.group_size = num_heads // num_kv_groups
         self.d_k = d_model // num_heads
         self.d_v = d_model // num_heads
         self.dropout_p = dropout_p
 
-        # Query projections: one per query head
-        scale_q = np.sqrt(2.0 / (d_model + self.d_k))
-        self.W_q_list = [
-            Parameter(np.random.randn(d_model, self.d_k) * scale_q)
-            for _ in range(num_heads)
-        ]
+        # Query projection: single combined matrix [d_model, d_model]
+        scale = np.sqrt(2.0 / (d_model + d_model))
+        self.W_q = Parameter(np.random.randn(d_model, d_model) * scale)
 
-        # Key/value projections: one per group (shared within group)
-        scale_kv = np.sqrt(2.0 / (d_model + self.d_k))
-        self.W_k_list = [
-            Parameter(np.random.randn(d_model, self.d_k) * scale_kv)
-            for _ in range(num_kv_groups)
-        ]
-        self.W_v_list = [
-            Parameter(np.random.randn(d_model, self.d_v) * scale_kv)
-            for _ in range(num_kv_groups)
-        ]
+        # Key/value projections: [d_model, num_kv_groups * d_k]
+        kv_dim = num_kv_groups * self.d_k
+        scale_kv = np.sqrt(2.0 / (d_model + kv_dim))
+        self.W_k = Parameter(np.random.randn(d_model, kv_dim) * scale_kv)
+        self.W_v = Parameter(np.random.randn(d_model, kv_dim) * scale_kv)
 
         # Output projection
-        scale_o = np.sqrt(2.0 / (d_model + d_model))
-        self.W_o = Parameter(np.random.randn(d_model, d_model) * scale_o)
+        self.W_o = Parameter(np.random.randn(d_model, d_model) * scale)
 
         # Attention object
         self.attention = ScaledDotProductAttention(dropout_p=dropout_p)
 
-    def forward(self, query, key, value, mask=None, training=False):
+    def forward(self, query, key, value, mask=None):
         """
         Forward pass of grouped-query attention.
 
@@ -1086,56 +783,45 @@ class GroupedQueryAttention(Module):
             key (Tensor): Key of shape [batch_size, seq_len_k, d_model]
             value (Tensor): Value of shape [batch_size, seq_len_v, d_model]
             mask (Tensor, optional): Attention mask
-            training (bool): Whether in training mode
 
         Returns:
             output (Tensor): Output of shape [batch_size, seq_len_q, d_model]
-            attention_weights (dict): Attention weights for each group
 
         Algorithm:
-            1. Project all query heads:
-               Q_i = query @ W_q_i for i in [0, num_heads)
+            1. Project Q with combined matrix, split into heads:
+               Q = split_heads(query @ W_q)  [B, num_heads, L_q, d_k]
 
-            2. Project all KV groups:
-               K_j = key @ W_k_j for j in [0, num_kv_groups)
-               V_j = value @ W_v_j for j in [0, num_kv_groups)
+            2. Project K/V, split into KV groups:
+               K = split_heads(key @ W_k, num_kv_groups)    [B, num_kv_groups, L_k, d_k]
+               V = split_heads(value @ W_v, num_kv_groups)  [B, num_kv_groups, L_k, d_v]
 
-            3. For each KV group j:
-               - Get indices of query heads in this group
-               - Collect corresponding Q projections: Q_{j,0}, ..., Q_{j,q_per_group-1}
-               - For each query head in group:
-                   head_output = Attention(Q_i, K_j, V_j)
-               - Concatenate within group
+            3. For each KV group g:
+               - Slice Q heads for this group: Q_g = Q[:, g*gs:(g+1)*gs]  [B, gs, L_q, d_k]
+               - K_g = K[:, g:g+1]  [B, 1, L_k, d_k]  (broadcasts across gs query heads)
+               - head_output = Attention(Q_g, K_g, V_g)
 
-            4. Concatenate all group outputs: [B, L_q, d_model]
-
-            5. Apply output projection: output = concat @ W_o
-
-        Group Assignment:
-            Query heads are distributed to groups:
-            - Group 0: query heads 0 to (q_per_group - 1)
-            - Group 1: query heads q_per_group to (2 * q_per_group - 1)
-            - Group j: query heads j*q_per_group to (j+1)*q_per_group - 1
-
-            All query heads in group j share K_j and V_j.
+            4. Concatenate all group outputs: [B, num_heads, L_q, d_v]
+            5. Combine heads and project: output = combine_heads(output) @ W_o
         """
-        raise NotImplementedError(
-            "GroupedQueryAttention.forward() requires implementation.\n"
-            "Hints:\n"
-            "  1. Project all query heads:\n"
-            "     Q_list = [query @ W_q_i for i in range(num_heads)]\n"
-            "  2. Project all KV groups:\n"
-            "     K_list = [key @ W_k_j for j in range(num_kv_groups)]\n"
-            "     V_list = [value @ W_v_j for j in range(num_kv_groups)]\n"
-            "  3. For each group j:\n"
-            "     - Get query head indices: start_idx = j * q_per_group\n"
-            "     - Collect Q heads in group: [Q_list[i] for i in range(start_idx, start_idx + q_per_group)]\n"
-            "     - For each Q in group, compute: head_out = attention(Q, K_list[j], V_list[j])\n"
-            "     - Concatenate head outputs within group\n"
-            "  4. Concatenate all groups: [B, L_q, d_model]\n"
-            "  5. Apply output projection: output = concat @ W_o\n"
-            "  6. Return output and attention_weights dict\n"
-        )
+        query = split_heads(query @ self.W_q, self.num_heads, self.d_k)
+        key = split_heads(key @ self.W_k, self.num_kv_groups, self.d_k)
+        value = split_heads(value @ self.W_v, self.num_kv_groups, self.d_v)
+
+        head_outputs = []
+        for g in range(self.num_kv_groups):
+            start = g * self.group_size
+            q_g = query[:, start:start + self.group_size, :, :]
+            k_g = key[:, g:g + 1, :, :]
+            v_g = value[:, g:g + 1, :, :]
+            out_g = self.attention(q_g, k_g, v_g, mask=mask)
+            head_outputs.append(out_g)
+
+        output = head_outputs[0]
+        for i in range(1, len(head_outputs)):
+            output = concat(output, head_outputs[i], axis=1)
+
+        output = combine_heads(output, self.d_model)
+        return output @ self.W_o
 
     def extra_repr(self) -> str:
         """Extra representation for printing module details."""
@@ -1206,420 +892,3 @@ class GroupedQueryAttention(Module):
             "  3. Return dict with all comparisons\n"
         )
 
-
-# ============================================================================
-# Functional Operations (Stateful Functions for Autograd)
-# ============================================================================
-
-class ScaledDotProductAttentionFunction(Function):
-    """
-    Scaled Dot-Product Attention functional operation.
-
-    The fundamental attention mechanism used in transformers.
-
-    Math:
-        scores = Q @ K^T / √d_k
-        attention_weights = softmax(scores + mask)  # if mask provided
-        output = attention_weights @ V
-
-    Input shapes:
-        Q: (batch, num_heads, seq_len_q, d_k)
-        K: (batch, num_heads, seq_len_k, d_k)
-        V: (batch, num_heads, seq_len_k, d_v)
-        mask: (batch, 1, seq_len_q, seq_len_k) or broadcastable
-
-    Output:
-        (batch, num_heads, seq_len_q, d_v)
-    """
-
-    def __init__(self, dropout: float = 0.0):
-        """
-        Initialize ScaledDotProductAttention function.
-
-        Args:
-            dropout: Dropout probability applied to attention weights
-        """
-        self.dropout = dropout
-
-    def forward(
-        self,
-        Q: np.ndarray,
-        K: np.ndarray,
-        V: np.ndarray,
-        mask: Optional[np.ndarray] = None,
-        training: bool = True
-    ) -> np.ndarray:
-        """
-        Compute scaled dot-product attention.
-
-        Args:
-            Q: Query tensor (batch, heads, seq_q, d_k)
-            K: Key tensor (batch, heads, seq_k, d_k)
-            V: Value tensor (batch, heads, seq_k, d_v)
-            mask: Attention mask (optional). Use -inf for positions to mask.
-            training: Whether in training mode (for dropout)
-
-        Returns:
-            Attention output (batch, heads, seq_q, d_v)
-        """
-        raise NotImplementedError(
-            "TODO: Implement ScaledDotProductAttention forward\n"
-            "Hint:\n"
-            "  # Store for backward\n"
-            "  self.Q = Q\n"
-            "  self.K = K\n"
-            "  self.V = V\n"
-            "  self.training = training\n"
-            "  \n"
-            "  d_k = Q.shape[-1]\n"
-            "  \n"
-            "  # Compute attention scores: Q @ K^T / sqrt(d_k)\n"
-            "  # Shape: (batch, heads, seq_q, seq_k)\n"
-            "  self.scores = Q @ K.transpose(0, 1, 3, 2) / np.sqrt(d_k)\n"
-            "  \n"
-            "  # Apply mask (if provided)\n"
-            "  if mask is not None:\n"
-            "      self.scores = self.scores + mask  # mask should have -inf where masked\n"
-            "  \n"
-            "  # Softmax over keys\n"
-            "  self.attn_weights = softmax(self.scores, axis=-1)\n"
-            "  \n"
-            "  # Apply dropout\n"
-            "  if training and self.dropout > 0:\n"
-            "      self.dropout_mask = (np.random.rand(*self.attn_weights.shape) > self.dropout).astype(np.float32)\n"
-            "      self.attn_weights = self.attn_weights * self.dropout_mask / (1 - self.dropout)\n"
-            "  \n"
-            "  # Compute output: attention_weights @ V\n"
-            "  output = self.attn_weights @ V\n"
-            "  \n"
-            "  return output"
-        )
-
-    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Compute gradients for scaled dot-product attention.
-
-        Args:
-            grad_output: Gradient w.r.t. output (batch, heads, seq_q, d_v)
-
-        Returns:
-            Tuple of (grad_Q, grad_K, grad_V)
-        """
-        raise NotImplementedError(
-            "TODO: Implement ScaledDotProductAttention backward\n"
-            "Hint:\n"
-            "  d_k = self.Q.shape[-1]\n"
-            "  \n"
-            "  # Gradient w.r.t. V\n"
-            "  # output = attn_weights @ V\n"
-            "  # grad_V = attn_weights^T @ grad_output\n"
-            "  grad_V = self.attn_weights.transpose(0, 1, 3, 2) @ grad_output\n"
-            "  \n"
-            "  # Gradient w.r.t. attention weights\n"
-            "  grad_attn = grad_output @ self.V.transpose(0, 1, 3, 2)\n"
-            "  \n"
-            "  # Apply dropout gradient\n"
-            "  if self.training and self.dropout > 0:\n"
-            "      grad_attn = grad_attn * self.dropout_mask / (1 - self.dropout)\n"
-            "  \n"
-            "  # Gradient through softmax\n"
-            "  # For softmax: d_softmax = softmax * (grad - sum(grad * softmax))\n"
-            "  sum_term = np.sum(grad_attn * self.attn_weights, axis=-1, keepdims=True)\n"
-            "  grad_scores = self.attn_weights * (grad_attn - sum_term)\n"
-            "  \n"
-            "  # Scale gradient\n"
-            "  grad_scores = grad_scores / np.sqrt(d_k)\n"
-            "  \n"
-            "  # Gradient w.r.t. Q and K\n"
-            "  # scores = Q @ K^T\n"
-            "  grad_Q = grad_scores @ self.K\n"
-            "  grad_K = grad_scores.transpose(0, 1, 3, 2) @ self.Q\n"
-            "  \n"
-            "  return grad_Q, grad_K, grad_V"
-        )
-
-
-class MultiHeadAttentionFunction(Function):
-    """
-    Multi-Head Attention functional operation.
-
-    Projects Q, K, V into multiple heads, applies attention, and combines.
-
-    Math:
-        head_i = Attention(Q @ W_Q^i, K @ W_K^i, V @ W_V^i)
-        output = Concat(head_1, ..., head_h) @ W_O
-
-    Input shapes:
-        Q: (batch, seq_len_q, d_model)
-        K: (batch, seq_len_k, d_model)
-        V: (batch, seq_len_k, d_model)
-        W_Q, W_K, W_V: (d_model, d_model)
-        W_O: (d_model, d_model)
-    """
-
-    def __init__(self, num_heads: int, dropout: float = 0.0):
-        """
-        Initialize MultiHeadAttention function.
-
-        Args:
-            num_heads: Number of attention heads
-            dropout: Dropout probability for attention weights
-        """
-        self.num_heads = num_heads
-        self.dropout = dropout
-        self.attention_fn = ScaledDotProductAttentionFunction(dropout=dropout)
-
-    def forward(
-        self,
-        Q: np.ndarray,
-        K: np.ndarray,
-        V: np.ndarray,
-        W_Q: np.ndarray,
-        W_K: np.ndarray,
-        W_V: np.ndarray,
-        W_O: np.ndarray,
-        mask: Optional[np.ndarray] = None,
-        training: bool = True
-    ) -> np.ndarray:
-        """
-        Compute multi-head attention.
-
-        Args:
-            Q: Query tensor (batch, seq_q, d_model)
-            K: Key tensor (batch, seq_k, d_model)
-            V: Value tensor (batch, seq_k, d_model)
-            W_Q: Query projection weights (d_model, d_model)
-            W_K: Key projection weights (d_model, d_model)
-            W_V: Value projection weights (d_model, d_model)
-            W_O: Output projection weights (d_model, d_model)
-            mask: Attention mask (optional)
-            training: Whether in training mode
-
-        Returns:
-            Output tensor (batch, seq_q, d_model)
-        """
-        raise NotImplementedError(
-            "TODO: Implement MultiHeadAttention forward\n"
-            "Hint:\n"
-            "  # Store for backward\n"
-            "  self.Q = Q\n"
-            "  self.K = K\n"
-            "  self.V = V\n"
-            "  self.W_Q = W_Q\n"
-            "  self.W_K = W_K\n"
-            "  self.W_V = W_V\n"
-            "  self.W_O = W_O\n"
-            "  \n"
-            "  batch_size, seq_len_q, d_model = Q.shape\n"
-            "  _, seq_len_k, _ = K.shape\n"
-            "  d_k = d_model // self.num_heads\n"
-            "  \n"
-            "  # Project Q, K, V\n"
-            "  Q_proj = Q @ W_Q  # (batch, seq_q, d_model)\n"
-            "  K_proj = K @ W_K  # (batch, seq_k, d_model)\n"
-            "  V_proj = V @ W_V  # (batch, seq_k, d_model)\n"
-            "  \n"
-            "  # Reshape to (batch, num_heads, seq, d_k)\n"
-            "  Q_heads = Q_proj.reshape(batch_size, seq_len_q, self.num_heads, d_k).transpose(0, 2, 1, 3)\n"
-            "  K_heads = K_proj.reshape(batch_size, seq_len_k, self.num_heads, d_k).transpose(0, 2, 1, 3)\n"
-            "  V_heads = V_proj.reshape(batch_size, seq_len_k, self.num_heads, d_k).transpose(0, 2, 1, 3)\n"
-            "  \n"
-            "  # Store projected values\n"
-            "  self.Q_heads = Q_heads\n"
-            "  self.K_heads = K_heads\n"
-            "  self.V_heads = V_heads\n"
-            "  \n"
-            "  # Apply scaled dot-product attention\n"
-            "  attn_output = self.attention_fn.forward(Q_heads, K_heads, V_heads, mask, training)\n"
-            "  self.attn_output = attn_output  # (batch, num_heads, seq_q, d_k)\n"
-            "  \n"
-            "  # Reshape back: (batch, seq_q, d_model)\n"
-            "  concat_output = attn_output.transpose(0, 2, 1, 3).reshape(batch_size, seq_len_q, d_model)\n"
-            "  self.concat_output = concat_output\n"
-            "  \n"
-            "  # Final projection\n"
-            "  output = concat_output @ W_O\n"
-            "  \n"
-            "  return output"
-        )
-
-    def backward(
-        self,
-        grad_output: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Compute gradients for multi-head attention.
-
-        Args:
-            grad_output: Gradient w.r.t. output (batch, seq_q, d_model)
-
-        Returns:
-            Tuple of (grad_Q, grad_K, grad_V, grad_W_Q, grad_W_K, grad_W_V, grad_W_O)
-        """
-        raise NotImplementedError(
-            "TODO: Implement MultiHeadAttention backward\n"
-            "Hint:\n"
-            "  batch_size, seq_len_q, d_model = self.Q.shape\n"
-            "  _, seq_len_k, _ = self.K.shape\n"
-            "  d_k = d_model // self.num_heads\n"
-            "  \n"
-            "  # Gradient w.r.t. W_O\n"
-            "  grad_W_O = self.concat_output.transpose(0, 2, 1).reshape(-1, d_model).T @ \\\n"
-            "             grad_output.reshape(-1, d_model)\n"
-            "  \n"
-            "  # Gradient w.r.t. concat_output\n"
-            "  grad_concat = grad_output @ self.W_O.T\n"
-            "  \n"
-            "  # Reshape to attention output shape\n"
-            "  grad_attn_output = grad_concat.reshape(batch_size, seq_len_q, self.num_heads, d_k).transpose(0, 2, 1, 3)\n"
-            "  \n"
-            "  # Gradient through attention\n"
-            "  grad_Q_heads, grad_K_heads, grad_V_heads = self.attention_fn.backward(grad_attn_output)\n"
-            "  \n"
-            "  # Reshape heads back\n"
-            "  grad_Q_proj = grad_Q_heads.transpose(0, 2, 1, 3).reshape(batch_size, seq_len_q, d_model)\n"
-            "  grad_K_proj = grad_K_heads.transpose(0, 2, 1, 3).reshape(batch_size, seq_len_k, d_model)\n"
-            "  grad_V_proj = grad_V_heads.transpose(0, 2, 1, 3).reshape(batch_size, seq_len_k, d_model)\n"
-            "  \n"
-            "  # Gradient w.r.t. projection weights\n"
-            "  grad_W_Q = self.Q.transpose(0, 2, 1).reshape(-1, d_model).T @ grad_Q_proj.reshape(-1, d_model)\n"
-            "  grad_W_K = self.K.transpose(0, 2, 1).reshape(-1, d_model).T @ grad_K_proj.reshape(-1, d_model)\n"
-            "  grad_W_V = self.V.transpose(0, 2, 1).reshape(-1, d_model).T @ grad_V_proj.reshape(-1, d_model)\n"
-            "  \n"
-            "  # Gradient w.r.t. inputs\n"
-            "  grad_Q = grad_Q_proj @ self.W_Q.T\n"
-            "  grad_K = grad_K_proj @ self.W_K.T\n"
-            "  grad_V = grad_V_proj @ self.W_V.T\n"
-            "  \n"
-            "  return grad_Q, grad_K, grad_V, grad_W_Q, grad_W_K, grad_W_V, grad_W_O"
-        )
-
-
-class CrossAttentionFunction(Function):
-    """
-    Cross-Attention functional operation.
-
-    Attention where queries come from one sequence and keys/values from another.
-    Used in encoder-decoder architectures (e.g., original Transformer decoder).
-
-    Input shapes:
-        Q: (batch, seq_len_q, d_model) - from decoder
-        K, V: (batch, seq_len_k, d_model) - from encoder
-    """
-
-    def __init__(self, num_heads: int, dropout: float = 0.0):
-        """
-        Initialize CrossAttention function.
-
-        Args:
-            num_heads: Number of attention heads
-            dropout: Dropout probability
-        """
-        self.mha = MultiHeadAttentionFunction(num_heads=num_heads, dropout=dropout)
-
-    def forward(
-        self,
-        Q: np.ndarray,
-        K: np.ndarray,
-        V: np.ndarray,
-        W_Q: np.ndarray,
-        W_K: np.ndarray,
-        W_V: np.ndarray,
-        W_O: np.ndarray,
-        mask: Optional[np.ndarray] = None,
-        training: bool = True
-    ) -> np.ndarray:
-        """
-        Compute cross-attention.
-
-        Args:
-            Q: Query tensor from decoder (batch, seq_q, d_model)
-            K: Key tensor from encoder (batch, seq_k, d_model)
-            V: Value tensor from encoder (batch, seq_k, d_model)
-            W_Q, W_K, W_V, W_O: Projection weights
-            mask: Optional mask for encoder padding
-            training: Whether in training mode
-
-        Returns:
-            Output tensor (batch, seq_q, d_model)
-        """
-        return self.mha.forward(Q, K, V, W_Q, W_K, W_V, W_O, mask, training)
-
-    def backward(
-        self,
-        grad_output: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Compute gradients for cross-attention.
-
-        Returns:
-            Tuple of gradients
-        """
-        return self.mha.backward(grad_output)
-
-
-class CausalSelfAttentionFunction(Function):
-    """
-    Causal (Masked) Self-Attention functional operation.
-
-    Self-attention with causal masking to prevent attending to future positions.
-    Used in autoregressive models like GPT.
-
-    The mask ensures position i can only attend to positions 0...i.
-    """
-
-    def __init__(self, num_heads: int, dropout: float = 0.0):
-        """
-        Initialize CausalSelfAttention function.
-
-        Args:
-            num_heads: Number of attention heads
-            dropout: Dropout probability
-        """
-        self.mha = MultiHeadAttentionFunction(num_heads=num_heads, dropout=dropout)
-
-    def forward(
-        self,
-        Q: np.ndarray,
-        K: np.ndarray,
-        V: np.ndarray,
-        W_Q: np.ndarray,
-        W_K: np.ndarray,
-        W_V: np.ndarray,
-        W_O: np.ndarray,
-        training: bool = True
-    ) -> np.ndarray:
-        """
-        Compute causal self-attention.
-
-        Args:
-            Q, K, V: Input tensors (usually the same for self-attention)
-            W_Q, W_K, W_V, W_O: Projection weights
-            training: Whether in training mode
-
-        Returns:
-            Output tensor
-        """
-        raise NotImplementedError(
-            "TODO: Implement CausalSelfAttention forward\n"
-            "Hint:\n"
-            "  seq_len = Q.shape[1]\n"
-            "  \n"
-            "  # Create causal mask: upper triangular with -inf\n"
-            "  causal_mask = np.triu(np.ones((seq_len, seq_len)) * (-np.inf), k=1)\n"
-            "  causal_mask = causal_mask[np.newaxis, np.newaxis, :, :]  # (1, 1, seq, seq)\n"
-            "  \n"
-            "  return self.mha.forward(Q, K, V, W_Q, W_K, W_V, W_O, causal_mask, training)"
-        )
-
-    def backward(
-        self,
-        grad_output: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Compute gradients for causal self-attention.
-
-        Returns:
-            Tuple of gradients
-        """
-        return self.mha.backward(grad_output)

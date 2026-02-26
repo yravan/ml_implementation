@@ -115,7 +115,7 @@ def numerical_gradient(func: Callable[[Tensor], Union[Tensor, float, np.ndarray]
     iter = np.nditer(x.data, flags=['multi_index'], op_flags=['readwrite'])
     output = func(x)
     grad = np.zeros_like(x.data)
-    if isinstance(output, np.ndarray):
+    if isinstance(output, (np.ndarray, Tensor)):
         output_shape = output.shape
         # Add newaxis for each dimension in output_shape
         for _ in range(len(output_shape)):
@@ -125,9 +125,9 @@ def numerical_gradient(func: Callable[[Tensor], Union[Tensor, float, np.ndarray]
         idx = iter.multi_index
         original = x.data[idx]
         x.data[idx] = original + epsilon
-        f_plus = float(func(x).data)
+        f_plus = func(x).data
         x.data[idx] = original - epsilon
-        f_minus = float(func(x).data)
+        f_minus = func(x).data
         x.data[idx] = original
         grad[idx] = (f_plus - f_minus) / (2 * epsilon)
         iter.iternext()

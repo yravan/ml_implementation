@@ -129,7 +129,15 @@ class ScaledDotProductAttention(Function):
             Attention output (batch, heads, seq_q, d_v)
         """
         d_k = Q.shape[-1]
-        attn_matrix = softmax(Q @ K.T / np.sqrt(d_k) + mask, axis=-1)
+        if mask is not None:
+            if mask.dtype == np.float32:
+                attn_matrix = softmax(Q @ K.swapaxes(-1, -2) / np.sqrt(d_k) + mask, axis=-1)
+            if mask.dtype == np.bool:
+                pre_softmax = Q @ K.swapaxes(-1, -2) / np.sqrt(d_k)
+                pre_softmax[~mask] = -np.inf
+                attn_matrix = softmax(pre_softmax, axis=-1)
+        else:
+            attn_matrix = softmax(Q @ K.swapaxes(-1, -2) / np.sqrt(d_k) , axis=-1)
         if training and dropout_p > 1e-8:
             dropout_mask = np.random.uniform(size=attn_matrix.shape) > dropout_p
             attn_output = (attn_matrix * dropout_mask.astype(attn_matrix.dtype) * 1 / (1 - dropout_p)) @ V
@@ -160,14 +168,14 @@ class ScaledDotProductAttention(Function):
         Returns:
             Tuple of (grad_Q, grad_K, grad_V)
         """
-        grad_V = self.attn_matrix.T @ grad_output
-        grad_attn_matrix = grad_output @ self.V.T
+        grad_V = self.attn_matrix.swapaxes(-1,-2) @ grad_output
+        grad_attn_matrix = grad_output @ self.V.swapaxes(-1,-2)
         if self.dropout_mask is not None:
             grad_attn_matrix = grad_attn_matrix * self.dropout_mask / (1 - self.dropout_p)
         weighted_sum = (grad_attn_matrix * self.attn_matrix).sum(axis=-1, keepdims=True)
         grad_pre_softmax = self.attn_matrix * (grad_attn_matrix - weighted_sum) / np.sqrt(self.d_k)
         grad_Q = grad_pre_softmax @ self.K
-        grad_K = grad_pre_softmax.T @ self.Q
+        grad_K = grad_pre_softmax.swapaxes(-1,-2) @ self.Q
 
         return grad_Q, grad_K, grad_V
 

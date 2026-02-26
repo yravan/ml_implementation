@@ -261,7 +261,7 @@ class Tensor:
             if self.ndim == 0:
                 self.grad = np.array([1.0], dtype=self.dtype)
             else:
-                self.grad = np.ones_like(self.data, dtype=self.data.dtype)
+                self.grad = np.eye(self.data.size).reshape(self.data.shape + self.data.shape)
         else:
             if grad.ndim != self.ndim:
                 raise RuntimeError("Expected grad with the same dim")

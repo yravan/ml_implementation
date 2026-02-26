@@ -85,8 +85,7 @@ from . import pooling_functional
 # Attention
 from .attention import (
     ScaledDotProductAttention,
-    MultiHeadAttention,
-    CrossAttention, CachedCrossAttention, MultimodalCrossAttention,
+    MultiHeadAttention, CachedMultiHeadAttention,
     CausalMask,
     MultiQueryAttention, GroupedQueryAttention,
 )
@@ -179,8 +178,7 @@ __all__ = [
 
     # Attention
     'ScaledDotProductAttention',
-    'MultiHeadAttention',
-    'CrossAttention', 'CachedCrossAttention', 'MultimodalCrossAttention',
+    'MultiHeadAttention', 'CachedMultiHeadAttention'
     'CausalMask',
     'MultiQueryAttention', 'GroupedQueryAttention',
 

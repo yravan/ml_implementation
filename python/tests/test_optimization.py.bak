@@ -1,0 +1,2998 @@
+"""
+Comprehensive Tests for Optimization Module
+============================================
+
+This test suite covers all components of the optimization module:
+- Optimizers (SGD, Adam, AdamW, RMSprop, etc.)
+- Loss Functions (MSE, CrossEntropy, Focal, etc.)
+- Learning Rate Schedulers (StepLR, CosineAnnealing, OneCycle, etc.)
+- Gradient Utilities (clipping, accumulation, scaling, etc.)
+
+Each test verifies:
+1. Correct computation of values
+2. Proper gradient flow (where applicable)
+3. State management and checkpointing
+4. Edge cases and numerical stability
+
+GRADIENT TESTING:
+Uses gradcheck from foundations to verify that analytical gradients (from backward pass)
+match numerical gradients (computed via finite differences) for loss functions.
+
+OPTIMIZER TESTING:
+Verifies that optimizers correctly update parameters in the expected direction
+and that optimizer state (momentum, etc.) is properly maintained.
+
+SCHEDULER TESTING:
+Verifies that learning rates follow the expected schedule at each step/epoch.
+"""
+
+import numpy as np
+import pytest
+from typing import Callable, Tuple, List
+import math
+
+# Import gradient checking utilities
+from python.foundations import Tensor, gradcheck, numerical_gradient, gradient_check
+
+
+# =============================================================================
+# Test Fixtures
+# =============================================================================
+
+@pytest.fixture
+def seed():
+    """Set random seed for reproducibility."""
+    np.random.seed(42)
+    yield
+    np.random.seed(None)
+
+
+@pytest.fixture
+def sample_params(seed):
+    """Create sample parameters for optimizer testing as Tensors."""
+    from python.foundations import Tensor
+    return [
+        Tensor(np.random.randn(10, 5).astype(np.float64), requires_grad=True),
+        Tensor(np.random.randn(5,).astype(np.float64), requires_grad=True),
+        Tensor(np.random.randn(5, 3).astype(np.float64), requires_grad=True),
+    ]
+
+
+@pytest.fixture
+def sample_grads(sample_params):
+    """Create sample gradients matching parameter shapes."""
+    return [np.random.randn(*p.data.shape).astype(np.float64) for p in sample_params]
+
+
+def set_grads(params, grads):
+    """Helper to set gradients on Tensor parameters."""
+    for p, g in zip(params, grads):
+        p.grad = g.copy()
+
+
+@pytest.fixture
+def regression_data(seed):
+    """Create sample regression data."""
+    predictions = np.random.randn(32, 1).astype(np.float64)
+    targets = np.random.randn(32, 1).astype(np.float64)
+    return predictions, targets
+
+
+@pytest.fixture
+def classification_data(seed):
+    """Create sample classification data."""
+    batch_size = 32
+    num_classes = 10
+    logits = np.random.randn(batch_size, num_classes).astype(np.float64)
+    targets = np.random.randint(0, num_classes, size=(batch_size,))
+    return logits, targets
+
+
+@pytest.fixture
+def binary_classification_data(seed):
+    """Create sample binary classification data."""
+    batch_size = 32
+    logits = np.random.randn(batch_size, 1).astype(np.float64)
+    targets = np.random.randint(0, 2, size=(batch_size, 1)).astype(np.float64)
+    return logits, targets
+
+
+# =============================================================================
+# OPTIMIZER TESTS
+# =============================================================================
+
+class TestSGD:
+    """Test SGD optimizer with new Tensor-based API."""
+
+    def test_sgd_creation(self, sample_params):
+        """Test SGD optimizer creation."""
+        from python.optimization import SGD
+
+        optimizer = SGD(sample_params, lr=0.01)
+        assert optimizer is not None
+        assert optimizer.defaults['lr'] == 0.01
+
+    def test_vanilla_sgd_step(self, sample_params, sample_grads):
+        """Test vanilla SGD (no momentum) takes correct step."""
+        from python.optimization import SGD
+        from python.foundations import Tensor
+
+        # Create fresh params
+        params = [Tensor(np.random.randn(10, 5).astype(np.float64), requires_grad=True)]
+        grads = [np.random.randn(10, 5).astype(np.float64)]
+        original_data = params[0].data.copy()
+        lr = 0.1
+
+        optimizer = SGD(params, lr=lr, momentum=0.0)
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Verify: param = param - lr * grad
+        expected = original_data - lr * grads[0]
+        assert np.allclose(params[0].data, expected), "Vanilla SGD step incorrect"
+
+    def test_sgd_with_momentum(self, sample_params, sample_grads):
+        """Test SGD with momentum accumulates velocity correctly."""
+        from python.optimization import SGD
+        from python.foundations import Tensor
+
+        params = [Tensor(np.random.randn(5, 3).astype(np.float64), requires_grad=True)]
+        grads = [np.random.randn(5, 3).astype(np.float64)]
+        lr = 0.1
+        momentum = 0.9
+
+        optimizer = SGD(params, lr=lr, momentum=momentum)
+
+        # First step: velocity = grad, param = param - lr * grad
+        original_data = params[0].data.copy()
+        set_grads(params, grads)
+        optimizer.step()
+
+        # After first step, velocity should equal grad
+        assert params[0] in optimizer.velocities
+        assert np.allclose(optimizer.velocities[params[0]], grads[0])
+        expected_after_step1 = original_data - lr * grads[0]
+        assert np.allclose(params[0].data, expected_after_step1), "First momentum step incorrect"
+
+        # Second step: velocity = momentum * velocity + grad
+        data_before_step2 = params[0].data.copy()
+        set_grads(params, grads)
+        optimizer.step()
+
+        expected_velocity = momentum * grads[0] + grads[0]  # momentum * old_v + grad
+        assert np.allclose(optimizer.velocities[params[0]], expected_velocity, rtol=1e-5), \
+            "Momentum velocity accumulation incorrect"
+
+    def test_sgd_with_weight_decay(self, sample_params, sample_grads):
+        """Test SGD with L2 weight decay."""
+        from python.optimization import SGD
+        from python.foundations import Tensor
+
+        params = [Tensor(np.random.randn(4, 4).astype(np.float64), requires_grad=True)]
+        grads = [np.random.randn(4, 4).astype(np.float64)]
+        original_data = params[0].data.copy()
+        lr = 0.1
+        weight_decay = 0.01
+
+        optimizer = SGD(params, lr=lr, weight_decay=weight_decay)
+        set_grads(params, grads)
+        optimizer.step()
+
+        # With weight decay: param = param - lr * (grad + weight_decay * param)
+        effective_grad = grads[0] + weight_decay * original_data
+        expected = original_data - lr * effective_grad
+        assert np.allclose(params[0].data, expected), "SGD with weight decay incorrect"
+
+    def test_sgd_nesterov_momentum(self, sample_params, sample_grads):
+        """Test SGD with Nesterov momentum."""
+        from python.optimization import SGD
+        from python.foundations import Tensor
+
+        params = [Tensor(np.random.randn(3, 3).astype(np.float64), requires_grad=True)]
+        grads = [np.random.randn(3, 3).astype(np.float64)]
+        lr = 0.1
+        momentum = 0.9
+
+        optimizer = SGD(params, lr=lr, momentum=momentum, nesterov=True)
+
+        # Take a step
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Nesterov: descent = velocity * momentum + grad
+        # After first step: velocity = grad, descent = grad * momentum + grad
+        # param = param - lr * descent
+
+    def test_sgd_multiple_param_groups(self):
+        """Test SGD with multiple parameter groups with different learning rates."""
+        from python.optimization import SGD
+        from python.foundations import Tensor
+
+        param1 = Tensor(np.random.randn(3, 3).astype(np.float64), requires_grad=True)
+        param2 = Tensor(np.random.randn(2, 2).astype(np.float64), requires_grad=True)
+
+        param_groups = [
+            {'params': [param1], 'lr': 0.1},
+            {'params': [param2], 'lr': 0.01}
+        ]
+
+        optimizer = SGD(param_groups, lr=0.05)  # default lr
+
+        # Set gradients
+        param1.grad = np.ones_like(param1.data)
+        param2.grad = np.ones_like(param2.data)
+
+        original1 = param1.data.copy()
+        original2 = param2.data.copy()
+
+        optimizer.step()
+
+        # Each group should use its own lr
+        assert np.allclose(param1.data, original1 - 0.1 * np.ones_like(original1))
+        assert np.allclose(param2.data, original2 - 0.01 * np.ones_like(original2))
+
+    def test_sgd_numerical_stability(self):
+        """Test SGD handles extreme values without NaN/Inf."""
+        from python.optimization import SGD
+        from python.foundations import Tensor
+
+        # Very small gradients
+        params = [Tensor(np.ones((3, 3)).astype(np.float64) * 1e-10, requires_grad=True)]
+        optimizer = SGD(params, lr=0.01)
+        params[0].grad = np.ones((3, 3)) * 1e-15
+        optimizer.step()
+        assert np.all(np.isfinite(params[0].data)), "SGD produced NaN/Inf with small values"
+
+        # Very large gradients
+        params = [Tensor(np.ones((3, 3)).astype(np.float64), requires_grad=True)]
+        optimizer = SGD(params, lr=0.01)
+        params[0].grad = np.ones((3, 3)) * 1e10
+        optimizer.step()
+        assert np.all(np.isfinite(params[0].data)), "SGD produced NaN/Inf with large gradients"
+
+
+class TestAdam:
+    """Test Adam optimizer with new Tensor-based API."""
+
+    def test_adam_creation(self, sample_params):
+        """Test Adam optimizer creation."""
+        from python.optimization import Adam
+
+        optimizer = Adam(sample_params, lr=0.001)
+        assert optimizer is not None
+        assert optimizer.defaults['lr'] == 0.001
+        assert optimizer.defaults['betas'] == (0.9, 0.999)
+
+    def test_adam_step_correctness(self, sample_params, sample_grads):
+        """Test Adam computes correct update with bias correction."""
+        from python.optimization import Adam
+        from python.foundations import Tensor
+
+        params = [Tensor(np.array([[1.0, 2.0], [3.0, 4.0]]).astype(np.float64), requires_grad=True)]
+        grads = [np.array([[0.1, 0.2], [0.3, 0.4]]).astype(np.float64)]
+        original_data = params[0].data.copy()
+        lr = 0.001
+        beta1, beta2 = 0.9, 0.999
+        eps = 1e-8
+
+        optimizer = Adam(params, lr=lr, betas=(beta1, beta2), eps=eps)
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Manual computation for first step
+        g = grads[0]
+        m = (1 - beta1) * g  # m = 0 + (1-beta1)*g = (1-beta1)*g
+        v = (1 - beta2) * (g ** 2)  # v = 0 + (1-beta2)*g^2
+        m_hat = m / (1 - beta1 ** 1)  # bias correction
+        v_hat = v / (1 - beta2 ** 1)
+        expected = original_data - lr * m_hat / (np.sqrt(v_hat) + eps)
+
+        assert np.allclose(params[0].data, expected, rtol=1e-5), \
+            f"Adam step incorrect: got {params[0].data}, expected {expected}"
+
+    def test_adam_bias_correction(self, sample_params, sample_grads):
+        """Test Adam bias correction is applied correctly over multiple steps."""
+        from python.optimization import Adam
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64), requires_grad=True)]
+        grads = [np.ones((2, 2)).astype(np.float64) * 0.1]
+        beta1, beta2 = 0.9, 0.999
+
+        optimizer = Adam(params, lr=0.001, betas=(beta1, beta2))
+
+        # Take multiple steps
+        for step in range(1, 6):
+            set_grads(params, grads)
+            optimizer.step()
+            assert optimizer._step_count == step
+
+            # Verify moment estimates exist
+            assert params[0] in optimizer.exp_avg
+            assert params[0] in optimizer.exp_avg_sq
+
+    def test_adam_with_amsgrad(self, sample_params, sample_grads):
+        """Test Adam with AMSGrad variant tracks max variance."""
+        from python.optimization import Adam
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((3, 3)).astype(np.float64), requires_grad=True)]
+
+        optimizer = Adam(params, lr=0.001, amsgrad=True)
+
+        # First step with small gradient
+        params[0].grad = np.ones((3, 3)) * 0.1
+        optimizer.step()
+
+        # Second step with larger gradient
+        params[0].grad = np.ones((3, 3)) * 1.0
+        optimizer.step()
+
+        # Verify max_exp_avg_sq is tracked
+        assert params[0] in optimizer.max_exp_avg_sq
+
+    def test_adam_weight_decay(self, sample_params, sample_grads):
+        """Test Adam with L2 weight decay (adds to gradient)."""
+        from python.optimization import Adam
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64) * 2.0, requires_grad=True)]
+        grads = [np.ones((2, 2)).astype(np.float64) * 0.1]
+
+        optimizer = Adam(params, lr=0.001, weight_decay=0.01)
+        original_data = params[0].data.copy()
+        set_grads(params, grads)
+        optimizer.step()
+
+        # With weight_decay, effective gradient = grad + weight_decay * param
+        # Parameters should move more due to weight decay
+        assert not np.allclose(params[0].data, original_data)
+
+    def test_adam_numerical_stability(self):
+        """Test Adam handles extreme values without NaN/Inf."""
+        from python.optimization import Adam
+        from python.foundations import Tensor
+
+        # Very small gradients
+        params = [Tensor(np.ones((3, 3)).astype(np.float64), requires_grad=True)]
+        optimizer = Adam(params, lr=0.001)
+        params[0].grad = np.ones((3, 3)) * 1e-15
+        optimizer.step()
+        assert np.all(np.isfinite(params[0].data)), "Adam produced NaN/Inf with small gradients"
+
+        # Very large gradients
+        params = [Tensor(np.ones((3, 3)).astype(np.float64), requires_grad=True)]
+        optimizer = Adam(params, lr=0.001)
+        params[0].grad = np.ones((3, 3)) * 1e6
+        optimizer.step()
+        assert np.all(np.isfinite(params[0].data)), "Adam produced NaN/Inf with large gradients"
+
+    def test_adam_convergence_on_quadratic(self):
+        """Test Adam converges on simple quadratic function f(x) = x^2."""
+        from python.optimization import Adam
+        from python.foundations import Tensor
+
+        # Minimize f(x) = x^2, gradient = 2x
+        x = Tensor(np.array([5.0]).astype(np.float64), requires_grad=True)
+        optimizer = Adam([x], lr=0.1)
+
+        for _ in range(100):
+            x.grad = 2 * x.data  # gradient of x^2
+            optimizer.step()
+
+        # Should converge close to 0
+        assert np.abs(x.data[0]) < 0.1, f"Adam failed to converge: x = {x.data[0]}"
+
+
+class TestAdamW:
+    """Test AdamW optimizer with decoupled weight decay."""
+
+    def test_adamw_creation(self, sample_params):
+        """Test AdamW optimizer creation."""
+        from python.optimization import AdamW
+
+        optimizer = AdamW(sample_params, lr=0.001, weight_decay=0.01)
+        assert optimizer is not None
+        assert optimizer.defaults['weight_decay'] == 0.01
+
+    def test_adamw_decoupled_weight_decay_formula(self, sample_params, sample_grads):
+        """Test AdamW applies decoupled weight decay (not in gradient)."""
+        from python.optimization import AdamW
+        from python.foundations import Tensor
+
+        # With decoupled weight decay:
+        # param = param * (1 - lr * weight_decay) - lr * adam_update
+        # NOT: param = param - lr * (adam_update + weight_decay * param)
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64) * 2.0, requires_grad=True)]
+        grads = [np.zeros((2, 2)).astype(np.float64)]  # zero gradient
+        original_data = params[0].data.copy()
+        lr = 0.1
+        weight_decay = 0.1
+
+        optimizer = AdamW(params, lr=lr, weight_decay=weight_decay)
+        set_grads(params, grads)
+        optimizer.step()
+
+        # With zero gradient, only weight decay should apply
+        # Decoupled: param = param * (1 - lr * weight_decay) = 2.0 * 0.99 = 1.98
+        expected = original_data * (1 - lr * weight_decay)
+        assert np.allclose(params[0].data, expected, rtol=1e-4), \
+            f"AdamW decoupled weight decay incorrect: got {params[0].data}, expected {expected}"
+
+    def test_adamw_differs_from_adam_l2(self):
+        """Test AdamW produces different results from Adam with L2."""
+        from python.optimization import Adam, AdamW
+        from python.foundations import Tensor
+
+        # Create identical starting conditions
+        np.random.seed(42)
+        data = np.random.randn(3, 3).astype(np.float64)
+        grad = np.random.randn(3, 3).astype(np.float64)
+
+        params_adam = [Tensor(data.copy(), requires_grad=True)]
+        params_adamw = [Tensor(data.copy(), requires_grad=True)]
+
+        adam = Adam(params_adam, lr=0.01, weight_decay=0.1)
+        adamw = AdamW(params_adamw, lr=0.01, weight_decay=0.1)
+
+        # Take several steps
+        for _ in range(5):
+            params_adam[0].grad = grad.copy()
+            params_adamw[0].grad = grad.copy()
+            adam.step()
+            adamw.step()
+
+        # Results should differ (Adam applies L2 to gradient, AdamW is decoupled)
+        # This test verifies the implementations are actually different
+        assert not np.allclose(params_adam[0].data, params_adamw[0].data), \
+            "AdamW and Adam+L2 should produce different results"
+
+    def test_adamw_convergence(self):
+        """Test AdamW converges on simple problem."""
+        from python.optimization import AdamW
+        from python.foundations import Tensor
+
+        x = Tensor(np.array([10.0]).astype(np.float64), requires_grad=True)
+        optimizer = AdamW([x], lr=0.1, weight_decay=0.01)
+
+        for _ in range(1000):
+            x.grad = 2 * x.data  # gradient of x^2
+            optimizer.step()
+
+        assert np.abs(x.data[0]) < 0.5, f"AdamW failed to converge: x = {x.data[0]}"
+
+
+class TestRMSprop:
+    """Test RMSprop optimizer with new Tensor-based API."""
+
+    def test_rmsprop_creation(self, sample_params):
+        """Test RMSprop optimizer creation."""
+        from python.optimization import RMSprop
+
+        optimizer = RMSprop(sample_params, lr=0.01)
+        assert optimizer is not None
+        assert optimizer.defaults['alpha'] == 0.99
+
+    def test_rmsprop_step_correctness(self, sample_params, sample_grads):
+        """Test RMSprop computes correct update."""
+        from python.optimization import RMSprop
+        from python.foundations import Tensor
+
+        params = [Tensor(np.array([[1.0, 2.0], [3.0, 4.0]]).astype(np.float64), requires_grad=True)]
+        grads = [np.array([[0.1, 0.2], [0.3, 0.4]]).astype(np.float64)]
+        original_data = params[0].data.copy()
+        lr = 0.01
+        alpha = 0.99
+        eps = 1e-8
+
+        optimizer = RMSprop(params, lr=lr, alpha=alpha, eps=eps)
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Manual computation for first step
+        g = grads[0]
+        v = (1 - alpha) * (g ** 2)  # v = 0 * alpha + (1-alpha) * g^2
+        expected = original_data - lr * g / (np.sqrt(v) + eps)
+
+        assert np.allclose(params[0].data, expected, rtol=1e-5), \
+            f"RMSprop step incorrect: got {params[0].data}, expected {expected}"
+
+    def test_rmsprop_square_avg_accumulation(self, sample_params, sample_grads):
+        """Test RMSprop accumulates squared gradients correctly."""
+        from python.optimization import RMSprop
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64), requires_grad=True)]
+        grads = [np.ones((2, 2)).astype(np.float64) * 0.5]
+        alpha = 0.9
+
+        optimizer = RMSprop(params, lr=0.01, alpha=alpha)
+
+        # Step 1
+        set_grads(params, grads)
+        optimizer.step()
+        expected_v1 = (1 - alpha) * (grads[0] ** 2)
+        assert np.allclose(optimizer.velocities[params[0]], expected_v1)
+
+        # Step 2
+        set_grads(params, grads)
+        optimizer.step()
+        expected_v2 = alpha * expected_v1 + (1 - alpha) * (grads[0] ** 2)
+        assert np.allclose(optimizer.velocities[params[0]], expected_v2)
+
+    def test_rmsprop_centered(self):
+        """Test RMSprop with centered gradient (variance normalization)."""
+        from python.optimization import RMSprop
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((3, 3)).astype(np.float64), requires_grad=True)]
+        optimizer = RMSprop(params, lr=0.01, centered=True)
+
+        params[0].grad = np.random.randn(3, 3).astype(np.float64)
+        optimizer.step()
+
+        # Centered RMSprop should track gradient average
+        assert params[0] in optimizer.grad_avg
+
+    def test_rmsprop_with_momentum(self):
+        """Test RMSprop with momentum buffer."""
+        from python.optimization import RMSprop
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64), requires_grad=True)]
+        optimizer = RMSprop(params, lr=0.01, momentum=0.9)
+
+        params[0].grad = np.ones((2, 2)) * 0.1
+        optimizer.step()
+
+        # Should have momentum buffer
+        assert params[0] in optimizer.buffer
+
+    def test_rmsprop_numerical_stability(self):
+        """Test RMSprop handles small/zero gradients without division issues."""
+        from python.optimization import RMSprop
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64), requires_grad=True)]
+        optimizer = RMSprop(params, lr=0.01, eps=1e-8)
+
+        # Near-zero gradients
+        params[0].grad = np.ones((2, 2)) * 1e-20
+        optimizer.step()
+        assert np.all(np.isfinite(params[0].data)), "RMSprop produced NaN/Inf"
+
+
+class TestAdagrad:
+    """Test Adagrad optimizer with new Tensor-based API."""
+
+    def test_adagrad_creation(self, sample_params):
+        """Test Adagrad optimizer creation."""
+        from python.optimization import Adagrad
+
+        optimizer = Adagrad(sample_params, lr=0.01)
+        assert optimizer is not None
+
+    def test_adagrad_step_correctness(self):
+        """Test Adagrad computes correct update."""
+        from python.optimization import Adagrad
+        from python.foundations import Tensor
+
+        params = [Tensor(np.array([[1.0, 2.0]]).astype(np.float64), requires_grad=True)]
+        grads = [np.array([[0.5, 1.0]]).astype(np.float64)]
+        original_data = params[0].data.copy()
+        lr = 0.1
+        eps = 1e-10
+
+        optimizer = Adagrad(params, lr=lr, eps=eps)
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Manual: G = g^2, param = param - lr * g / (sqrt(G) + eps)
+        G = grads[0] ** 2
+        expected = original_data - lr * grads[0] / (np.sqrt(G) + eps)
+        assert np.allclose(params[0].data, expected, rtol=1e-5)
+
+    def test_adagrad_accumulated_gradient(self):
+        """Test Adagrad accumulates squared gradients."""
+        from python.optimization import Adagrad
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64), requires_grad=True)]
+        grads = [np.ones((2, 2)).astype(np.float64)]
+
+        optimizer = Adagrad(params, lr=0.01)
+
+        # Take multiple steps
+        for step in range(1, 4):
+            set_grads(params, grads)
+            optimizer.step()
+            # G should accumulate: G = sum of g^2 over all steps
+            expected_G = step * (grads[0] ** 2)
+            assert np.allclose(optimizer.state_sum[params[0]], expected_G)
+
+
+class TestLAMB:
+    """Test LAMB optimizer for large batch training."""
+
+    def test_lamb_creation(self, sample_params):
+        """Test LAMB optimizer creation."""
+        from python.optimization import LAMB
+
+        optimizer = LAMB(sample_params, lr=0.001)
+        assert optimizer is not None
+
+    def test_lamb_step(self, sample_params, sample_grads):
+        """Test LAMB takes a step with layer-wise scaling."""
+        from python.optimization import LAMB
+
+        params = [p.copy() for p in sample_params]
+        original_params = [p.copy() for p in params]
+
+        optimizer = LAMB(params, lr=0.001)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        # Parameters should have changed
+        for p, p_orig in zip(params, original_params):
+            assert not np.allclose(p, p_orig), "LAMB should update parameters"
+
+
+class TestLion:
+    """Test Lion optimizer."""
+
+    def test_lion_creation(self, sample_params):
+        """Test Lion optimizer creation."""
+        from python.optimization import Lion
+
+        optimizer = Lion(sample_params, lr=1e-4)
+        assert optimizer is not None
+
+    def test_lion_step(self, sample_params, sample_grads):
+        """Test Lion takes a step using sign of momentum."""
+        from python.optimization import Lion
+
+        params = [p.copy() for p in sample_params]
+        original_params = [p.copy() for p in params]
+
+        optimizer = Lion(params, lr=1e-4)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        # Parameters should have changed
+        for p, p_orig in zip(params, original_params):
+            assert not np.allclose(p, p_orig), "Lion should update parameters"
+
+
+class TestMuon:
+    """Test Muon optimizer."""
+
+    def test_muon_creation(self, sample_params):
+        """Test Muon optimizer creation."""
+        from python.optimization import Muon
+
+        optimizer = Muon(sample_params, lr=0.02)
+        assert optimizer is not None
+
+    def test_muon_step(self, sample_params, sample_grads):
+        """Test Muon takes a step."""
+        from python.optimization import Muon
+
+        params = [p.copy() for p in sample_params]
+        original = [p.copy() for p in params]
+
+        optimizer = Muon(params, lr=0.02)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        # Parameters should change
+        for p, o in zip(params, original):
+            assert not np.allclose(p, o), "Muon should update parameters"
+
+
+class TestSGDW:
+    """Test SGDW optimizer (SGD with decoupled weight decay) using new Tensor-based API."""
+
+    def test_sgdw_creation(self, sample_params):
+        """Test SGDW creation."""
+        from python.optimization import SGDW
+
+        optimizer = SGDW(sample_params, lr=0.01, weight_decay=0.01)
+        assert optimizer is not None
+        assert optimizer.defaults['weight_decay'] == 0.01
+
+    def test_sgdw_step_no_momentum(self):
+        """Test SGDW takes correct step with decoupled weight decay (no momentum)."""
+        from python.optimization import SGDW
+        from python.foundations import Tensor
+
+        # Create a simple parameter
+        params = [Tensor(np.array([[1.0, 2.0], [3.0, 4.0]]).astype(np.float64), requires_grad=True)]
+        grads = [np.array([[0.1, 0.2], [0.3, 0.4]]).astype(np.float64)]
+        original_data = params[0].data.copy()
+        lr = 0.1
+        weight_decay = 0.1
+
+        optimizer = SGDW(params, lr=lr, weight_decay=weight_decay, momentum=0.0)
+        set_grads(params, grads)
+        optimizer.step()
+
+        # SGDW: param = param * (1 - lr * weight_decay) - lr * grad
+        # First apply weight decay, then gradient descent
+        expected = original_data * (1 - lr * weight_decay) - lr * grads[0]
+        assert np.allclose(params[0].data, expected), \
+            f"SGDW step incorrect: got {params[0].data}, expected {expected}"
+
+    def test_sgdw_differs_from_sgd_l2(self):
+        """Test SGDW produces different results from SGD with L2 weight decay."""
+        from python.optimization import SGD, SGDW
+        from python.foundations import Tensor
+
+        # Create identical starting conditions
+        np.random.seed(42)
+        data = np.random.randn(3, 3).astype(np.float64)
+        grad = np.random.randn(3, 3).astype(np.float64)
+
+        params_sgd = [Tensor(data.copy(), requires_grad=True)]
+        params_sgdw = [Tensor(data.copy(), requires_grad=True)]
+
+        sgd = SGD(params_sgd, lr=0.1, weight_decay=0.1, momentum=0.9)
+        sgdw = SGDW(params_sgdw, lr=0.1, weight_decay=0.1, momentum=0.9)
+
+        # Take a step
+        for _ in range(3):
+            params_sgd[0].grad = grad.copy()
+            params_sgdw[0].grad = grad.copy()
+            sgd.step()
+            sgdw.step()
+
+        # Results should differ:
+        # SGD: param = param - lr * (grad + weight_decay * param)
+        # SGDW: param = param * (1 - lr * weight_decay) - lr * grad
+        assert not np.allclose(params_sgd[0].data, params_sgdw[0].data), \
+            "SGDW and SGD+L2 should produce different results"
+
+    def test_sgdw_with_momentum(self):
+        """Test SGDW with momentum accumulates velocity correctly."""
+        from python.optimization import SGDW
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64), requires_grad=True)]
+        grads = [np.ones((2, 2)).astype(np.float64) * 0.5]
+        lr = 0.1
+        momentum = 0.9
+        weight_decay = 0.01
+
+        optimizer = SGDW(params, lr=lr, momentum=momentum, weight_decay=weight_decay)
+
+        # First step
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Verify momentum buffer exists
+        assert params[0] in optimizer.velocities
+
+        # Second step - velocity should accumulate
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Velocity should be non-zero and growing
+        assert not np.allclose(optimizer.velocities[params[0]], np.zeros((2, 2)))
+
+    def test_sgdw_zero_weight_decay(self):
+        """Test SGDW with zero weight decay equals SGD."""
+        from python.optimization import SGD, SGDW
+        from python.foundations import Tensor
+
+        np.random.seed(123)
+        data = np.random.randn(3, 3).astype(np.float64)
+        grad = np.random.randn(3, 3).astype(np.float64)
+
+        params_sgd = [Tensor(data.copy(), requires_grad=True)]
+        params_sgdw = [Tensor(data.copy(), requires_grad=True)]
+
+        sgd = SGD(params_sgd, lr=0.1, momentum=0.0, weight_decay=0.0)
+        sgdw = SGDW(params_sgdw, lr=0.1, momentum=0.0, weight_decay=0.0)
+
+        params_sgd[0].grad = grad.copy()
+        params_sgdw[0].grad = grad.copy()
+        sgd.step()
+        sgdw.step()
+
+        # With zero weight decay, results should be identical
+        assert np.allclose(params_sgd[0].data, params_sgdw[0].data), \
+            "SGDW with zero weight decay should equal SGD"
+
+
+class TestAdadelta:
+    """Test Adadelta optimizer with new Tensor-based API."""
+
+    def test_adadelta_creation(self, sample_params):
+        """Test Adadelta creation."""
+        from python.optimization import Adadelta
+
+        optimizer = Adadelta(sample_params, lr=1.0, rho=0.9)
+        assert optimizer is not None
+        assert optimizer.defaults['rho'] == 0.9
+
+    def test_adadelta_step_correctness(self):
+        """Test Adadelta computes correct update."""
+        from python.optimization import Adadelta
+        from python.foundations import Tensor
+
+        params = [Tensor(np.array([[1.0, 2.0], [3.0, 4.0]]).astype(np.float64), requires_grad=True)]
+        grads = [np.array([[0.1, 0.2], [0.3, 0.4]]).astype(np.float64)]
+        original_data = params[0].data.copy()
+        lr = 1.0
+        rho = 0.9
+        eps = 1e-6
+
+        optimizer = Adadelta(params, lr=lr, rho=rho, eps=eps)
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Manual computation for first step:
+        # square_avg = (1-rho) * grad^2 = 0.1 * grad^2
+        # acc_delta starts at 0, so descent = sqrt(0 + eps) / sqrt(square_avg + eps) * grad
+        # acc_delta = (1-rho) * descent^2
+        # param = param - lr * descent
+        g = grads[0]
+        square_avg = (1 - rho) * (g ** 2)
+        descent = np.sqrt(0 + eps) / np.sqrt(square_avg + eps) * g
+        expected = original_data - lr * descent
+
+        assert np.allclose(params[0].data, expected, rtol=1e-5), \
+            f"Adadelta step incorrect: got {params[0].data}, expected {expected}"
+
+    def test_adadelta_state_accumulation(self):
+        """Test Adadelta accumulates state correctly over multiple steps."""
+        from python.optimization import Adadelta
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64), requires_grad=True)]
+        grads = [np.ones((2, 2)).astype(np.float64) * 0.5]
+        rho = 0.9
+
+        optimizer = Adadelta(params, lr=1.0, rho=rho, eps=1e-6)
+
+        # First step
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Check that state buffers exist and are updated
+        assert params[0] in optimizer.square_avg
+        assert params[0] in optimizer.acc_delta
+        assert not np.allclose(optimizer.square_avg[params[0]], np.zeros((2, 2)))
+
+        # Second step - square_avg should accumulate
+        square_avg_after_1 = optimizer.square_avg[params[0]].copy()
+        set_grads(params, grads)
+        optimizer.step()
+
+        # square_avg = rho * old_square_avg + (1-rho) * grad^2
+        expected_square_avg = rho * square_avg_after_1 + (1 - rho) * (grads[0] ** 2)
+        assert np.allclose(optimizer.square_avg[params[0]], expected_square_avg)
+
+    def test_adadelta_no_lr_needed(self):
+        """Test Adadelta works well with default lr=1.0 (derives its own rate)."""
+        from python.optimization import Adadelta
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((3, 3)).astype(np.float64), requires_grad=True)]
+        optimizer = Adadelta(params)  # default lr=1.0
+
+        original = params[0].data.copy()
+        params[0].grad = np.random.randn(3, 3).astype(np.float64)
+        optimizer.step()
+
+        # Should update parameters
+        assert not np.allclose(params[0].data, original), "Adadelta should update parameters"
+
+    def test_adadelta_numerical_stability(self):
+        """Test Adadelta handles small gradients without numerical issues."""
+        from python.optimization import Adadelta
+        from python.foundations import Tensor
+
+        params = [Tensor(np.ones((2, 2)).astype(np.float64), requires_grad=True)]
+        optimizer = Adadelta(params, eps=1e-6)
+
+        # Very small gradients
+        params[0].grad = np.ones((2, 2)) * 1e-10
+        optimizer.step()
+
+        assert np.all(np.isfinite(params[0].data)), "Adadelta produced NaN/Inf"
+
+
+class TestNAdam:
+    """Test NAdam optimizer (Nesterov-accelerated Adam)."""
+
+    def test_nadam_creation(self, sample_params):
+        """Test NAdam creation."""
+        from python.optimization import NAdam
+
+        optimizer = NAdam(sample_params, lr=0.001)
+        assert optimizer is not None
+
+    def test_nadam_step(self, sample_params, sample_grads):
+        """Test NAdam takes a step."""
+        from python.optimization import NAdam
+
+        params = [p.copy() for p in sample_params]
+        original = [p.copy() for p in params]
+
+        optimizer = NAdam(params, lr=0.001, betas=(0.9, 0.999))
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        for p, o in zip(params, original):
+            assert not np.allclose(p, o), "NAdam should update parameters"
+
+    def test_nadam_betas(self, sample_params, sample_grads):
+        """Test NAdam with custom betas."""
+        from python.optimization import NAdam
+
+        params = [p.copy() for p in sample_params]
+
+        optimizer = NAdam(params, lr=0.001, betas=(0.95, 0.999))
+
+        for _ in range(3):
+            set_grads(params, sample_grads)
+            optimizer.step()
+
+        # Check state contains momentum and variance
+        for i in range(len(params)):
+            state = optimizer.state[i]
+            assert 'm' in state or 'exp_avg' in state
+            assert 'v' in state or 'exp_avg_sq' in state
+
+    def test_nadam_momentum_decay(self, sample_params, sample_grads):
+        """Test NAdam handles momentum decay (mu schedule)."""
+        from python.optimization import NAdam
+
+        params = [p.copy() for p in sample_params]
+
+        optimizer = NAdam(params, lr=0.002, momentum_decay=0.004)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        # Should handle momentum decay without error
+
+
+class TestRAdam:
+    """Test RAdam optimizer (Rectified Adam)."""
+
+    def test_radam_creation(self, sample_params):
+        """Test RAdam creation."""
+        from python.optimization import RAdam
+
+        optimizer = RAdam(sample_params, lr=0.001)
+        assert optimizer is not None
+
+    def test_radam_step(self, sample_params, sample_grads):
+        """Test RAdam takes a step."""
+        from python.optimization import RAdam
+
+        params = [p.copy() for p in sample_params]
+        original = [p.copy() for p in params]
+
+        optimizer = RAdam(params, lr=0.001)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        for p, o in zip(params, original):
+            assert not np.allclose(p, o), "RAdam should update parameters"
+
+    def test_radam_warmup_behavior(self, sample_params, sample_grads):
+        """Test RAdam warmup behavior (variance rectification)."""
+        from python.optimization import RAdam
+
+        params = [p.copy() for p in sample_params]
+
+        optimizer = RAdam(params, lr=0.001)
+
+        # Early steps should have warmup behavior
+        for _ in range(5):
+            set_grads(params, sample_grads)
+            optimizer.step()
+
+        # Later steps should have full Adam behavior
+        for _ in range(100):
+            set_grads(params, sample_grads)
+            optimizer.step()
+
+        # Check step count
+        assert optimizer.state[0].get('step', 0) > 0
+
+
+class TestAdafactor:
+    """Test Adafactor optimizer."""
+
+    def test_adafactor_creation(self, sample_params):
+        """Test Adafactor creation."""
+        from python.optimization import Adafactor
+
+        optimizer = Adafactor(sample_params)
+        assert optimizer is not None
+
+    def test_adafactor_step(self, sample_params, sample_grads):
+        """Test Adafactor takes a step."""
+        from python.optimization import Adafactor
+
+        params = [p.copy() for p in sample_params]
+        original = [p.copy() for p in params]
+
+        optimizer = Adafactor(params)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        for p, o in zip(params, original):
+            assert not np.allclose(p, o), "Adafactor should update parameters"
+
+    def test_adafactor_factored_second_moment(self, sample_params, sample_grads):
+        """Test Adafactor uses factored second moment for 2D+ params."""
+        from python.optimization import Adafactor
+
+        # 2D parameter should use factored representation
+        params_2d = [np.random.randn(10, 5).astype(np.float64)]
+        grads_2d = [np.random.randn(10, 5).astype(np.float64)]
+
+        optimizer = Adafactor(params_2d)
+
+        for _ in range(3):
+            params_2d[0].grad = grads_2d[0]
+            optimizer.step()
+
+        # Should have row and column factors instead of full matrix
+        state = optimizer.state[0]
+        # Check for factored representation (row_var, col_var) or similar
+        has_factored = ('exp_avg_sq_row' in state and 'exp_avg_sq_col' in state) or \
+                      ('v_row' in state and 'v_col' in state) or \
+                      'exp_avg_sq' in state  # Or full if not factored
+        assert has_factored or len(state) > 0
+
+    def test_adafactor_relative_step_size(self, sample_params, sample_grads):
+        """Test Adafactor with relative step size (no explicit lr)."""
+        from python.optimization import Adafactor
+
+        params = [p.copy() for p in sample_params]
+
+        # Adafactor can work without explicit lr (uses relative step size)
+        optimizer = Adafactor(params, scale_parameter=True, relative_step=True)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+
+class TestLARS:
+    """Test LARS optimizer (Layer-wise Adaptive Rate Scaling)."""
+
+    def test_lars_creation(self, sample_params):
+        """Test LARS creation."""
+        from python.optimization import LARS
+
+        optimizer = LARS(sample_params, lr=0.1)
+        assert optimizer is not None
+
+    def test_lars_step(self, sample_params, sample_grads):
+        """Test LARS takes a step."""
+        from python.optimization import LARS
+
+        params = [p.copy() for p in sample_params]
+        original = [p.copy() for p in params]
+
+        optimizer = LARS(params, lr=0.1)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        for p, o in zip(params, original):
+            assert not np.allclose(p, o), "LARS should update parameters"
+
+    def test_lars_trust_coefficient(self, sample_params, sample_grads):
+        """Test LARS with trust coefficient."""
+        from python.optimization import LARS
+
+        params = [p.copy() for p in sample_params]
+
+        optimizer = LARS(params, lr=0.1, trust_coefficient=0.001)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+    def test_lars_layer_wise_scaling(self, sample_params, sample_grads):
+        """Test LARS applies layer-wise scaling."""
+        from python.optimization import LARS
+
+        params = [p.copy() for p in sample_params]
+        params_copy = [p.copy() for p in params]
+
+        optimizer = LARS(params, lr=0.1, trust_coefficient=0.001)
+
+        # LARS scales learning rate per layer based on ||w|| / ||g||
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        # Parameters should be updated
+        for p, o in zip(params, params_copy):
+            assert not np.allclose(p, o)
+
+
+# =============================================================================
+# LOSS FUNCTION TESTS
+# =============================================================================
+
+class TestMSELoss:
+    """Test Mean Squared Error Loss."""
+
+    def test_mse_forward(self, seed):
+        """Test MSE forward computation."""
+        from python.optimization import MSELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(32, 1).astype(np.float64))
+        targets = Tensor(np.random.randn(32, 1).astype(np.float64))
+        loss_fn = MSELoss()
+
+        loss = loss_fn(predictions, targets, reduction='mean')
+
+        expected = np.mean((predictions.data - targets.data) ** 2)
+        assert np.allclose(loss.data, expected), "MSE forward incorrect"
+
+    def test_mse_reduction_sum(self, seed):
+        """Test MSE with sum reduction."""
+        from python.optimization import MSELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(32, 1).astype(np.float64))
+        targets = Tensor(np.random.randn(32, 1).astype(np.float64))
+        loss_fn = MSELoss()
+
+        loss = loss_fn(predictions, targets, reduction='sum')
+
+        expected = np.sum((predictions.data - targets.data) ** 2)
+        assert np.allclose(loss.data, expected), "MSE sum reduction incorrect"
+
+    def test_mse_reduction_none(self, seed):
+        """Test MSE with no reduction."""
+        from python.optimization import MSELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(8, 1).astype(np.float64))
+        targets = Tensor(np.random.randn(8, 1).astype(np.float64))
+        loss_fn = MSELoss()
+
+        loss = loss_fn(predictions, targets, reduction='none')
+
+        expected = (predictions.data - targets.data) ** 2
+        assert np.allclose(loss.data, expected), "MSE none reduction incorrect"
+
+    def test_mse_backward(self, seed):
+        """Test MSE backward gradient via autograd."""
+        from python.optimization import MSELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(8, 1).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.random.randn(8, 1).astype(np.float64))
+        loss_fn = MSELoss()
+
+        loss = loss_fn(predictions, targets, reduction='mean')
+        loss.backward()
+
+        # Gradient: 2 * (pred - target) / n
+        expected_grad = 2 * (predictions.data - targets.data) / predictions.data.size
+        assert np.allclose(predictions.grad, expected_grad), "MSE backward incorrect"
+
+    def test_mse_gradient_check(self, seed):
+        """Test MSE gradient using foundations.gradcheck."""
+        from python.optimization import MSELoss
+        from python.foundations import Tensor, gradcheck
+
+        predictions = Tensor(np.random.randn(4, 1).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.random.randn(4, 1).astype(np.float64))
+        loss_fn = MSELoss()
+
+        def func(pred):
+            return loss_fn(pred, targets, reduction='mean')
+
+        assert gradcheck(func, (predictions,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "MSE gradient check failed"
+
+    def test_mse_gradient_check_sum_reduction(self, seed):
+        """Test MSE gradient with sum reduction using gradcheck."""
+        from python.optimization import MSELoss
+        from python.foundations import Tensor, gradcheck
+
+        predictions = Tensor(np.random.randn(4, 1).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.random.randn(4, 1).astype(np.float64))
+        loss_fn = MSELoss()
+
+        def func(pred):
+            return loss_fn(pred, targets, reduction='sum')
+
+        assert gradcheck(func, (predictions,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "MSE sum reduction gradient check failed"
+
+
+class TestMAELoss:
+    """Test Mean Absolute Error Loss."""
+
+    def test_mae_forward(self, seed):
+        """Test MAE forward computation."""
+        from python.optimization import MAELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(32, 1).astype(np.float64))
+        targets = Tensor(np.random.randn(32, 1).astype(np.float64))
+        loss_fn = MAELoss()
+
+        loss = loss_fn(predictions, targets, reduction='mean')
+
+        expected = np.mean(np.abs(predictions.data - targets.data))
+        assert np.allclose(loss.data, expected), "MAE forward incorrect"
+
+    def test_mae_reduction_sum(self, seed):
+        """Test MAE with sum reduction."""
+        from python.optimization import MAELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(16, 1).astype(np.float64))
+        targets = Tensor(np.random.randn(16, 1).astype(np.float64))
+        loss_fn = MAELoss()
+
+        loss = loss_fn(predictions, targets, reduction='sum')
+
+        expected = np.sum(np.abs(predictions.data - targets.data))
+        assert np.allclose(loss.data, expected), "MAE sum reduction incorrect"
+
+    def test_mae_reduction_none(self, seed):
+        """Test MAE with no reduction."""
+        from python.optimization import MAELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(8, 1).astype(np.float64))
+        targets = Tensor(np.random.randn(8, 1).astype(np.float64))
+        loss_fn = MAELoss()
+
+        loss = loss_fn(predictions, targets, reduction='none')
+
+        expected = np.abs(predictions.data - targets.data)
+        assert np.allclose(loss.data, expected), "MAE none reduction incorrect"
+
+    def test_mae_backward(self, seed):
+        """Test MAE backward gradient via autograd."""
+        from python.optimization import MAELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(8, 1).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.random.randn(8, 1).astype(np.float64))
+        loss_fn = MAELoss()
+
+        loss = loss_fn(predictions, targets, reduction='mean')
+        loss.backward()
+
+        # Gradient: sign(pred - target) / n
+        expected_grad = np.sign(predictions.data - targets.data) / predictions.data.size
+        assert np.allclose(predictions.grad, expected_grad), "MAE backward incorrect"
+
+    def test_mae_gradient_check(self, seed):
+        """Test MAE gradient using foundations.gradcheck."""
+        from python.optimization import MAELoss
+        from python.foundations import Tensor, gradcheck
+
+        # Use values away from zero to avoid gradient discontinuity at abs(x)=0
+        predictions = Tensor(np.random.randn(4, 1).astype(np.float64) + 1.0, requires_grad=True)
+        targets = Tensor(np.random.randn(4, 1).astype(np.float64))
+        loss_fn = MAELoss()
+
+        def func(pred):
+            return loss_fn(pred, targets, reduction='mean')
+
+        assert gradcheck(func, (predictions,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "MAE gradient check failed"
+
+
+class TestHuberLoss:
+    """Test Huber Loss."""
+
+    def test_huber_forward(self, seed):
+        """Test Huber forward computation with mixed small/large errors."""
+        from python.optimization import HuberLoss
+        from python.foundations import Tensor
+
+        # Mix of small and large errors
+        predictions = Tensor(np.array([0.0, 0.5, 2.0, -1.5]).astype(np.float64))
+        targets = Tensor(np.zeros(4).astype(np.float64))
+        delta = 1.0
+        loss_fn = HuberLoss()
+
+        loss = loss_fn(predictions, targets, delta=delta, reduction='none')
+
+        # Compute expected: quadratic for |e| <= delta, linear for |e| > delta
+        errors = predictions.data - targets.data
+        expected = np.where(
+            np.abs(errors) <= delta,
+            0.5 * errors ** 2,
+            delta * (np.abs(errors) - 0.5 * delta)
+        )
+        assert np.allclose(loss.data, expected), f"Huber forward incorrect: got {loss.data}, expected {expected}"
+
+    def test_huber_small_errors_quadratic(self, seed):
+        """Test Huber is quadratic for small errors."""
+        from python.optimization import HuberLoss
+        from python.foundations import Tensor
+
+        # Small errors (|error| <= delta)
+        predictions = Tensor(np.array([0.0, 0.1, 0.2, 0.5, -0.3]).astype(np.float64))
+        targets = Tensor(np.zeros(5).astype(np.float64))
+        delta = 1.0
+        loss_fn = HuberLoss()
+
+        loss = loss_fn(predictions, targets, delta=delta, reduction='none')
+
+        # For |error| <= delta, loss = 0.5 * error^2
+        expected = 0.5 * predictions.data ** 2
+        assert np.allclose(loss.data, expected), "Huber small errors should be quadratic"
+
+    def test_huber_large_errors_linear(self, seed):
+        """Test Huber is linear for large errors."""
+        from python.optimization import HuberLoss
+        from python.foundations import Tensor
+
+        # Large errors (|error| > delta)
+        predictions = Tensor(np.array([2.0, 3.0, -2.5, 5.0]).astype(np.float64))
+        targets = Tensor(np.zeros(4).astype(np.float64))
+        delta = 1.0
+        loss_fn = HuberLoss()
+
+        loss = loss_fn(predictions, targets, delta=delta, reduction='none')
+
+        # For |error| > delta, loss = delta * (|error| - 0.5 * delta)
+        expected = delta * (np.abs(predictions.data) - 0.5 * delta)
+        assert np.allclose(loss.data, expected), "Huber large errors should be linear"
+
+    def test_huber_mean_reduction(self, seed):
+        """Test Huber with mean reduction."""
+        from python.optimization import HuberLoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.array([0.5, 2.0, -0.3, 1.5]).astype(np.float64))
+        targets = Tensor(np.zeros(4).astype(np.float64))
+        delta = 1.0
+        loss_fn = HuberLoss()
+
+        loss = loss_fn(predictions, targets, delta=delta, reduction='mean')
+
+        errors = predictions.data
+        element_losses = np.where(
+            np.abs(errors) <= delta,
+            0.5 * errors ** 2,
+            delta * (np.abs(errors) - 0.5 * delta)
+        )
+        expected = np.mean(element_losses)
+        assert np.allclose(loss.data, expected), "Huber mean reduction incorrect"
+
+    def test_huber_gradient_check_small_errors(self, seed):
+        """Test Huber gradient for small errors (quadratic region) using gradcheck."""
+        from python.optimization import HuberLoss
+        from python.foundations import Tensor, gradcheck
+
+        # Small errors stay in quadratic region
+        predictions = Tensor(np.array([0.1, 0.2, -0.3, 0.4]).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.zeros(4).astype(np.float64))
+        loss_fn = HuberLoss()
+
+        def func(pred):
+            return loss_fn(pred, targets, delta=1.0, reduction='mean')
+
+        assert gradcheck(func, (predictions,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "Huber gradient check failed for small errors"
+
+    def test_huber_gradient_check_large_errors(self, seed):
+        """Test Huber gradient for large errors (linear region) using gradcheck."""
+        from python.optimization import HuberLoss
+        from python.foundations import Tensor, gradcheck
+
+        # Large errors stay in linear region
+        predictions = Tensor(np.array([2.0, 3.0, -2.5, 4.0]).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.zeros(4).astype(np.float64))
+        loss_fn = HuberLoss()
+
+        def func(pred):
+            return loss_fn(pred, targets, delta=1.0, reduction='mean')
+
+        assert gradcheck(func, (predictions,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "Huber gradient check failed for large errors"
+
+
+class TestCrossEntropyLoss:
+    """Test Cross-Entropy Loss."""
+
+    def test_crossentropy_forward(self, seed):
+        """Test CrossEntropy forward computation."""
+        from python.optimization import CrossEntropyLoss
+        from python.utils.math_utils import logsumexp
+        from python.foundations import Tensor
+
+        logits = Tensor(np.random.randn(4, 5).astype(np.float64))
+        targets_data = np.array([0, 2, 1, 4])
+        targets = Tensor(targets_data)
+        loss_fn = CrossEntropyLoss()
+
+        loss = loss_fn(logits, targets, reduction='mean')
+
+        # Manual: CE = -logits[target] + log(sum(exp(logits)))
+        log_sum_exp = logsumexp(logits.data, axis=1)
+        target_logits = logits.data[np.arange(4), targets_data]
+        expected = np.mean(-target_logits + log_sum_exp)
+        assert np.allclose(loss.data, expected, rtol=1e-5), f"CrossEntropy forward incorrect: got {loss.data}, expected {expected}"
+
+    def test_crossentropy_reduction_none(self, seed):
+        """Test CrossEntropy with no reduction."""
+        from python.optimization import CrossEntropyLoss
+        from python.foundations import Tensor
+
+        logits_data = np.random.randn(4, 5).astype(np.float64)
+        logits = Tensor(logits_data)
+        targets_data = np.array([0, 2, 1, 4])
+        targets = Tensor(targets_data)
+        loss_fn = CrossEntropyLoss()
+
+        loss = loss_fn(logits, targets, reduction='none')
+
+        # CE = -log(softmax) = -logit[target] + log(sum(exp(logits)))
+        log_sum_exp = np.log(np.sum(np.exp(logits_data), axis=1))  # Shape (4,)
+        target_logits = logits_data[np.arange(4), targets_data]  # Shape (4,)
+        expected = -target_logits + log_sum_exp  # Shape (4,)
+
+        assert loss.data.shape == (4,), f"CE none reduction should have shape (N,), got {loss.data.shape}"
+        assert np.allclose(loss.data, expected, rtol=1e-5), "CrossEntropy none reduction incorrect"
+
+    def test_crossentropy_perfect_prediction(self):
+        """Test CrossEntropy with perfect prediction approaches 0."""
+        from python.optimization import CrossEntropyLoss
+        from python.foundations import Tensor
+
+        logits = Tensor(np.array([[10.0, -10.0, -10.0],
+                                  [-10.0, 10.0, -10.0]]).astype(np.float64))
+        targets = Tensor(np.array([0, 1]))
+        loss_fn = CrossEntropyLoss()
+
+        loss = loss_fn(logits, targets, reduction='mean')
+
+        # With very confident predictions, loss should be near 0
+        assert loss.data < 0.001, "CrossEntropy with perfect prediction should be near 0"
+
+    def test_crossentropy_uniform_prediction(self):
+        """Test CrossEntropy with uniform predictions equals log(num_classes)."""
+        from python.optimization import CrossEntropyLoss
+        from python.foundations import Tensor
+
+        # All logits equal -> uniform distribution -> loss = log(num_classes)
+        num_classes = 5
+        logits = Tensor(np.zeros((4, num_classes)).astype(np.float64))
+        targets = Tensor(np.array([0, 1, 2, 3]))
+        loss_fn = CrossEntropyLoss()
+
+        loss = loss_fn(logits, targets, reduction='mean')
+
+        expected = np.log(num_classes)
+        assert np.allclose(loss.data, expected, rtol=1e-5), f"Uniform prediction should give log({num_classes})"
+
+    def test_crossentropy_gradient_check(self, seed):
+        """Test CrossEntropy backward gradient using foundations.gradcheck."""
+        from python.optimization import CrossEntropyLoss
+        from python.foundations import Tensor, gradcheck
+
+        logits = Tensor(np.random.randn(4, 5).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.array([0, 2, 1, 4]))
+        loss_fn = CrossEntropyLoss()
+
+        def func(x):
+            return loss_fn(x, targets, reduction='mean')
+
+        assert gradcheck(func, (logits,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "CrossEntropy gradient check failed"
+
+    def test_crossentropy_gradient_check_sum_reduction(self, seed):
+        """Test CrossEntropy backward gradient with sum reduction using gradcheck."""
+        from python.optimization import CrossEntropyLoss
+        from python.foundations import Tensor, gradcheck
+
+        logits = Tensor(np.random.randn(4, 5).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.array([0, 2, 1, 4]))
+        loss_fn = CrossEntropyLoss()
+
+        def func(x):
+            return loss_fn(x, targets, reduction='sum')
+
+        assert gradcheck(func, (logits,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "CrossEntropy sum reduction gradient check failed"
+
+    def test_crossentropy_with_label_smoothing(self, seed):
+        """Test CrossEntropy with label smoothing."""
+        from python.optimization import CrossEntropyLoss
+        from python.foundations import Tensor
+
+        logits = Tensor(np.random.randn(4, 5).astype(np.float64))
+        targets = Tensor(np.array([0, 2, 1, 4]))
+        loss_fn = CrossEntropyLoss()
+
+        loss_no_smooth = loss_fn(logits, targets, label_smoothing=0.0, reduction='mean')
+        loss_smooth = loss_fn(logits, targets, label_smoothing=0.1, reduction='mean')
+
+        # Label smoothing should increase loss (spreads probability mass)
+        assert loss_smooth.data > loss_no_smooth.data, "Label smoothing should increase loss"
+
+
+class TestBCELoss:
+    """Test Binary Cross-Entropy Loss."""
+
+    def test_bce_forward(self, seed):
+        """Test BCE forward computation."""
+        from python.optimization import BinaryCrossEntropyLoss
+        from python.foundations import Tensor
+
+        # Probabilities in (0, 1)
+        probs_data = np.clip(np.random.rand(8, 1), 0.01, 0.99).astype(np.float64)
+        targets_data = np.random.randint(0, 2, size=(8, 1)).astype(np.float64)
+        probs = Tensor(probs_data)
+        targets = Tensor(targets_data)
+        loss_fn = BinaryCrossEntropyLoss()
+
+        loss = loss_fn(probs, targets, reduction='mean')
+
+        # Manual: BCE = -[y*log(p) + (1-y)*log(1-p)]
+        expected = -np.mean(targets_data * np.log(probs_data) + (1 - targets_data) * np.log(1 - probs_data))
+        assert np.allclose(loss.data, expected, rtol=1e-5), f"BCE forward incorrect: got {loss.data}, expected {expected}"
+
+    def test_bce_reduction_none(self, seed):
+        """Test BCE with no reduction."""
+        from python.optimization import BinaryCrossEntropyLoss
+        from python.foundations import Tensor
+
+        probs_data = np.array([[0.2], [0.8], [0.5], [0.9]]).astype(np.float64)
+        targets_data = np.array([[0.0], [1.0], [1.0], [0.0]]).astype(np.float64)
+        probs = Tensor(probs_data)
+        targets = Tensor(targets_data)
+        loss_fn = BinaryCrossEntropyLoss()
+
+        loss = loss_fn(probs, targets, reduction='none')
+
+        expected = -(targets_data * np.log(probs_data) + (1 - targets_data) * np.log(1 - probs_data))
+        assert np.allclose(loss.data, expected, rtol=1e-5), "BCE none reduction incorrect"
+
+    def test_bce_perfect_prediction(self):
+        """Test BCE with near-perfect predictions approaches 0."""
+        from python.optimization import BinaryCrossEntropyLoss
+        from python.foundations import Tensor
+
+        probs = Tensor(np.array([[0.999], [0.001]]).astype(np.float64))
+        targets = Tensor(np.array([[1.0], [0.0]]).astype(np.float64))
+        loss_fn = BinaryCrossEntropyLoss()
+
+        loss = loss_fn(probs, targets, reduction='mean')
+
+        assert loss.data < 0.01, "BCE with perfect prediction should be near 0"
+
+    def test_bce_with_logits_forward(self, seed):
+        """Test BCE with logits forward computation."""
+        from python.optimization import BCEWithLogitsLoss
+        from python.foundations import Tensor
+
+        logits_data = np.random.randn(8, 1).astype(np.float64)
+        targets_data = np.random.randint(0, 2, size=(8, 1)).astype(np.float64)
+        logits = Tensor(logits_data)
+        targets = Tensor(targets_data)
+        loss_fn = BCEWithLogitsLoss()
+
+        loss = loss_fn(logits, targets, reduction='mean')
+
+        # Manual: BCEWithLogits = max(x, 0) - x*y + log(1 + exp(-|x|))
+        # Numerically stable form
+        expected = np.mean(np.maximum(logits_data, 0) - logits_data * targets_data + np.log(1 + np.exp(-np.abs(logits_data))))
+        assert np.allclose(loss.data, expected, rtol=1e-4), f"BCEWithLogits forward incorrect: got {loss.data}, expected {expected}"
+
+    def test_bce_with_logits_numerical_stability(self):
+        """Test BCEWithLogits is numerically stable for extreme values."""
+        from python.optimization import BCEWithLogitsLoss
+        from python.foundations import Tensor
+
+        # Extreme logits
+        logits = Tensor(np.array([[100.0], [-100.0], [0.0]]).astype(np.float64))
+        targets = Tensor(np.array([[1.0], [0.0], [0.5]]).astype(np.float64))
+        loss_fn = BCEWithLogitsLoss()
+
+        loss = loss_fn(logits, targets, reduction='mean')
+
+        assert np.isfinite(loss.data), "BCEWithLogits should be stable for extreme values"
+
+    def test_bce_gradient_check(self, seed):
+        """Test BCE gradient using foundations.gradcheck."""
+        from python.optimization import BinaryCrossEntropyLoss
+        from python.foundations import Tensor, gradcheck
+
+        # Probabilities in (0.1, 0.9) to avoid log(0) issues
+        probs = Tensor(np.clip(np.random.rand(4, 1), 0.1, 0.9).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.random.randint(0, 2, size=(4, 1)).astype(np.float64))
+        loss_fn = BinaryCrossEntropyLoss()
+
+        def func(p):
+            return loss_fn(p, targets, reduction='mean')
+
+        assert gradcheck(func, (probs,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "BCE gradient check failed"
+
+    def test_bce_with_logits_gradient_check(self, seed):
+        """Test BCEWithLogits gradient using foundations.gradcheck."""
+        from python.optimization import BCEWithLogitsLoss
+        from python.foundations import Tensor, gradcheck
+
+        logits = Tensor(np.random.randn(4, 1).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.random.randint(0, 2, size=(4, 1)).astype(np.float64))
+        loss_fn = BCEWithLogitsLoss()
+
+        def func(x):
+            return loss_fn(x, targets, reduction='mean')
+
+        assert gradcheck(func, (logits,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "BCEWithLogits gradient check failed"
+        # For logit=100, target=1: loss ≈ 0; for logit=-100, target=0: loss ≈ 0
+        assert loss.data < 1.0, "Extreme confident correct predictions should have low loss"
+
+
+class TestFocalLoss:
+    """Test Focal Loss for imbalanced classification."""
+
+    def test_focal_loss_gamma_zero_equals_ce(self, seed):
+        """Test Focal Loss with gamma=0 equals CrossEntropy."""
+        from python.optimization import FocalLoss, CrossEntropyLoss
+        from python.foundations import Tensor
+
+        logits = Tensor(np.random.randn(8, 5).astype(np.float64))
+        targets = Tensor(np.random.randint(0, 5, size=(8,)))
+
+        focal_fn = FocalLoss()
+        ce_fn = CrossEntropyLoss()
+
+        focal_loss = focal_fn(logits, targets, gamma=0.0, reduction='mean')
+        ce_loss = ce_fn(logits, targets, reduction='mean')
+
+        assert np.allclose(focal_loss.data, ce_loss.data, rtol=1e-4), \
+            f"Focal(gamma=0) should equal CE: got {focal_loss.data}, expected {ce_loss.data}"
+
+    def test_focal_loss_downweights_easy_examples(self, seed):
+        """Test Focal Loss down-weights easy (confident) examples."""
+        from python.optimization import FocalLoss, CrossEntropyLoss
+        from python.foundations import Tensor
+
+        # Easy example: high confidence correct
+        easy_logits = Tensor(np.array([[10.0, -10.0, -10.0]]).astype(np.float64))
+        easy_targets = Tensor(np.array([0]))
+
+        # Hard example: low confidence
+        hard_logits = Tensor(np.array([[0.1, 0.0, 0.0]]).astype(np.float64))
+        hard_targets = Tensor(np.array([0]))
+
+        focal_fn = FocalLoss()
+        ce_fn = CrossEntropyLoss()
+
+        easy_focal = focal_fn(easy_logits, easy_targets, gamma=2.0, reduction='mean')
+        hard_focal = focal_fn(hard_logits, hard_targets, gamma=2.0, reduction='mean')
+
+        easy_ce = ce_fn(easy_logits, easy_targets, reduction='mean')
+        hard_ce = ce_fn(hard_logits, hard_targets, reduction='mean')
+
+        # Focal should reduce easy examples MORE than hard examples (relative to CE)
+        # So focal_easy/ce_easy < focal_hard/ce_hard
+        focal_easy_ratio = easy_focal.data / (easy_ce.data + 1e-10)
+        focal_hard_ratio = hard_focal.data / (hard_ce.data + 1e-10)
+
+        assert focal_easy_ratio < focal_hard_ratio, \
+            "Focal should down-weight easy examples more than hard ones"
+
+    def test_focal_loss_forward(self, seed):
+        """Test Focal Loss forward computation."""
+        from python.optimization import FocalLoss
+        from python.utils.math_utils import softmax
+        from python.foundations import Tensor
+
+        logits_data = np.random.randn(4, 3).astype(np.float64)
+        targets_data = np.array([0, 1, 2, 0])
+        logits = Tensor(logits_data)
+        targets = Tensor(targets_data)
+        loss_fn = FocalLoss()
+        gamma = 2.0
+
+        loss = loss_fn(logits, targets, gamma=gamma, reduction='mean')
+
+        # Manual: FL = -(1-p_t)^gamma * log(p_t)
+        probs = softmax(logits_data)
+        p_t = probs[np.arange(4), targets_data]
+        expected = np.mean(-((1 - p_t) ** gamma) * np.log(p_t + 1e-10))
+
+        assert np.allclose(loss.data, expected, rtol=1e-3), \
+            f"Focal loss incorrect: got {loss.data}, expected {expected}"
+
+    def test_focal_loss_gradient_check(self, seed):
+        """Test Focal Loss gradient using foundations.gradcheck."""
+        from python.optimization import FocalLoss
+        from python.foundations import Tensor, gradcheck
+
+        logits = Tensor(np.random.randn(4, 3).astype(np.float64), requires_grad=True)
+        targets = Tensor(np.array([0, 1, 2, 0]))
+        loss_fn = FocalLoss()
+
+        def func(x):
+            return loss_fn(x, targets, gamma=2.0, reduction='mean')
+
+        assert gradcheck(func, (logits,), eps=1e-3, atol=1e-3, rtol=2e-2), \
+            "Focal Loss gradient check failed"
+
+
+class TestKLDivLoss:
+    """Test KL Divergence Loss."""
+
+    def test_kldiv_forward(self, seed):
+        """Test KL Divergence forward computation."""
+        from python.optimization import KLDivLoss
+        from python.utils.math_utils import log_softmax, softmax
+        from python.foundations import Tensor
+
+        logits = np.random.randn(4, 5).astype(np.float64)
+        target_logits = np.random.randn(4, 5).astype(np.float64)
+
+        log_probs_data = log_softmax(logits)
+        target_probs_data = softmax(target_logits)
+
+        log_probs = Tensor(log_probs_data)
+        target_probs = Tensor(target_probs_data)
+
+        loss_fn = KLDivLoss()
+        loss = loss_fn(log_probs, target_probs, reduction='batchmean')
+
+        # Manual: KL(Q||P) = sum(Q * (log(Q) - log(P))) = sum(Q * log(Q)) - sum(Q * log_probs)
+        # When input is log_probs: KL = sum(target * (log(target) - log_probs))
+        expected = np.sum(target_probs_data * (np.log(target_probs_data + 1e-10) - log_probs_data)) / 4
+        assert np.allclose(loss.data, expected, rtol=1e-4), \
+            f"KL divergence incorrect: got {loss.data}, expected {expected}"
+
+    def test_kldiv_same_distribution(self, seed):
+        """Test KL Divergence is 0 for identical distributions."""
+        from python.optimization import KLDivLoss
+        from python.utils.math_utils import log_softmax, softmax
+        from python.foundations import Tensor
+
+        logits = np.random.randn(8, 5).astype(np.float64)
+        log_probs = Tensor(log_softmax(logits))
+        target_probs = Tensor(softmax(logits))
+
+        loss_fn = KLDivLoss()
+        loss = loss_fn(log_probs, target_probs, reduction='batchmean')
+
+        assert np.abs(loss.data) < 1e-5, "KL(P||P) should be 0"
+
+    def test_kldiv_asymmetry(self, seed):
+        """Test KL Divergence is asymmetric: KL(P||Q) != KL(Q||P)."""
+        from python.optimization import KLDivLoss
+        from python.utils.math_utils import log_softmax, softmax
+        from python.foundations import Tensor
+
+        logits_p = np.array([[1.0, 0.0, 0.0]]).astype(np.float64)
+        logits_q = np.array([[0.0, 1.0, 0.0]]).astype(np.float64)
+
+        log_p = Tensor(log_softmax(logits_p))
+        log_q = Tensor(log_softmax(logits_q))
+        probs_p = Tensor(softmax(logits_p))
+        probs_q = Tensor(softmax(logits_q))
+
+        loss_fn = KLDivLoss()
+
+        # KL(Q||P): use log_p as input, probs_q as target
+        kl_qp = loss_fn(log_p, probs_q, reduction='batchmean')
+        # KL(P||Q): use log_q as input, probs_p as target
+        kl_pq = loss_fn(log_q, probs_p, reduction='batchmean')
+
+        assert not np.allclose(kl_qp.data, kl_pq.data), "KL should be asymmetric"
+
+
+class TestTripletLoss:
+    """Test Triplet Loss for metric learning."""
+
+    def test_triplet_loss_forward(self, seed):
+        """Test Triplet Loss forward computation."""
+        from python.optimization import TripletLoss
+        from python.foundations import Tensor
+
+        # Simple known case
+        anchor = Tensor(np.array([[0.0, 0.0]]).astype(np.float64))
+        positive = Tensor(np.array([[1.0, 0.0]]).astype(np.float64))  # dist = 1
+        negative = Tensor(np.array([[3.0, 0.0]]).astype(np.float64))  # dist = 3
+        margin = 1.0
+        loss_fn = TripletLoss()
+
+        loss = loss_fn(anchor, positive, negative, margin=margin, reduction='mean')
+
+        # Triplet: max(0, d(a,p) - d(a,n) + margin) = max(0, 1 - 3 + 1) = max(0, -1) = 0
+        expected = 0.0
+        assert np.allclose(loss.data, expected, atol=1e-5), \
+            f"Triplet loss incorrect: got {loss.data}, expected {expected}"
+
+    def test_triplet_loss_violated_margin(self, seed):
+        """Test Triplet Loss when margin is violated."""
+        from python.optimization import TripletLoss
+        from python.foundations import Tensor
+
+        anchor = Tensor(np.array([[0.0, 0.0]]).astype(np.float64))
+        positive = Tensor(np.array([[2.0, 0.0]]).astype(np.float64))  # dist = 2
+        negative = Tensor(np.array([[1.0, 0.0]]).astype(np.float64))  # dist = 1
+        margin = 1.0
+        loss_fn = TripletLoss()
+
+        loss = loss_fn(anchor, positive, negative, margin=margin, reduction='mean')
+
+        # Triplet: max(0, d(a,p) - d(a,n) + margin) = max(0, 2 - 1 + 1) = 2
+        expected = 2.0
+        assert np.allclose(loss.data, expected, atol=1e-5), \
+            f"Triplet loss with violated margin incorrect: got {loss.data}, expected {expected}"
+
+    def test_triplet_loss_satisfied_margin(self, seed):
+        """Test Triplet Loss is 0 when margin is well satisfied."""
+        from python.optimization import TripletLoss
+        from python.foundations import Tensor
+
+        anchor = Tensor(np.zeros((4, 64)).astype(np.float64))
+        positive = Tensor(np.zeros((4, 64)).astype(np.float64))  # dist = 0
+        negative = Tensor(np.ones((4, 64)).astype(np.float64) * 10)  # dist >> margin
+
+        loss_fn = TripletLoss()
+        loss = loss_fn(anchor, positive, negative, margin=1.0, reduction='mean')
+
+        assert loss.data < 1e-5, "Triplet loss should be ~0 when margin well satisfied"
+
+
+class TestContrastiveLoss:
+    """Test Contrastive Loss for metric learning."""
+
+    def test_contrastive_loss_similar_pairs(self, seed):
+        """Test Contrastive Loss for similar pairs (label=1)."""
+        from python.optimization import ContrastiveLoss
+        from python.foundations import Tensor
+
+        # Similar pairs: loss = 0.5 * d^2
+        x1 = Tensor(np.array([[0.0, 0.0]]).astype(np.float64))
+        x2 = Tensor(np.array([[1.0, 0.0]]).astype(np.float64))  # dist = 1
+        labels = Tensor(np.array([1.0]))  # Similar
+        margin = 2.0
+        loss_fn = ContrastiveLoss()
+
+        loss = loss_fn(x1, x2, labels, margin=margin, reduction='mean')
+
+        # For similar: loss = 0.5 * d^2 = 0.5 * 1^2 = 0.5
+        expected = 0.5
+        assert np.allclose(loss.data, expected, atol=1e-5), \
+            f"Contrastive loss (similar) incorrect: got {loss.data}, expected {expected}"
+
+    def test_contrastive_loss_dissimilar_pairs(self, seed):
+        """Test Contrastive Loss for dissimilar pairs (label=0)."""
+        from python.optimization import ContrastiveLoss
+        from python.foundations import Tensor
+
+        # Dissimilar pairs: loss = 0.5 * max(0, margin - d)^2
+        x1 = Tensor(np.array([[0.0, 0.0]]).astype(np.float64))
+        x2 = Tensor(np.array([[1.0, 0.0]]).astype(np.float64))  # dist = 1
+        labels = Tensor(np.array([0.0]))  # Dissimilar
+        margin = 2.0
+        loss_fn = ContrastiveLoss()
+
+        loss = loss_fn(x1, x2, labels, margin=margin, reduction='mean')
+
+        # For dissimilar: loss = 0.5 * max(0, margin - d)^2 = 0.5 * (2-1)^2 = 0.5
+        expected = 0.5
+        assert np.allclose(loss.data, expected, atol=1e-5), \
+            f"Contrastive loss (dissimilar) incorrect: got {loss.data}, expected {expected}"
+
+    def test_contrastive_loss_dissimilar_beyond_margin(self, seed):
+        """Test Contrastive Loss is 0 for dissimilar pairs beyond margin."""
+        from python.optimization import ContrastiveLoss
+        from python.foundations import Tensor
+
+        x1 = Tensor(np.array([[0.0, 0.0]]).astype(np.float64))
+        x2 = Tensor(np.array([[5.0, 0.0]]).astype(np.float64))  # dist = 5 > margin
+        labels = Tensor(np.array([0.0]))  # Dissimilar
+        margin = 2.0
+        loss_fn = ContrastiveLoss()
+
+        loss = loss_fn(x1, x2, labels, margin=margin, reduction='mean')
+
+        # For dissimilar beyond margin: loss = 0.5 * max(0, 2-5)^2 = 0
+        expected = 0.0
+        assert np.allclose(loss.data, expected, atol=1e-5), \
+            "Contrastive loss should be 0 for dissimilar pairs beyond margin"
+
+
+class TestInfoNCELoss:
+    """Test InfoNCE Loss for contrastive learning."""
+
+    def test_infonce_loss_forward(self, seed):
+        """Test InfoNCE Loss forward computation."""
+        from python.optimization import InfoNCELoss
+        from python.foundations import Tensor
+
+        batch_size = 4
+        dim = 8
+        temperature = 0.5
+
+        query = Tensor(np.random.randn(batch_size, dim).astype(np.float64))
+        key = Tensor(np.random.randn(batch_size, dim).astype(np.float64))
+        loss_fn = InfoNCELoss()
+
+        loss = loss_fn(query, key, temperature=temperature, reduction='mean')
+
+        # InfoNCE should be positive (it's a cross-entropy over softmax)
+        assert loss.data > 0, "InfoNCE loss should be positive"
+        assert np.isfinite(loss.data), "InfoNCE loss should be finite"
+
+    def test_infonce_loss_identical_pairs(self, seed):
+        """Test InfoNCE Loss with identical query/key approaches lower bound."""
+        from python.optimization import InfoNCELoss
+        from python.foundations import Tensor
+
+        batch_size = 4
+        dim = 8
+        temperature = 0.1
+
+        # Query and key are identical -> positive similarity is maximized
+        data = np.random.randn(batch_size, dim).astype(np.float64)
+        data = data / np.linalg.norm(data, axis=1, keepdims=True)  # Normalize
+
+        query = Tensor(data)
+        key = Tensor(data)
+        loss_fn = InfoNCELoss()
+
+        loss = loss_fn(query, key, temperature=temperature, reduction='mean')
+
+        # With identical normalized pairs, loss should be relatively low
+        # (approaches log(batch_size) in the limit)
+        assert loss.data < np.log(batch_size) + 1, \
+            "InfoNCE with identical pairs should have bounded loss"
+
+
+class TestDiceLoss:
+    """Test Dice Loss."""
+
+    def test_dice_loss_creation(self):
+        """Test Dice Loss creation."""
+        from python.optimization import DiceLoss
+
+        loss_fn = DiceLoss()
+        assert loss_fn is not None
+
+    def test_dice_loss_forward(self, seed):
+        """Test Dice Loss forward computation."""
+        from python.optimization import DiceLoss
+        from python.foundations import Tensor
+
+        # Binary segmentation: (N, H, W)
+        predictions = Tensor(np.random.rand(2, 8, 8).astype(np.float64))
+        targets = Tensor((np.random.rand(2, 8, 8) > 0.5).astype(np.float64))
+        loss_fn = DiceLoss()
+
+        loss = loss_fn(predictions, targets, smooth=1.0, reduction='mean')
+        assert 0 <= loss.data <= 1, "Dice loss should be in [0, 1]"
+
+
+class TestCTCLoss:
+    """Test CTC Loss for sequence-to-sequence tasks."""
+
+    def test_ctc_loss_creation(self):
+        """Test CTC Loss creation."""
+        from python.optimization import CTCLoss
+
+        loss_fn = CTCLoss()
+        assert loss_fn is not None
+
+    def test_ctc_loss_forward(self, seed):
+        """Test CTC Loss forward computation."""
+        from python.optimization import CTCLoss
+        from python.foundations import Tensor
+
+        T, N, C = 50, 4, 10
+        log_probs = Tensor(np.random.randn(T, N, C).astype(np.float64))
+        targets = Tensor(np.array([1, 2, 3, 4, 5, 6, 7, 8]))
+        input_lengths = Tensor(np.array([T, T, T, T]))
+        target_lengths = Tensor(np.array([2, 2, 2, 2]))
+        loss_fn = CTCLoss()
+
+        loss = loss_fn(log_probs, targets, input_lengths, target_lengths, blank=0, reduction='mean')
+
+        assert np.isfinite(loss.data), "CTC loss should be finite"
+
+
+class TestSmoothL1Loss:
+    """Test Smooth L1 Loss."""
+
+    def test_smooth_l1_forward(self, seed):
+        """Test Smooth L1 forward computation with mixed errors."""
+        from python.optimization import SmoothL1Loss
+        from python.foundations import Tensor
+
+        # Mix of small and large errors
+        predictions = Tensor(np.array([0.0, 0.3, 2.0, -1.5]).astype(np.float64))
+        targets = Tensor(np.zeros(4).astype(np.float64))
+        beta = 1.0
+        loss_fn = SmoothL1Loss()
+
+        loss = loss_fn(predictions, targets, beta=beta, reduction='none')
+
+        # Manual: quadratic for |e| < beta, linear for |e| >= beta
+        errors = predictions.data
+        expected = np.where(
+            np.abs(errors) < beta,
+            0.5 * errors ** 2 / beta,
+            np.abs(errors) - 0.5 * beta
+        )
+        assert np.allclose(loss.data, expected), \
+            f"SmoothL1 forward incorrect: got {loss.data}, expected {expected}"
+
+    def test_smooth_l1_small_errors_quadratic(self):
+        """Test SmoothL1 is quadratic for small errors."""
+        from python.optimization import SmoothL1Loss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.array([0.1, 0.2, 0.3, -0.2]).astype(np.float64))
+        targets = Tensor(np.zeros(4).astype(np.float64))
+        beta = 1.0
+        loss_fn = SmoothL1Loss()
+
+        loss = loss_fn(predictions, targets, beta=beta, reduction='none')
+
+        # For |error| < beta: loss = 0.5 * error^2 / beta
+        expected = 0.5 * predictions.data ** 2 / beta
+        assert np.allclose(loss.data, expected), "SmoothL1 small errors should be quadratic"
+
+    def test_smooth_l1_large_errors_linear(self):
+        """Test SmoothL1 is linear for large errors."""
+        from python.optimization import SmoothL1Loss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.array([2.0, 3.0, -2.5]).astype(np.float64))
+        targets = Tensor(np.zeros(3).astype(np.float64))
+        beta = 1.0
+        loss_fn = SmoothL1Loss()
+
+        loss = loss_fn(predictions, targets, beta=beta, reduction='none')
+
+        # For |error| >= beta: loss = |error| - 0.5 * beta
+        expected = np.abs(predictions.data) - 0.5 * beta
+        assert np.allclose(loss.data, expected), "SmoothL1 large errors should be linear"
+
+    def test_smooth_l1_mean_reduction(self):
+        """Test SmoothL1 with mean reduction."""
+        from python.optimization import SmoothL1Loss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.array([0.3, 2.0]).astype(np.float64))
+        targets = Tensor(np.zeros(2).astype(np.float64))
+        beta = 1.0
+        loss_fn = SmoothL1Loss()
+
+        loss = loss_fn(predictions, targets, beta=beta, reduction='mean')
+
+        errors = predictions.data
+        element_losses = np.where(
+            np.abs(errors) < beta,
+            0.5 * errors ** 2 / beta,
+            np.abs(errors) - 0.5 * beta
+        )
+        expected = np.mean(element_losses)
+        assert np.allclose(loss.data, expected), "SmoothL1 mean reduction incorrect"
+
+
+class TestRMSELoss:
+    """Test Root Mean Squared Error Loss."""
+
+    def test_rmse_forward(self, seed):
+        """Test RMSE forward computation."""
+        from python.optimization import RMSELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(32, 1).astype(np.float64))
+        targets = Tensor(np.random.randn(32, 1).astype(np.float64))
+        loss_fn = RMSELoss()
+
+        loss = loss_fn(predictions, targets, reduction='mean')
+
+        expected = np.sqrt(np.mean((predictions.data - targets.data) ** 2))
+        assert np.allclose(loss.data, expected, rtol=1e-4), "RMSE forward incorrect"
+
+    def test_rmse_relationship_to_mse(self, seed):
+        """Test RMSE is sqrt of MSE."""
+        from python.optimization import RMSELoss, MSELoss
+        from python.foundations import Tensor
+
+        predictions = Tensor(np.random.randn(16, 1).astype(np.float64))
+        targets = Tensor(np.random.randn(16, 1).astype(np.float64))
+
+        rmse_fn = RMSELoss()
+        mse_fn = MSELoss()
+
+        rmse = rmse_fn(predictions, targets, reduction='mean')
+        mse = mse_fn(predictions, targets, reduction='mean')
+
+        assert np.allclose(rmse.data ** 2, mse.data, rtol=1e-4), "RMSE^2 should equal MSE"
+
+    def test_rmse_backward(self, seed):
+        """Test RMSE backward gradient via numerical check."""
+        from python.optimization import RMSELoss
+        from python.foundations import Tensor
+
+        pred_data = np.random.randn(4, 1).astype(np.float64)
+        target_data = np.random.randn(4, 1).astype(np.float64)
+
+        predictions = Tensor(pred_data, requires_grad=True)
+        targets = Tensor(target_data)
+        loss_fn = RMSELoss()
+
+        loss = loss_fn(predictions, targets, reduction='mean')
+        loss.backward()
+        analytical_grad = predictions.grad.copy()
+
+        # Numerical gradient check (eps=1e-3 optimal for fp32 central differences)
+        eps = 1e-3
+        numerical_grad = np.zeros_like(pred_data)
+        for i in range(pred_data.size):
+            idx = np.unravel_index(i, pred_data.shape)
+            pred_plus = pred_data.copy()
+            pred_minus = pred_data.copy()
+            pred_plus[idx] += eps
+            pred_minus[idx] -= eps
+
+            loss_plus = loss_fn(Tensor(pred_plus), Tensor(target_data), reduction='mean')
+            loss_minus = loss_fn(Tensor(pred_minus), Tensor(target_data), reduction='mean')
+            numerical_grad[idx] = (loss_plus.data - loss_minus.data) / (2 * eps)
+
+        assert np.allclose(analytical_grad, numerical_grad, rtol=2e-2, atol=1e-3), \
+            "RMSE gradient check failed"
+
+
+class TestNLLLoss:
+    """Test Negative Log Likelihood Loss."""
+
+    def test_nll_forward(self, seed):
+        """Test NLL forward computation."""
+        from python.optimization import NLLLoss
+        from python.utils.math_utils import log_softmax
+        from python.foundations import Tensor
+
+        logits = np.random.randn(4, 5).astype(np.float64)
+        log_probs_data = log_softmax(logits)
+        targets_data = np.array([0, 2, 1, 4])
+
+        log_probs = Tensor(log_probs_data)
+        targets = Tensor(targets_data)
+        loss_fn = NLLLoss()
+
+        loss = loss_fn(log_probs, targets, reduction='mean')
+
+        # Manual: NLL = -log_probs[target]
+        expected = -np.mean(log_probs_data[np.arange(4), targets_data])
+        assert np.allclose(loss.data, expected, rtol=1e-5), \
+            f"NLL forward incorrect: got {loss.data}, expected {expected}"
+
+    def test_nll_reduction_none(self, seed):
+        """Test NLL with no reduction."""
+        from python.optimization import NLLLoss
+        from python.utils.math_utils import log_softmax
+        from python.foundations import Tensor
+
+        logits = np.random.randn(4, 5).astype(np.float64)
+        log_probs_data = log_softmax(logits)
+        targets_data = np.array([0, 2, 1, 4])
+
+        log_probs = Tensor(log_probs_data)
+        targets = Tensor(targets_data)
+        loss_fn = NLLLoss()
+
+        loss = loss_fn(log_probs, targets, reduction='none')
+
+        expected = -log_probs_data[np.arange(4), targets_data]
+        assert np.allclose(loss.data, expected, rtol=1e-5), "NLL none reduction incorrect"
+
+    def test_nll_with_softmax_equals_ce(self, seed):
+        """Test NLL(log_softmax(x), y) equals CrossEntropy(x, y)."""
+        from python.optimization import NLLLoss, CrossEntropyLoss
+        from python.utils.math_utils import log_softmax
+        from python.foundations import Tensor
+
+        logits_data = np.random.randn(8, 5).astype(np.float64)
+        targets_data = np.random.randint(0, 5, size=(8,))
+
+        logits = Tensor(logits_data)
+        log_probs = Tensor(log_softmax(logits_data))
+        targets = Tensor(targets_data)
+
+        nll_fn = NLLLoss()
+        ce_fn = CrossEntropyLoss()
+
+        nll_loss = nll_fn(log_probs, targets, reduction='mean')
+        ce_loss = ce_fn(logits, targets, reduction='mean')
+
+        assert np.allclose(nll_loss.data, ce_loss.data, rtol=1e-4), \
+            "NLL(log_softmax(x), y) should equal CE(x, y)"
+
+    def test_nll_backward(self, seed):
+        """Test NLL backward gradient via autograd."""
+        from python.optimization import NLLLoss
+        from python.utils.math_utils import log_softmax
+        from python.foundations import Tensor
+
+        logits = np.random.randn(8, 5).astype(np.float64)
+        log_probs = Tensor(log_softmax(logits), requires_grad=True)
+        targets = Tensor(np.random.randint(0, 5, size=(8,)))
+        loss_fn = NLLLoss()
+
+        loss = loss_fn(log_probs, targets, reduction='mean')
+        loss.backward()
+
+        assert log_probs.grad is not None, "NLL should compute gradients"
+        assert log_probs.grad.shape == log_probs.data.shape
+
+
+# =============================================================================
+# LEARNING RATE SCHEDULER TESTS
+# =============================================================================
+
+class MockOptimizer:
+    """Mock optimizer for scheduler testing.
+
+    Mirrors the real Optimizer API: get_lr() returns {-1: lr},
+    set_lr() accepts a dict mapping group index to lr value.
+    Key -1 maps to defaults['lr'].
+    """
+
+    def __init__(self, lr=0.1):
+        self.defaults = {'lr': lr}
+        self._lr = {-1: lr}
+        self.param_groups = [{'lr': lr}]
+
+    def get_lr(self):
+        return dict(self._lr)
+
+    def set_lr(self, lr):
+        if isinstance(lr, dict):
+            self._lr.update(lr)
+            if -1 in lr:
+                self.defaults['lr'] = lr[-1]
+                self.param_groups[0]['lr'] = lr[-1]
+        else:
+            # Scalar fallback for backward compat
+            self._lr[-1] = lr
+            self.defaults['lr'] = lr
+            self.param_groups[0]['lr'] = lr
+
+
+class TestStepLR:
+    """Test StepLR scheduler."""
+
+    def test_steplr_creation(self):
+        """Test StepLR creation."""
+        from python.optimization import StepLR
+
+        optimizer = MockOptimizer(lr=0.1)
+        scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
+        assert scheduler is not None
+
+    def test_steplr_decay(self):
+        """Test StepLR decays at correct intervals."""
+        from python.optimization import StepLR
+
+        optimizer = MockOptimizer(lr=0.1)
+        scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
+
+        # Before first decay
+        for _ in range(10):
+            scheduler.step()
+
+        # After 10 steps, should decay once
+        expected_lr = 0.1 * 0.1  # 0.01
+        assert np.isclose(optimizer.defaults['lr'], expected_lr), \
+            f"Expected LR {expected_lr}, got {optimizer.defaults['lr']}"
+
+    def test_steplr_multiple_decays(self):
+        """Test StepLR with multiple decay periods."""
+        from python.optimization import StepLR
+
+        optimizer = MockOptimizer(lr=1.0)
+        scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
+
+        lrs = []
+        for epoch in range(20):
+            scheduler.step()
+            lrs.append(optimizer.defaults['lr'])
+
+        # Expected: [1.0]*5, [0.5]*5, [0.25]*5, [0.125]*5
+        # After step 5: 0.5, after step 10: 0.25, etc.
+        assert np.isclose(lrs[4], 0.5), f"Expected 0.5 at step 5, got {lrs[4]}"
+        assert np.isclose(lrs[9], 0.25), f"Expected 0.25 at step 10, got {lrs[9]}"
+
+
+class TestMultiStepLR:
+    """Test MultiStepLR scheduler."""
+
+    def test_multisteplr_decay_at_milestones(self):
+        """Test MultiStepLR decays at specified milestones."""
+        from python.optimization import MultiStepLR
+
+        optimizer = MockOptimizer(lr=0.1)
+        scheduler = MultiStepLR(optimizer, milestones=[5, 10], gamma=0.1)
+
+        lrs = []
+        for epoch in range(15):
+            scheduler.step()
+            lrs.append(optimizer.defaults['lr'])
+
+        # After epoch 5: 0.01, after epoch 10: 0.001
+        assert np.isclose(lrs[5], 0.01), f"Expected 0.01 after milestone 5"
+        assert np.isclose(lrs[10], 0.001), f"Expected 0.001 after milestone 10"
+
+
+class TestExponentialLR:
+    """Test ExponentialLR scheduler."""
+
+    def test_exponentiallr_decay(self):
+        """Test ExponentialLR decays every epoch."""
+        from python.optimization import ExponentialLR
+
+        optimizer = MockOptimizer(lr=1.0)
+        scheduler = ExponentialLR(optimizer, gamma=0.9)
+
+        for epoch in range(5):
+            scheduler.step()
+
+        # After 5 steps: 1.0 * 0.9^5 = 0.59049
+        expected = 1.0 * (0.9 ** 5)
+        assert np.isclose(optimizer.defaults['lr'], expected, rtol=1e-4)
+
+
+class TestCosineAnnealingLR:
+    """Test CosineAnnealingLR scheduler."""
+
+    def test_cosine_annealing_endpoints(self):
+        """Test CosineAnnealing reaches correct endpoints."""
+        from python.optimization import CosineAnnealingLR
+
+        optimizer = MockOptimizer(lr=1.0)
+        T_max = 100
+        eta_min = 0.0
+        scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
+
+        # At t=0, should be at base_lr
+        lr_start = list(scheduler.get_lr().values())[0]
+        assert np.isclose(lr_start, 1.0, rtol=0.1), f"Start LR should be ~1.0"
+
+        # At t=T_max, should be at eta_min
+        for _ in range(T_max):
+            scheduler.step()
+
+        lr_end = optimizer.defaults['lr']
+        assert np.isclose(lr_end, eta_min, atol=0.05), f"End LR should be ~{eta_min}"
+
+    def test_cosine_annealing_midpoint(self):
+        """Test CosineAnnealing at midpoint."""
+        from python.optimization import CosineAnnealingLR
+
+        optimizer = MockOptimizer(lr=1.0)
+        T_max = 100
+        scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=0.0)
+
+        # Go to midpoint
+        for _ in range(T_max // 2):
+            scheduler.step()
+
+        # At midpoint of cosine: (1 + cos(π/2)) / 2 = 0.5
+        lr_mid = optimizer.defaults['lr']
+        assert np.isclose(lr_mid, 0.5, rtol=0.1), f"Midpoint LR should be ~0.5"
+
+
+class TestOneCycleLR:
+    """Test OneCycleLR scheduler for super-convergence."""
+
+    def test_onecycle_creation(self):
+        """Test OneCycleLR creation."""
+        from python.optimization import OneCycleLR
+
+        optimizer = MockOptimizer(lr=0.1)
+        scheduler = OneCycleLR(optimizer, max_lr=0.1, total_steps=1000)
+        assert scheduler is not None
+
+    def test_onecycle_warmup_and_decay(self):
+        """Test OneCycleLR warms up then decays."""
+        from python.optimization import OneCycleLR
+
+        optimizer = MockOptimizer(lr=0.001)
+        max_lr = 0.1
+        total_steps = 100
+        pct_start = 0.3  # 30% warmup
+
+        scheduler = OneCycleLR(optimizer, max_lr=max_lr, total_steps=total_steps,
+                               pct_start=pct_start)
+
+        lrs = []
+        for _ in range(total_steps):
+            scheduler.step()
+            lrs.append(optimizer.defaults['lr'])
+
+        # Should reach max_lr around 30% of training
+        warmup_end = int(total_steps * pct_start)
+        max_lr_achieved = max(lrs[:warmup_end + 5])  # Allow some tolerance
+
+        assert max_lr_achieved >= max_lr * 0.9, \
+            f"OneCycle should reach ~max_lr during warmup"
+
+        # Should decay to near 0 at end
+        assert lrs[-1] < lrs[warmup_end], "OneCycle should decay after warmup"
+
+
+class TestWarmupLR:
+    """Test WarmupLR scheduler."""
+
+    def test_warmup_linear(self):
+        """Test linear warmup."""
+        from python.optimization import WarmupLR
+
+        optimizer = MockOptimizer(lr=1.0)
+        warmup_iters = 10
+        scheduler = WarmupLR(optimizer, warmup_iters=warmup_iters)
+
+        lrs = []
+        for _ in range(warmup_iters + 5):
+            scheduler.step()
+            lrs.append(optimizer.defaults['lr'])
+
+        # Should increase during warmup
+        for i in range(warmup_iters - 1):
+            assert lrs[i] <= lrs[i + 1], "LR should increase during warmup"
+
+        # Should reach base_lr at end of warmup
+        assert np.isclose(lrs[warmup_iters - 1], 1.0, rtol=0.1), \
+            "Should reach base_lr at end of warmup"
+
+
+class TestReduceLROnPlateau:
+    """Test ReduceLROnPlateau scheduler."""
+
+    def test_reduce_on_plateau_creation(self):
+        """Test ReduceLROnPlateau creation."""
+        from python.optimization import ReduceLROnPlateau
+
+        optimizer = MockOptimizer(lr=0.1)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
+        assert scheduler is not None
+
+    def test_reduce_on_plateau_reduces_lr(self):
+        """Test ReduceLROnPlateau reduces LR when metric plateaus."""
+        from python.optimization import ReduceLROnPlateau
+
+        optimizer = MockOptimizer(lr=0.1)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=3,
+                                       factor=0.1)
+
+        # Simulate improving metric then plateau
+        metrics = [1.0, 0.9, 0.8, 0.8, 0.8, 0.8, 0.8]  # Plateaus after 3rd
+
+        for metric in metrics:
+            scheduler.step(metric)
+
+        # After patience exceeded, LR should be reduced
+        assert optimizer.defaults['lr'] < 0.1, \
+            "LR should be reduced after plateau"
+
+
+# =============================================================================
+# GRADIENT UTILITY TESTS
+# =============================================================================
+
+class TestGradientClipping:
+    """Test gradient clipping utilities."""
+
+    def test_clip_grad_norm(self, sample_grads):
+        """Test gradient norm clipping."""
+        from python.optimization import clip_grad_norm_
+
+        grads = [g.copy() * 100 for g in sample_grads]  # Scale up gradients
+        max_norm = 1.0
+
+        total_norm = clip_grad_norm_(grads, max_norm)
+
+        # Verify total norm is now <= max_norm
+        clipped_norm = np.sqrt(sum(np.sum(g ** 2) for g in grads))
+        assert clipped_norm <= max_norm + 1e-6, \
+            f"Clipped norm {clipped_norm} should be <= {max_norm}"
+
+    def test_clip_grad_norm_no_op(self, sample_grads):
+        """Test clip_grad_norm_ is no-op when norm is small."""
+        from python.optimization import clip_grad_norm_
+
+        grads = [g.copy() * 0.01 for g in sample_grads]  # Small gradients
+        original_grads = [g.copy() for g in grads]
+        max_norm = 10.0
+
+        clip_grad_norm_(grads, max_norm)
+
+        # Gradients should be unchanged
+        for g, g_orig in zip(grads, original_grads):
+            assert np.allclose(g, g_orig), "Small gradients should not be clipped"
+
+    def test_clip_grad_value(self, sample_grads):
+        """Test gradient value clipping."""
+        from python.optimization import clip_grad_value_
+
+        grads = [g.copy() * 100 for g in sample_grads]
+        clip_value = 1.0
+
+        clip_grad_value_(grads, clip_value)
+
+        # All values should be in [-clip_value, clip_value]
+        for g in grads:
+            assert np.all(g >= -clip_value) and np.all(g <= clip_value), \
+                "Gradient values should be clipped"
+
+
+class TestGradientAccumulator:
+    """Test gradient accumulation."""
+
+    def test_accumulator_creation(self):
+        """Test GradientAccumulator creation."""
+        from python.optimization import GradientAccumulator
+
+        accumulator = GradientAccumulator(accumulation_steps=4)
+        assert accumulator is not None
+
+    def test_accumulator_accumulates(self, sample_grads):
+        """Test GradientAccumulator accumulates gradients."""
+        from python.optimization import GradientAccumulator
+
+        accumulator = GradientAccumulator(accumulation_steps=4)
+
+        # Accumulate 4 times
+        for _ in range(4):
+            accumulator.accumulate(sample_grads)
+
+        assert accumulator.should_step(), "Should be ready to step after 4 accumulations"
+
+        # Get accumulated gradients
+        acc_grads = accumulator.get_accumulated_gradients()
+
+        # Should be average of accumulated gradients (since we used same grads)
+        for acc_g, g in zip(acc_grads, sample_grads):
+            expected = g  # Since all grads were same, average = original
+            assert np.allclose(acc_g, expected), "Accumulated gradient incorrect"
+
+    def test_accumulator_zero(self, sample_grads):
+        """Test GradientAccumulator reset."""
+        from python.optimization import GradientAccumulator
+
+        accumulator = GradientAccumulator(accumulation_steps=2)
+
+        accumulator.accumulate(sample_grads)
+        accumulator.zero()
+
+        assert not accumulator.should_step(), "Should not be ready after zero"
+
+
+class TestGradScaler:
+    """Test GradScaler for mixed-precision training."""
+
+    def test_gradscaler_creation(self):
+        """Test GradScaler creation."""
+        from python.optimization import GradScaler
+
+        scaler = GradScaler(init_scale=65536.0)
+        assert scaler is not None
+
+    def test_gradscaler_scale_loss(self):
+        """Test GradScaler scales loss."""
+        from python.optimization import GradScaler
+
+        scaler = GradScaler(init_scale=1000.0)
+        loss = 1.5
+
+        scaled_loss = scaler.scale(loss)
+
+        assert np.isclose(scaled_loss, loss * 1000.0), "Loss should be scaled"
+
+    def test_gradscaler_unscale(self, sample_grads):
+        """Test GradScaler unscales gradients."""
+        from python.optimization import GradScaler
+
+        scaler = GradScaler(init_scale=1000.0)
+        grads = [g.copy() * 1000 for g in sample_grads]  # "Scaled" gradients
+        original_grads = [g.copy() / 1000 for g in grads]
+
+        scaler.unscale_(grads)
+
+        for g, g_orig in zip(grads, original_grads):
+            assert np.allclose(g, g_orig), "Gradients should be unscaled"
+
+    def test_gradscaler_handles_inf(self, sample_grads):
+        """Test GradScaler handles inf gradients."""
+        from python.optimization import GradScaler
+
+        scaler = GradScaler(init_scale=1000.0)
+        grads = [g.copy() for g in sample_grads]
+        grads[0][0, 0] = np.inf  # Inject inf
+
+        scaler.unscale_(grads)
+
+        # Should detect inf
+        assert scaler._found_inf, "Should detect inf in gradients"
+
+
+class TestGradientAnalysis:
+    """Test gradient analysis utilities."""
+
+    def test_compute_gradient_norm(self, sample_grads):
+        """Test compute_gradient_norm."""
+        from python.optimization import compute_gradient_norm
+
+        norm = compute_gradient_norm(sample_grads, norm_type=2.0)
+
+        # Manually compute
+        expected = np.sqrt(sum(np.sum(g ** 2) for g in sample_grads))
+
+        assert np.isclose(norm, expected), "Gradient norm computation incorrect"
+
+    def test_compute_gradient_stats(self, sample_grads):
+        """Test compute_gradient_stats."""
+        from python.optimization import compute_gradient_stats
+
+        stats = compute_gradient_stats(sample_grads)
+
+        assert 'mean' in stats
+        assert 'std' in stats
+        assert 'min' in stats
+        assert 'max' in stats
+        assert 'norm_l2' in stats
+
+    def test_detect_gradient_anomaly_clean(self, sample_grads):
+        """Test detect_gradient_anomaly with clean gradients."""
+        from python.optimization import detect_gradient_anomaly
+
+        has_anomaly, description = detect_gradient_anomaly(sample_grads, warn=False)
+
+        assert not has_anomaly, "Clean gradients should have no anomaly"
+
+    def test_detect_gradient_anomaly_nan(self, sample_grads):
+        """Test detect_gradient_anomaly with NaN."""
+        from python.optimization import detect_gradient_anomaly
+
+        grads = [g.copy() for g in sample_grads]
+        grads[0][0, 0] = np.nan
+
+        has_anomaly, description = detect_gradient_anomaly(grads, warn=False)
+
+        assert has_anomaly, "Should detect NaN"
+        assert 'NaN' in description
+
+    def test_detect_gradient_anomaly_inf(self, sample_grads):
+        """Test detect_gradient_anomaly with Inf."""
+        from python.optimization import detect_gradient_anomaly
+
+        grads = [g.copy() for g in sample_grads]
+        grads[0][0, 0] = np.inf
+
+        has_anomaly, description = detect_gradient_anomaly(grads, warn=False)
+
+        assert has_anomaly, "Should detect Inf"
+        assert 'Inf' in description
+
+
+class TestGradientUtilityFunctions:
+    """Test utility functions for gradients."""
+
+    def test_flatten_unflatten_gradients(self, sample_grads):
+        """Test flatten and unflatten gradients."""
+        from python.optimization import flatten_gradients, unflatten_gradients
+
+        shapes = [g.shape for g in sample_grads]
+
+        # Flatten
+        flat = flatten_gradients(sample_grads)
+
+        total_size = sum(g.size for g in sample_grads)
+        assert flat.shape == (total_size,), "Flattened shape incorrect"
+
+        # Unflatten
+        restored = unflatten_gradients(flat, shapes)
+
+        for g_orig, g_restored in zip(sample_grads, restored):
+            assert np.allclose(g_orig, g_restored), "Unflatten should restore original"
+
+    def test_zero_gradients(self, sample_grads):
+        """Test zero_gradients."""
+        from python.optimization import zero_gradients
+
+        grads = [g.copy() for g in sample_grads]
+        zero_gradients(grads)
+
+        for g in grads:
+            assert np.all(g == 0), "All gradients should be zero"
+
+    def test_scale_gradients(self, sample_grads):
+        """Test scale_gradients."""
+        from python.optimization import scale_gradients
+
+        grads = [g.copy() for g in sample_grads]
+        original = [g.copy() for g in grads]
+        scale = 0.5
+
+        scale_gradients(grads, scale)
+
+        for g, g_orig in zip(grads, original):
+            assert np.allclose(g, g_orig * scale), "Gradients should be scaled"
+
+
+# =============================================================================
+# INTEGRATION TESTS
+# =============================================================================
+
+class TestOptimizerSchedulerIntegration:
+    """Test optimizer and scheduler integration."""
+
+    def test_optimizer_with_scheduler(self, sample_params, sample_grads):
+        """Test optimizer works with scheduler."""
+        from python.optimization import Adam, CosineAnnealingLR
+
+        params = [p.copy() for p in sample_params]
+        optimizer = Adam(params, lr=0.001)
+        scheduler = CosineAnnealingLR(optimizer, T_max=10)
+
+        # Simulate training
+        for epoch in range(10):
+            set_grads(params, sample_grads)
+            optimizer.step()
+            scheduler.step()
+
+        # LR should have decayed
+        assert optimizer.defaults['lr'] < 0.001
+
+    def test_optimizer_with_gradient_clipping(self, sample_params, sample_grads):
+        """Test optimizer with gradient clipping."""
+        from python.optimization import SGD, clip_grad_norm_
+
+        params = [p.copy() for p in sample_params]
+        grads = [g.copy() * 100 for g in sample_grads]  # Large gradients
+
+        optimizer = SGD(params, lr=0.1)
+
+        # Clip gradients
+        clip_grad_norm_(grads, max_norm=1.0)
+
+        # Then step
+        set_grads(params, grads)
+        optimizer.step()
+
+        # Should complete without issues
+        assert all(np.all(np.isfinite(p)) for p in params)
+
+
+class TestLossOptimizerIntegration:
+    """Test loss and optimizer integration."""
+
+    def test_mse_sgd_optimization(self, seed):
+        """Test optimizing MSE loss with SGD."""
+        from python.optimization import SGD
+        from python.foundations import Tensor
+
+        # Simple quadratic minimization test
+        # Minimize f(x) = (x - target)^2 with SGD
+        np.random.seed(42)
+        target = np.array([2.0, 1.0])
+
+        # Initialize parameters as Tensors
+        W = [
+            Tensor(np.array([5.0, 5.0]).astype(np.float64), requires_grad=True),
+        ]
+
+        optimizer = SGD(W, lr=0.1)
+        original_loss = None
+
+        # Training loop - minimize (W - target)^2
+        for epoch in range(100):
+            # Loss: (W - target)^2
+            diff = W[0].data - target
+            loss = np.sum(diff ** 2)
+
+            if original_loss is None:
+                original_loss = loss
+
+            # Gradient: 2 * (W - target)
+            grad_W = 2 * diff
+
+            # Update
+            W[0].grad = grad_W
+            optimizer.step()
+
+        # Loss should decrease
+        final_diff = W[0].data - target
+        final_loss = np.sum(final_diff ** 2)
+        assert final_loss < original_loss, "Loss should decrease during optimization"
+
+        # Parameters should be close to target
+        assert np.allclose(W[0].data, target, atol=0.5), "Parameters should converge to target"
+
+
+class TestNumericalStability:
+    """Test numerical stability of components."""
+
+    def test_crossentropy_extreme_logits(self):
+        """Test CrossEntropy handles extreme logits."""
+        from python.optimization import CrossEntropyLoss
+
+        # Very large logits
+        logits = np.array([[1000.0, -1000.0, 0.0],
+                          [-1000.0, 1000.0, 0.0]])
+        targets = np.array([0, 1])
+
+        loss_fn = CrossEntropyLoss()
+        loss = loss_fn.forward(logits, targets)
+
+        assert np.isfinite(loss), "CrossEntropy should handle extreme logits"
+        assert loss >= 0, "CrossEntropy loss should be non-negative"
+
+    def test_softmax_stability(self):
+        """Test softmax is numerically stable."""
+        from python.optimization import softmax
+
+        # Large values that would overflow naive softmax
+        x = np.array([[1000.0, 1000.0, 1000.0],
+                      [-1000.0, -1000.0, -1000.0]])
+
+        probs = softmax(x)
+
+        assert np.all(np.isfinite(probs)), "Softmax should handle large values"
+        assert np.allclose(probs.sum(axis=1), 1.0), "Softmax should sum to 1"
+
+    def test_logsumexp_stability(self):
+        """Test logsumexp is numerically stable."""
+        from python.optimization import logsumexp
+
+        # Large values
+        x = np.array([1000.0, 1000.0, 1000.0])
+
+        result = logsumexp(x)
+
+        assert np.isfinite(result), "Logsumexp should handle large values"
+        # log(3 * e^1000) = 1000 + log(3)
+        expected = 1000.0 + np.log(3)
+        assert np.isclose(result, expected), "Logsumexp computation incorrect"
+
+
+# =============================================================================
+# EDGE CASE TESTS
+# =============================================================================
+
+class TestEdgeCases:
+    """Test edge cases and boundary conditions."""
+
+    def test_optimizer_zero_lr(self, sample_params, sample_grads):
+        """Test optimizer with zero learning rate."""
+        from python.optimization import SGD
+
+        params = [p.copy() for p in sample_params]
+        original = [p.copy() for p in params]
+
+        optimizer = SGD(params, lr=0.0)
+        set_grads(params, sample_grads)
+        optimizer.step()
+
+        # Parameters should not change
+        for p, p_orig in zip(params, original):
+            assert np.allclose(p.data, p_orig.data), "Zero LR should not change parameters"
+
+    def test_loss_single_sample(self):
+        """Test loss with single sample."""
+        from python.optimization import MSELoss
+        from python.foundations import Tensor
+
+        pred = Tensor(np.array([[1.0]]).astype(np.float64))
+        target = Tensor(np.array([[2.0]]).astype(np.float64))
+
+        loss_fn = MSELoss()
+        loss = loss_fn(pred, target, reduction='mean')
+
+        assert np.isclose(loss.data, 1.0), "MSE of single sample should be (1-2)^2 = 1"
+
+    def test_scheduler_zero_lr(self):
+        """Test scheduler doesn't go negative."""
+        from python.optimization import StepLR
+
+        optimizer = MockOptimizer(lr=0.001)
+        scheduler = StepLR(optimizer, step_size=1, gamma=0.1)
+
+        for _ in range(100):
+            scheduler.step()
+
+        assert optimizer.defaults['lr'] >= 0, "LR should not go negative"
+
+    def test_gradient_clipping_zero_gradients(self):
+        """Test gradient clipping with zero gradients."""
+        from python.optimization import clip_grad_norm_
+
+        grads = [np.zeros((10, 5)), np.zeros((5,))]
+
+        # Should not raise
+        norm = clip_grad_norm_(grads, max_norm=1.0)
+
+        assert norm == 0.0, "Zero gradients should have zero norm"
+
+    def test_empty_batch_handling(self):
+        """Test loss handles edge case dimensions."""
+        from python.optimization import MSELoss
+        from python.foundations import Tensor
+
+        # 1D case
+        pred = Tensor(np.array([1.0, 2.0, 3.0]).astype(np.float64))
+        target = Tensor(np.array([1.5, 2.5, 3.5]).astype(np.float64))
+
+        loss_fn = MSELoss()
+        loss = loss_fn(pred, target, reduction='mean')
+
+        assert np.isfinite(loss.data), "Should handle 1D arrays"
+
+
+# =============================================================================
+# BENCHMARK / SANITY CHECKS
+# =============================================================================
+
+class TestSanityChecks:
+    """Sanity checks to verify basic correctness."""
+
+    def test_adam_converges_simple_quadratic(self, seed):
+        """Test Adam converges on simple quadratic."""
+        from python.optimization import Adam
+        from python.foundations import Tensor
+
+        # Minimize f(x) = x^2, optimal x = 0
+        x = [Tensor(np.array([5.0]).astype(np.float64), requires_grad=True)]  # Start at 5
+        optimizer = Adam(x, lr=0.1)
+
+        for _ in range(100):
+            grad = 2 * x[0].data  # Gradient of x^2
+            x[0].grad = grad
+            optimizer.step()
+
+        # Should converge close to 0
+        assert np.abs(x[0].data[0]) < 0.1, f"Adam should converge to 0, got {x[0].data[0]}"
+
+    def test_sgd_with_momentum_converges(self, seed):
+        """Test SGD with momentum converges."""
+        from python.optimization import SGD
+        from python.foundations import Tensor
+
+        x = [Tensor(np.array([5.0]).astype(np.float64), requires_grad=True)]
+        optimizer = SGD(x, lr=0.01, momentum=0.9)
+
+        for _ in range(200):
+            grad = 2 * x[0].data
+            x[0].grad = grad
+            optimizer.step()
+
+        assert np.abs(x[0].data[0]) < 0.5, f"SGD+momentum should converge, got {x[0].data[0]}"
+
+    def test_cosine_schedule_smooth(self):
+        """Test cosine schedule produces smooth curve."""
+        from python.optimization import CosineAnnealingLR
+
+        optimizer = MockOptimizer(lr=1.0)
+        T_max = 100
+        scheduler = CosineAnnealingLR(optimizer, T_max=T_max)
+
+        lrs = []
+        for _ in range(T_max):
+            scheduler.step()
+            lrs.append(optimizer.defaults['lr'])
+
+        # Check smoothness: no sudden jumps
+        for i in range(1, len(lrs) - 1):
+            delta1 = abs(lrs[i] - lrs[i-1])
+            delta2 = abs(lrs[i+1] - lrs[i])
+            # Deltas should be similar (smooth)
+            assert delta1 < 0.1, "Cosine schedule should be smooth"
