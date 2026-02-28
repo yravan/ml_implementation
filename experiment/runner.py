@@ -16,6 +16,7 @@ Usage:
     run(Config(**{**cfg.to_dict(), 'backend': 'numpy'}))
 """
 
+import os
 import numpy as np
 import time
 from pathlib import Path
@@ -78,11 +79,27 @@ class _PyTorchBackend:
         import torch.nn.functional as F
         self.torch = torch
         self.F = F
-        self.device = torch.device(
-            'cuda' if torch.cuda.is_available()
-            else 'mps' if torch.backends.mps.is_available()
-            else 'cpu'
-        )
+
+        # ── DDP state ───────────────────────────────────────────────
+        self.ddp = config.ddp if config else False
+        if self.ddp:
+            import torch.distributed as dist
+            self.rank = dist.get_rank()
+            self.local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            self.world_size = dist.get_world_size()
+            self.device = torch.device(f'cuda:{self.local_rank}')
+            torch.cuda.set_device(self.device)
+        else:
+            self.rank = 0
+            self.local_rank = 0
+            self.world_size = 1
+            self.device = torch.device(
+                'cuda' if torch.cuda.is_available()
+                else 'mps' if torch.backends.mps.is_available()
+                else 'cpu'
+            )
+
+        self.is_main = (self.rank == 0)
 
         # AMP (automatic mixed precision)
         use_amp = config.amp if config else False
@@ -92,6 +109,20 @@ class _PyTorchBackend:
 
     def to_device(self, model):
         return model.to(self.device)
+
+    def wrap_ddp(self, model, config):
+        """Wrap model with DistributedDataParallel if DDP is enabled."""
+        if not self.ddp:
+            return model
+        from torch.nn.parallel import DistributedDataParallel as DDP
+        model = DDP(
+            model,
+            device_ids=[self.local_rank],
+            output_device=self.local_rank,
+            find_unused_parameters=config.ddp_find_unused,
+            gradient_as_bucket_view=config.ddp_gradient_as_bucket,
+        )
+        return model
 
     def train_step(self, model, batch, criterion, optimizer, config):
         inputs, targets = batch[0], batch[1]
@@ -149,10 +180,17 @@ class _PyTorchBackend:
     def param_count(self, model):
         return sum(p.numel() for p in model.parameters())
 
+    def _unwrap(self, model):
+        """Unwrap DDP module to get the underlying model."""
+        return model.module if hasattr(model, 'module') else model
+
     def save_checkpoint(self, model, optimizer, epoch, config, path):
+        # Only save on main process in DDP
+        if not self.is_main:
+            return
         self.torch.save({
             'epoch': epoch,
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': self._unwrap(model).state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'config': config.to_dict(),
         }, path)
@@ -161,7 +199,7 @@ class _PyTorchBackend:
         state = self.torch.load(path, map_location=self.device, weights_only=True)
         if 'model_state_dict' in state:
             state = state['model_state_dict']
-        model.load_state_dict(state)
+        self._unwrap(model).load_state_dict(state)
 
 
 class _NumpyBackend:
@@ -169,7 +207,7 @@ class _NumpyBackend:
 
     def __init__(self):
         # Lazy imports — only when numpy backend is actually used
-        pass
+        self.is_main = True  # numpy backend is always single-process
 
     @property
     def device(self):
@@ -303,7 +341,8 @@ def train_one_epoch(model, loader, criterion, optimizer, config, logger,
             for name in metric_fns:
                 parts.append(f"{name}: {float(metric_totals[name])/total_samples*100:.2f}%")
             parts.append(f"{ips:.0f} img/s")
-            print(f"    {' | '.join(parts)}")
+            if backend.is_main:
+                print(f"    {' | '.join(parts)}")
             logger.log_scalar('train/batch_loss', avg_loss, step=global_step)
             logger.log_scalar('train/throughput', ips, step=global_step)
 
@@ -357,21 +396,54 @@ def evaluate(model, loader, criterion, metric_fns, backend,
 # Main Runner
 # =============================================================================
 
+def _setup_ddp(config):
+    """Initialize the DDP process group. Must be called before anything else."""
+    import torch.distributed as dist
+    if not dist.is_initialized():
+        dist.init_process_group(backend=config.ddp_backend)
+
+
+def _cleanup_ddp():
+    """Destroy the DDP process group."""
+    import torch.distributed as dist
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def _set_epoch_samplers(loader, epoch):
+    """Set epoch on DistributedSampler so shuffling differs per epoch."""
+    if hasattr(loader, 'sampler') and hasattr(loader.sampler, 'set_epoch'):
+        loader.sampler.set_epoch(epoch)
+
+
 def run(config: Config) -> Dict:
     """
     Run a complete experiment. Works with both PyTorch and numpy backends.
 
+    For DDP, launch via torchrun:
+        torchrun --nproc_per_node=N -m experiment --config cfg.yaml --ddp
+
     Returns dict with model, history, and test results.
     """
+    # ── DDP Init ─────────────────────────────────────────────────────
+    if config.ddp:
+        _setup_ddp(config)
+
     # ── Setup ────────────────────────────────────────────────────────
     np.random.seed(config.seed)
     backend = _get_backend(config)
+    is_main = backend.is_main  # True for rank 0 or non-DDP
+
+    # Helper: only print on main process
+    def mprint(*args, **kwargs):
+        if is_main:
+            print(*args, **kwargs)
 
     if config.backend == 'pytorch':
         import torch
-        torch.manual_seed(config.seed)
+        torch.manual_seed(config.seed + backend.rank)  # different seed per rank
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(config.seed)
+            torch.cuda.manual_seed_all(config.seed + backend.rank)
             if config.cudnn_benchmark:
                 torch.backends.cudnn.benchmark = True
             # Use tensor cores for FP32 matmuls (TF32: same range, slightly reduced precision)
@@ -383,11 +455,13 @@ def run(config: Config) -> Dict:
         if config.pin_memory and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             config = Config(**{**config.to_dict(), 'pin_memory': False})
 
-    print(f"\n{'='*70}")
-    print(f" {config.name}  [{config.backend}]")
-    print(f"{'='*70}")
-    print(config)
-    print(f"  Device: {backend.device}")
+    mprint(f"\n{'='*70}")
+    mprint(f" {config.name}  [{config.backend}]")
+    mprint(f"{'='*70}")
+    mprint(config)
+    mprint(f"  Device: {backend.device}")
+    if config.ddp:
+        mprint(f"  DDP:    {backend.world_size} processes, backend={config.ddp_backend}")
     if config.backend == 'pytorch':
         parts = []
         if getattr(backend, '_use_amp', False):
@@ -396,28 +470,36 @@ def run(config: Config) -> Dict:
             parts.append("cuDNN benchmark")
         if config.compile:
             parts.append("torch.compile")
+        if config.ddp:
+            parts.append("DDP")
         if parts:
-            print(f"  Perf:   {', '.join(parts)}")
+            mprint(f"  Perf:   {', '.join(parts)}")
 
     # ── Data ─────────────────────────────────────────────────────────
-    print(f"\n{'─'*70}\n Data\n{'─'*70}")
+    mprint(f"\n{'─'*70}\n Data\n{'─'*70}")
     train_loader, val_loader, test_loader = build_dataloaders(config)
 
     # ── Model ────────────────────────────────────────────────────────
-    print(f"\n{'─'*70}\n Model\n{'─'*70}")
+    mprint(f"\n{'─'*70}\n Model\n{'─'*70}")
     model = build_model(config)
     model = backend.to_device(model)
     if config.backend == 'pytorch':
         import torch
         if torch.cuda.is_available():
             model = model.to(memory_format=torch.channels_last)
-            print("  memory_format: channels_last (NHWC)")
+            mprint("  memory_format: channels_last (NHWC)")
     if config.compile and config.backend == 'pytorch':
         import torch
         model = torch.compile(model, mode=config.compile_mode)
-        print("  torch.compile: enabled (max-autotune)")
-    print(model)
-    print(f"  Parameters: {backend.param_count(model):,}")
+        mprint("  torch.compile: enabled (max-autotune)")
+
+    # ── DDP wrap (after compile, after to_device) ────────────────────
+    if config.ddp:
+        model = backend.wrap_ddp(model, config)
+        mprint(f"  DDP:    wrapped with DistributedDataParallel")
+
+    mprint(model)
+    mprint(f"  Parameters: {backend.param_count(backend._unwrap(model) if config.ddp else model):,}")
 
     # ── Optimizer / Scheduler ────────────────────────────────────────
     optimizer = build_optimizer(model, config)
@@ -425,10 +507,10 @@ def run(config: Config) -> Dict:
     warmup = build_warmup_scheduler(optimizer, config)
     criterion = backend.criterion(config)
 
-    # ── Logger ───────────────────────────────────────────────────────
-    print(f"\n{'─'*70}\n Logger\n{'─'*70}")
-    logger = Logger(config)
-    if config.backend == 'pytorch':
+    # ── Logger (only on main process for DDP) ────────────────────────
+    mprint(f"\n{'─'*70}\n Logger\n{'─'*70}")
+    logger = Logger(config) if is_main else None
+    if logger and config.backend == 'pytorch':
         logger.watch_model(model)
 
     # ── Metrics ──────────────────────────────────────────────────────
@@ -436,8 +518,9 @@ def run(config: Config) -> Dict:
                   if name in METRIC_FNS}
 
     # ── Training ─────────────────────────────────────────────────────
-    print(f"\n{'─'*70}\n Training\n{'─'*70}")
-    logger.begin_training()
+    mprint(f"\n{'─'*70}\n Training\n{'─'*70}")
+    if logger:
+        logger.begin_training()
 
     history = {f'{s}_{k}': [] for s in ('train', 'val')
                for k in ['loss'] + list(metric_fns)}
@@ -445,14 +528,19 @@ def run(config: Config) -> Dict:
     best_epoch = 0
 
     for epoch in range(1, config.epochs + 1):
-        logger.begin_epoch(epoch)
-        print(f"\n  Epoch {epoch}/{config.epochs}")
-        print(f"  {'─' * 50}")
+        if logger:
+            logger.begin_epoch(epoch)
+        mprint(f"\n  Epoch {epoch}/{config.epochs}")
+        mprint(f"  {'─' * 50}")
+
+        # Set epoch on DistributedSampler for proper shuffling
+        if config.ddp:
+            _set_epoch_samplers(train_loader, epoch)
 
         # Train
         train_results = train_one_epoch(
             model, train_loader, criterion, optimizer,
-            config, logger, metric_fns, backend, epoch,
+            config, logger if is_main else _NullLogger(), metric_fns, backend, epoch,
         )
         throughput = train_results.pop('_throughput', 0.0)
 
@@ -467,16 +555,17 @@ def run(config: Config) -> Dict:
             else:
                 scheduler.step()
 
-        # Record history
+        # Record history (all ranks keep history, but only main logs)
         for k, v in train_results.items():
             history[f'train_{k}'].append(v)
         for k, v in val_results.items():
             history[f'val_{k}'].append(v)
 
         # Log — use end-of-epoch global step so W&B steps are monotonic
-        epoch_global_step = epoch * len(train_loader)
-        logger.end_epoch(train_results, val_results, lr=current_lr,
-                         throughput=throughput, step=epoch_global_step)
+        if logger:
+            epoch_global_step = epoch * len(train_loader)
+            logger.end_epoch(train_results, val_results, lr=current_lr,
+                             throughput=throughput, step=epoch_global_step)
 
         # Best model tracking
         primary_metric = list(metric_fns.keys())[0] if metric_fns else 'loss'
@@ -486,7 +575,7 @@ def run(config: Config) -> Dict:
         if is_best:
             best_metric = current
             best_epoch = epoch
-            print(f"  ★ New best {primary_metric}!")
+            mprint(f"  ★ New best {primary_metric}!")
             ext = '.pt' if config.backend == 'pytorch' else '.npy'
             best_path = config.run_dir / f'best{ext}'
             best_path.parent.mkdir(parents=True, exist_ok=True)
@@ -498,37 +587,48 @@ def run(config: Config) -> Dict:
             ckpt_path = config.run_dir / f'checkpoint_{epoch}{ext}'
             backend.save_checkpoint(model, optimizer, epoch, config, ckpt_path)
 
+        # Synchronize all processes before next epoch
+        if config.ddp:
+            import torch.distributed as dist
+            dist.barrier()
+
     # ── Test ─────────────────────────────────────────────────────────
-    print(f"\n{'─'*70}\n Test Evaluation\n{'─'*70}")
+    mprint(f"\n{'─'*70}\n Test Evaluation\n{'─'*70}")
 
     # Load best model
     ext = '.pt' if config.backend == 'pytorch' else '.npy'
     best_path = config.run_dir / f'best{ext}'
     if best_path.exists():
         backend.load_best(model, best_path)
-        print(f"  Loaded best model (epoch {best_epoch})")
+        mprint(f"  Loaded best model (epoch {best_epoch})")
 
     test_results = evaluate(
         model, test_loader, criterion, metric_fns, backend,
         collect_predictions=True,
     )
 
-    final_step = config.epochs * len(train_loader) + 1
-    logger.log_scalars('test', {k: v for k, v in test_results.items()
-                                if k not in ('logits', 'labels')}, step=final_step)
-    logger.flush()
+    if logger:
+        final_step = config.epochs * len(train_loader) + 1
+        logger.log_scalars('test', {k: v for k, v in test_results.items()
+                                    if k not in ('logits', 'labels')}, step=final_step)
+        logger.flush()
 
     # Summary
-    print(f"\n{'='*70}")
-    print(f" Done!  [{config.backend}]")
-    print(f"{'='*70}")
+    mprint(f"\n{'='*70}")
+    mprint(f" Done!  [{config.backend}]")
+    mprint(f"{'='*70}")
     for k, v in test_results.items():
         if k in ('logits', 'labels'):
             continue
-        print(f"  Test {k}: {v:.4f}" if k == 'loss' else f"  Test {k}: {v*100:.2f}%")
-    print(f"  Best epoch: {best_epoch}")
+        mprint(f"  Test {k}: {v:.4f}" if k == 'loss' else f"  Test {k}: {v*100:.2f}%")
+    mprint(f"  Best epoch: {best_epoch}")
 
-    logger.finish()
+    if logger:
+        logger.finish()
+
+    # ── DDP Cleanup ──────────────────────────────────────────────────
+    if config.ddp:
+        _cleanup_ddp()
 
     return {
         'model': model,
@@ -536,3 +636,9 @@ def run(config: Config) -> Dict:
         'test_results': test_results,
         'config': config,
     }
+
+
+class _NullLogger:
+    """No-op logger for non-main DDP processes."""
+    def __getattr__(self, name):
+        return lambda *a, **kw: None

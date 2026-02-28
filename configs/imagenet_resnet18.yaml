@@ -6,7 +6,7 @@
 
 name: imagenet-resnet50
 dataset: imagenet
-data_dir: ./data
+data_dir: ~/orcd/datasets/imagenet/ilsvrc
 backend: pytorch
 model: resnet50
 model_args:

@@ -22,6 +22,12 @@ Usage:
     # Quick sanity check (100 samples)
     python -m experiment --dataset imagenet --model resnet50 --subset 100 --epochs 1
 
+    # DDP (multi-GPU) — use torchrun to launch:
+    torchrun --nproc_per_node=4 -m experiment --config configs/imagenet_resnet18.yaml --ddp
+
+    # DDP with a dedicated config
+    torchrun --nproc_per_node=4 -m experiment --config configs/imagenet_resnet18_ddp.yaml
+
     # List available models/datasets
     python -m experiment --list
 """

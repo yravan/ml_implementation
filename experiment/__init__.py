@@ -8,6 +8,9 @@ Quick start:
 CLI:
     python -m experiment --dataset cifar10 --model resnet18 --epochs=50 --logger wandb
 
+DDP (multi-GPU):
+    torchrun --nproc_per_node=4 -m experiment --config configs/imagenet_resnet18_ddp.yaml
+
 Register custom models/datasets:
     from experiment import register_model, register_dataset
 

@@ -24,7 +24,10 @@ Variants:
 """
 
 from typing import List, Tuple
-from python.nn_core import Module
+
+import torch
+from torch import nn
+from torch.nn import Module
 
 
 class _DenseLayer(Module):
@@ -46,18 +49,21 @@ class _DenseLayer(Module):
         drop_rate: float = 0.0,
     ):
         super().__init__()
-        # TODO: Implement dense layer
-        # bn1 = BatchNorm2d(num_input_features)
-        # relu1 = ReLU()
-        # conv1 = Conv2d(num_input_features, bn_size * growth_rate, 1, bias=False)
-        # bn2 = BatchNorm2d(bn_size * growth_rate)
-        # relu2 = ReLU()
-        # conv2 = Conv2d(bn_size * growth_rate, growth_rate, 3, padding=1, bias=False)
-        raise NotImplementedError("TODO: Implement _DenseLayer")
+        self.layers = nn.Sequential(
+            *[
+                nn.BatchNorm2d(num_input_features),
+                nn.ReLU(),
+                nn.Conv2d(num_input_features, bn_size * growth_rate, kernel_size=1, bias=False),
+                nn.BatchNorm2d(num_input_features),
+                nn.ReLU(),
+                nn.Conv2d(bn_size * growth_rate, growth_rate, kernel_size=3, padding='same', bias=False),
+            ]
+        )
 
     def forward(self, x):
         """Forward pass, returns concatenated features."""
-        raise NotImplementedError("TODO: Implement forward")
+        new_features = self.layers(x)
+        return torch.cat([x, new_features], 1)
 
 
 class _DenseBlock(Module):
@@ -81,8 +87,14 @@ class _DenseBlock(Module):
         drop_rate: float,
     ):
         super().__init__()
-        # TODO: Implement dense block
-        raise NotImplementedError("TODO: Implement _DenseBlock")
+        self.layers = []
+        for layer in range(num_layers):
+            self.layers.append(_DenseLayer(num_input_features + layer * growth_rate, growth_rate, bn_size, drop_rate))
+        self.layers = nn.Sequential(*self.layers)
+
+    def forward(self, x):
+        """Forward pass, returns concatenated features."""
+        return self.layers(x)
 
 
 class _Transition(Module):
@@ -97,12 +109,14 @@ class _Transition(Module):
 
     def __init__(self, num_input_features: int, num_output_features: int):
         super().__init__()
-        # TODO: Implement transition
-        # bn = BatchNorm2d(num_input_features)
-        # relu = ReLU()
-        # conv = Conv2d(num_input_features, num_output_features, 1, bias=False)
-        # pool = AvgPool2d(2, stride=2)
-        raise NotImplementedError("TODO: Implement _Transition")
+        self.layers = nn.Sequential(nn.BatchNorm2d(num_input_features),
+                                    # nn.ReLU(),
+                                    nn.Conv2d(num_input_features, num_output_features, kernel_size=1, bias=False),
+                                    nn.AvgPool2d(kernel_size=2, stride=2),)
+
+    def forward(self, x):
+        """Forward pass"""
+        return self.layers(x)
 
 
 class DenseNet(Module):
@@ -128,8 +142,15 @@ class DenseNet(Module):
         num_classes: int = 1000,
     ):
         super().__init__()
-        # TODO: Implement DenseNet
-        raise NotImplementedError("TODO: Implement DenseNet")
+        self.conv = nn.Sequential(nn.BatchNorm2d(num_init_features), nn.ReLU(),
+            nn.Conv2d(3, num_init_features, kernel_size=7, stride=2, padding=3), nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
+
+        self.blocks = [_DenseBlock(b, num_init_features, growth_rate, bn_size, drop_rate) for b in block_config]
+
+        self.transitions = [_Transition(num_init_features, num_init_features // 2) for b in block_config]
+
+        self.classifier = nn.Sequential(nn.AvgPool2d(kernel_size=7),
+                                        nn.Linear(num_init_features // 2, num_classes))
 
     def forward(self, x):
         """Forward pass."""

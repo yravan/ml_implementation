@@ -147,6 +147,20 @@ def build_dataloaders(config):
     return fn(config)
 
 
+def _maybe_distributed_sampler(dataset, config, shuffle=False):
+    """Return a DistributedSampler if DDP is enabled, else None."""
+    if config.ddp:
+        import torch.distributed as dist
+        from torch.utils.data.distributed import DistributedSampler
+        return DistributedSampler(
+            dataset,
+            num_replicas=dist.get_world_size(),
+            rank=dist.get_rank(),
+            shuffle=shuffle,
+        )
+    return None
+
+
 def build_optimizer(model, config):
     name = config.optimizer.lower()
     if config.backend == 'pytorch':
@@ -378,7 +392,9 @@ def _pt_mnist(config):
     kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
               persistent_workers=config.num_workers > 0,
               prefetch_factor=4 if config.num_workers > 0 else None)
-    return (DataLoader(_PtArrayDataset(train_imgs, train_lbls), config.batch_size, shuffle=True, **kw),
+    train_ds = _PtArrayDataset(train_imgs, train_lbls)
+    train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
+    return (DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
             DataLoader(_PtArrayDataset(val_imgs, val_lbls), config.batch_size, shuffle=False, **kw),
             DataLoader(_PtArrayDataset(test_imgs, test_lbls), config.batch_size, shuffle=False, **kw))
 
@@ -400,7 +416,8 @@ def _pt_cifar10(config):
     kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
               persistent_workers=config.num_workers > 0,
               prefetch_factor=4 if config.num_workers > 0 else None)
-    return (DataLoader(train_ds, config.batch_size, shuffle=True, **kw),
+    train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
+    return (DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
             DataLoader(test_ds, config.batch_size, shuffle=False, **kw))
 
@@ -430,7 +447,8 @@ def _pt_imagenette(config):
     kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
               persistent_workers=config.num_workers > 0,
               prefetch_factor=4 if config.num_workers > 0 else None)
-    return (DataLoader(train_ds, config.batch_size, shuffle=True, **kw),
+    train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
+    return (DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw))
 
@@ -446,7 +464,7 @@ def _pt_imagenet(config):
                          T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
     t_val = T.Compose([T.Resize(256), T.CenterCrop(sz), T.ToTensor(),
                        T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-    root = Path (download_imagenet(config.data_dir, 'imagenet'))
+    root = Path (config.data_dir)
     train_ds = datasets.ImageFolder(str(root / 'train'), transform=t_train)
     val_ds = datasets.ImageFolder(str(root / 'val'), transform=t_val)
     if config.subset: train_ds = torch.utils.data.Subset(train_ds, range(config.subset))
@@ -455,7 +473,8 @@ def _pt_imagenet(config):
               persistent_workers=config.num_workers > 0,
               prefetch_factor=2 if config.num_workers > 0 else None,
               drop_last=True)
-    return (DataLoader(train_ds, config.batch_size, shuffle=True, **kw),
+    train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
+    return (DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
             DataLoader(val_ds, config.batch_size, shuffle=False, **kw))
 

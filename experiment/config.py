@@ -73,6 +73,12 @@ class Config:
     cudnn_benchmark: bool = True       # auto-tune convolution algorithms
     ffcv: bool = False                 # use FFCV data loading (requires pip install ffcv)
 
+    # ── Distributed (DDP) ────────────────────────────────────────────
+    ddp: bool = False                  # enable DistributedDataParallel
+    ddp_backend: str = "nccl"          # nccl (GPU) or gloo (CPU/fallback)
+    ddp_find_unused: bool = False      # find_unused_parameters in DDP wrapper
+    ddp_gradient_as_bucket: bool = True  # gradient_as_bucket_view (saves memory)
+
     # ── Derived ──────────────────────────────────────────────────────
     @property
     def run_dir(self) -> Path:
