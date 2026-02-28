@@ -601,9 +601,9 @@ def _pt_imagenet_ffcv(config):
         ],
     }
 
-    # FFCV handles distributed sharding natively via OrderOption.QUASI_RANDOM
-    # which assigns disjoint subsets to each rank automatically
-    train_order = OrderOption.QUASI_RANDOM if ddp else OrderOption.RANDOM
+    # FFCV's QUASI_RANDOM does not support distributed mode;
+    # use RANDOM which handles DDP sharding via distributed=True
+    train_order = OrderOption.RANDOM
 
     train_loader = Loader(
         str(train_beton),

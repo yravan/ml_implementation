@@ -335,20 +335,28 @@ def train_one_epoch(model, loader, criterion, optimizer, config, logger,
             now = time.time()
             interval_elapsed = now - interval_start
             ips = interval_samples / interval_elapsed if interval_elapsed > 0 else 0.0
+            # In DDP, multiply by world_size for aggregate throughput
+            world = backend.world_size if hasattr(backend, 'world_size') else 1
+            ips_total = ips * world
             interval_start = now
             interval_samples = 0
             parts = [f"Batch {batch_idx+1:5d}/{len(loader)}", f"Loss: {avg_loss:.4f}"]
             for name in metric_fns:
                 parts.append(f"{name}: {float(metric_totals[name])/total_samples*100:.2f}%")
-            parts.append(f"{ips:.0f} img/s")
+            if world > 1:
+                parts.append(f"{ips_total:.0f} img/s ({ips:.0f}/rank × {world})")
+            else:
+                parts.append(f"{ips_total:.0f} img/s")
             if backend.is_main:
                 print(f"    {' | '.join(parts)}")
             logger.log_scalar('train/batch_loss', avg_loss, step=global_step)
-            logger.log_scalar('train/throughput', ips, step=global_step)
+            logger.log_scalar('train/throughput', ips_total, step=global_step)
+            logger.log_scalar('train/throughput_per_rank', ips, step=global_step)
 
     # Final sync at end of epoch
     epoch_elapsed = time.time() - epoch_start
-    throughput = total_samples / epoch_elapsed if epoch_elapsed > 0 else 0.0
+    world = backend.world_size if hasattr(backend, 'world_size') else 1
+    throughput = (total_samples * world) / epoch_elapsed if epoch_elapsed > 0 else 0.0
 
     results = {'loss': float(total_loss) / total_samples}
     for name in metric_fns:
@@ -492,7 +500,7 @@ def run(config: Config) -> Dict:
         import torch
         cache_dir = getattr(config, 'compile_cache_dir', None)
         if cache_dir:
-            torch._inductor.config.cache_dir = cache_dir
+            os.environ['TORCHINDUCTOR_CACHE_DIR'] = cache_dir
             mprint(f"  torch.compile cache: {cache_dir}")
         model = torch.compile(model, mode=config.compile_mode)
         mprint(f"  torch.compile: enabled ({config.compile_mode})")
