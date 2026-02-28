@@ -11,6 +11,7 @@ Then build by name — registry picks the right one based on config.backend:
     model = build_model(config)
 """
 
+import os
 from typing import Tuple, Callable, Dict, Any, Optional, TYPE_CHECKING
 
 from pytorch.experiments.image_net_data import download_imagenet
@@ -517,9 +518,12 @@ def _pt_imagenet_ffcv(config):
         RandomHorizontalFlip, Squeeze,
     )
 
-    root = Path(download_imagenet(config.data_dir, 'imagenet'))
-    beton_dir = root / 'ffcv'
-    beton_dir.mkdir(exist_ok=True)
+    root = Path(config.data_dir)
+
+    # beton_dir: use config override (e.g. /tmp/ffcv for fast local SSD),
+    # otherwise default to <data_dir>/ffcv
+    beton_dir = Path(getattr(config, 'beton_dir', None) or '') if getattr(config, 'beton_dir', None) else root / 'ffcv'
+    beton_dir.mkdir(parents=True, exist_ok=True)
 
     train_beton = beton_dir / 'train.beton'
     val_beton = beton_dir / 'val.beton'
@@ -542,7 +546,14 @@ def _pt_imagenet_ffcv(config):
     STD = np.array([0.229, 0.224, 0.225]) * 255
 
     sz = config.model_args.get('img_size', 224)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    ddp = getattr(config, 'ddp', False)
+
+    # In DDP, each rank must target its own GPU
+    if ddp:
+        local_rank = int(os.environ.get('LOCAL_RANK', 0))
+        device = torch.device(f'cuda:{local_rank}')
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     train_pipeline = {
         'image': [
@@ -576,14 +587,20 @@ def _pt_imagenet_ffcv(config):
         ],
     }
 
+    # FFCV handles distributed sharding natively via OrderOption.QUASI_RANDOM
+    # which assigns disjoint subsets to each rank automatically
+    train_order = OrderOption.QUASI_RANDOM if ddp else OrderOption.RANDOM
+
     train_loader = Loader(
         str(train_beton),
         batch_size=config.batch_size,
         num_workers=config.num_workers,
-        order=OrderOption.RANDOM,
+        order=train_order,
+        distributed=ddp,
         os_cache=True,
         drop_last=True,
         pipelines=train_pipeline,
+        seed=config.seed,
     )
 
     val_loader = Loader(
@@ -591,6 +608,7 @@ def _pt_imagenet_ffcv(config):
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         order=OrderOption.SEQUENTIAL,
+        distributed=ddp,
         os_cache=True,
         drop_last=False,
         pipelines=val_pipeline,

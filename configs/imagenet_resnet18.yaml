@@ -24,12 +24,14 @@ optimizer_args:
 scheduler: step
 warmup_epochs: 5
 ffcv: true
+beton_dir: /tmp/ffcv_cache          # fast local SSD; falls back to <data_dir>/ffcv if null
 
 num_workers: 24
 pin_memory: true
 amp: true
 compile: true
 compile_mode: max-autotune
+compile_cache_dir: /tmp/torch_compile_cache
 cudnn_benchmark: true   # already default
 
 logger: wandb               # tensorboard + wandb + console

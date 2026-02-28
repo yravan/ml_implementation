@@ -490,8 +490,12 @@ def run(config: Config) -> Dict:
             mprint("  memory_format: channels_last (NHWC)")
     if config.compile and config.backend == 'pytorch':
         import torch
+        cache_dir = getattr(config, 'compile_cache_dir', None)
+        if cache_dir:
+            torch._inductor.config.cache_dir = cache_dir
+            mprint(f"  torch.compile cache: {cache_dir}")
         model = torch.compile(model, mode=config.compile_mode)
-        mprint("  torch.compile: enabled (max-autotune)")
+        mprint(f"  torch.compile: enabled ({config.compile_mode})")
 
     # ── DDP wrap (after compile, after to_device) ────────────────────
     if config.ddp:
