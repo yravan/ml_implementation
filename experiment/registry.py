@@ -481,8 +481,13 @@ def _pt_imagenet(config):
 
 
 def _write_beton(split_dir, beton_path, max_resolution=256, num_workers=16,
-                 compress_probability=1.0, jpeg_quality=90):
-    """Convert an ImageFolder split to FFCV .beton format."""
+                 jpeg_quality=90):
+    """Convert an ImageFolder split to FFCV .beton format.
+
+    Uses write_mode='jpg' to store JPEG-compressed images, which avoids
+    the FFCV memory_allocator integer-overflow bug on large datasets
+    (negative dimensions in flush_page) and produces smaller .beton files.
+    """
     from ffcv.writer import DatasetWriter
     from ffcv.fields import RGBImageField, IntField
     from torchvision.datasets import ImageFolder
@@ -491,8 +496,8 @@ def _write_beton(split_dir, beton_path, max_resolution=256, num_workers=16,
     ds = ImageFolder(str(split_dir))
     writer = DatasetWriter(str(beton_path), {
         'image': RGBImageField(
+            write_mode='jpg',
             max_resolution=max_resolution,
-            compress_probability=compress_probability,
             jpeg_quality=jpeg_quality,
         ),
         'label': IntField(),
@@ -519,6 +524,7 @@ def _pt_imagenet_ffcv(config):
     )
 
     root = Path(config.data_dir)
+    ddp = getattr(config, 'ddp', False)
 
     # beton_dir: use config override (e.g. /tmp/ffcv for fast local SSD),
     # otherwise default to <data_dir>/ffcv
@@ -528,25 +534,33 @@ def _pt_imagenet_ffcv(config):
     train_beton = beton_dir / 'train.beton'
     val_beton = beton_dir / 'val.beton'
 
-    # Write .beton files if they don't exist
-    if not train_beton.exists():
-        _write_beton(root / 'train', train_beton, max_resolution=256,
-                     num_workers=config.num_workers)
-    else:
-        print(f"  FFCV train beton exists: {train_beton}")
+    # In DDP, only rank 0 writes betons; other ranks wait at the barrier.
+    is_main = True
+    if ddp:
+        import torch.distributed as dist
+        is_main = dist.get_rank() == 0
 
-    if not val_beton.exists():
-        _write_beton(root / 'val', val_beton, max_resolution=256,
-                     num_workers=config.num_workers)
-    else:
-        print(f"  FFCV val beton exists: {val_beton}")
+    if is_main:
+        if not train_beton.exists():
+            _write_beton(root / 'train', train_beton, max_resolution=256,
+                         num_workers=config.num_workers)
+        else:
+            print(f"  FFCV train beton exists: {train_beton}")
+
+        if not val_beton.exists():
+            _write_beton(root / 'val', val_beton, max_resolution=256,
+                         num_workers=config.num_workers)
+        else:
+            print(f"  FFCV val beton exists: {val_beton}")
+
+    if ddp:
+        dist.barrier()  # all ranks wait until rank 0 finishes writing
 
     # ImageNet normalization (FFCV expects 0-255 scale)
     MEAN = np.array([0.485, 0.456, 0.406]) * 255
     STD = np.array([0.229, 0.224, 0.225]) * 255
 
     sz = config.model_args.get('img_size', 224)
-    ddp = getattr(config, 'ddp', False)
 
     # In DDP, each rank must target its own GPU
     if ddp:

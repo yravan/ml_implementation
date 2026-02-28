@@ -1,0 +1,53 @@
+
+# =============================================================================
+# ImageNet ResNet-18 — DDP multi-GPU training
+# =============================================================================
+# Launch with torchrun:
+#   torchrun --nproc_per_node=4 -m experiment --config configs/imagenet_resnet18_ddp.yaml
+#
+# Or override GPU count at launch time (config is GPU-count agnostic):
+#   torchrun --nproc_per_node=8 -m experiment --config configs/imagenet_resnet18_ddp.yaml
+
+name: imagenet-resnet18-ddp
+dataset: imagenet
+data_dir: ~/orcd/datasets/imagenet/images_complete/ilsvrc
+backend: pytorch
+model: resnet18
+model_args:
+  num_classes: 1000
+
+# ── Training ─────────────────────────────────────────────────────
+# NOTE: batch_size is PER GPU. Effective batch = batch_size * nproc_per_node
+# With 4 GPUs and batch_size 256: effective batch = 1024
+epochs: 90
+batch_size: 2048
+lr: 0.1
+optimizer: sgd
+weight_decay: 0.0001
+momentum: 0.9
+scheduler: step
+warmup_epochs: 5
+
+# ── DDP ──────────────────────────────────────────────────────────
+ddp: true
+ddp_backend: nccl               # nccl for GPU, gloo for CPU/fallback
+ddp_find_unused: false
+ddp_gradient_as_bucket: true
+
+# ── Performance ──────────────────────────────────────────────────
+num_workers: 8
+pin_memory: true
+amp: true
+compile: true
+compile_mode: max-autotune
+compile_cache_dir: /tmp/torch_compile_cache  # persists across restarts within same job
+cudnn_benchmark: true
+ffcv: true
+beton_dir: /tmp/ffcv_cache          # fast local NVMe; regenerated each job
+
+# ── Logging ──────────────────────────────────────────────────────
+logger: wandb
+wandb_project: imagenet
+metrics: [top1, top5]
+log_interval: 100
+save_every: 10
