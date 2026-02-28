@@ -149,7 +149,7 @@ def build_dataloaders(config):
 
 def _maybe_distributed_sampler(dataset, config, shuffle=False):
     """Return a DistributedSampler if DDP is enabled, else None."""
-    if config.ddp:
+    if getattr(config, 'ddp', False):
         import torch.distributed as dist
         from torch.utils.data.distributed import DistributedSampler
         return DistributedSampler(
