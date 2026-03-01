@@ -534,13 +534,26 @@ def _pt_imagenet_ffcv(config):
     train_beton = beton_dir / 'train.beton'
     val_beton = beton_dir / 'val.beton'
 
-    # In DDP, only rank 0 writes betons; other ranks wait at the barrier.
+    # In DDP, only rank 0 prepares betons; other ranks wait at the barrier.
     is_main = True
     if ddp:
         import torch.distributed as dist
         is_main = dist.get_rank() == 0
 
+    # Pre-built betons: copy from pool/source storage into fast local beton_dir
+    beton_source = getattr(config, 'beton_source_dir', None)
     if is_main:
+        for name in ('train.beton', 'val.beton'):
+            dst = beton_dir / name
+            if not dst.exists() and beton_source:
+                src = Path(beton_source) / name
+                if src.exists():
+                    import shutil
+                    print(f"  Copying {src} → {dst} ...")
+                    shutil.copy2(str(src), str(dst))
+                    print(f"  Done ({dst.stat().st_size / 1e9:.1f} GB)")
+
+        # Fall back to writing from scratch if still missing
         if not train_beton.exists():
             _write_beton(root / 'train', train_beton, max_resolution=256,
                          num_workers=config.num_workers)

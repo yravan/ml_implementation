@@ -74,6 +74,7 @@ class Config:
     cudnn_benchmark: bool = True       # auto-tune convolution algorithms
     ffcv: bool = False                 # use FFCV data loading (requires pip install ffcv)
     beton_dir: Optional[str] = None    # directory for FFCV .beton files (default: <data_dir>/ffcv)
+    beton_source_dir: Optional[str] = None  # pre-built betons to copy into beton_dir (e.g. pool storage)
 
     # ── Distributed (DDP) ────────────────────────────────────────────
     ddp: bool = False                  # enable DistributedDataParallel

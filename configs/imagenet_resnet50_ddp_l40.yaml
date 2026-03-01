@@ -3,30 +3,30 @@
 # ImageNet ResNet-18 — DDP multi-GPU training
 # =============================================================================
 # Launch with torchrun:
-#   torchrun --nproc_per_node=4 -m experiment --config configs/imagenet_resnet18_ddp.yaml
+#   torchrun --nproc_per_node=4 -m experiment --config configs/imagenet_resnet50_ddp_l40.yaml
 #
 # Or override GPU count at launch time (config is GPU-count agnostic):
-#   torchrun --nproc_per_node=8 -m experiment --config configs/imagenet_resnet18_ddp.yaml
+#   torchrun --nproc_per_node=8 -m experiment --config configs/imagenet_resnet50_ddp_l40.yaml
 
-name: imagenet-resnet18-ddp
+name: imagenet-resnet50-ddp
 dataset: imagenet
 data_dir: ~/orcd/datasets/imagenet/images_complete/ilsvrc
 backend: pytorch
-model: resnet18
+model: resnet50
 model_args:
   num_classes: 1000
 
 # ── Training ─────────────────────────────────────────────────────
 # NOTE: batch_size is PER GPU. Effective batch = batch_size * nproc_per_node
 # With 4 GPUs and batch_size 256: effective batch = 1024
-epochs: 90
-batch_size: 256
-lr: 0.4
-optimizer: sgd
-weight_decay: 0.0001
-momentum: 0.9
-scheduler: step
-warmup_epochs: 5
+epochs: 200
+batch_size: 1024
+lr: 4e-3
+optimizer: adamw
+weight_decay: 0.05
+scheduler: cosine
+label_smoothing: 0.1
+warmup_epochs: 10
 
 # ── DDP ──────────────────────────────────────────────────────────
 ddp: true
