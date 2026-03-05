@@ -1,0 +1,12 @@
+[
+  {
+    "model": "encoder",
+    "batch_1": 0.0003,
+    "batch_4": 0.0005
+  },
+  {
+    "model": "decoder",
+    "batch_1": 0.0003,
+    "batch_4": 0.0008
+  }
+]
