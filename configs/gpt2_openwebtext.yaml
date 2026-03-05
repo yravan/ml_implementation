@@ -4,7 +4,7 @@ dataset: openwebtext
 model: gpt2
 tokenizer: gpt2
 pretrained_weights: gpt2
-max_seq_len: 512
+max_seq_len: 1024
 epochs: 5
 batch_size: 8
 lr: 1e-4
@@ -20,5 +20,7 @@ metrics: [perplexity]
 generate_every: 1
 generate_max_tokens: 100
 generate_prompts: ["The future of artificial intelligence", "Scientists have discovered"]
-logger: tensorboard
+logger: wandb
 log_interval: 500
+
+
