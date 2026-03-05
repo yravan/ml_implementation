@@ -1,0 +1,20 @@
+name: gpt2-wikitext103
+task: language_model
+dataset: wikitext103
+model: gpt2
+tokenizer: gpt2
+max_seq_len: 512
+epochs: 20
+batch_size: 8
+lr: 3e-4
+optimizer: adamw
+weight_decay: 0.01
+scheduler: cosine
+warmup_epochs: 2
+grad_clip: 1.0
+metrics: [perplexity]
+generate_every: 5
+generate_max_tokens: 100
+generate_prompts: ["The meaning of life is", "In the beginning", "Once upon a time"]
+logger: tensorboard
+log_interval: 200

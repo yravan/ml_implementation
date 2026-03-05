@@ -9,7 +9,7 @@ Simple dataclass config that can be created from:
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pathlib import Path
 import json
 
@@ -24,6 +24,9 @@ class Config:
     output_dir: str = "./outputs"
     backend: str = "pytorch"           # pytorch or numpy
 
+    # ── Task Type ──────────────────────────────────────────────────────
+    task: str = "classification"       # classification | language_model | seq2seq
+
     # ── Data ─────────────────────────────────────────────────────────
     dataset: str = "mnist"             # mnist, imagenette, imagenet, cifar10
     data_dir: str = "./data"
@@ -31,11 +34,18 @@ class Config:
     num_workers: int = 8
     pin_memory: bool = True
 
+    # ── Sequence / Tokenizer ─────────────────────────────────────────
+    tokenizer: str = "gpt2"           # HuggingFace tokenizer name
+    max_seq_len: int = 512
+    src_max_seq_len: Optional[int] = None   # seq2seq source; defaults to max_seq_len
+    tgt_max_seq_len: Optional[int] = None   # seq2seq target; defaults to max_seq_len
+
     # ── Model ────────────────────────────────────────────────────────
     model: str = "mlp"                 # mlp, cnn, resnet18, resnet34, resnet50
     model_args: Dict[str, Any] = field(default_factory=dict)
     pretrained: bool = False
     resume: Optional[str] = None       # path to checkpoint
+    pretrained_weights: Optional[str] = None  # e.g. "gpt2", "gpt2-medium"
 
     # ── Training ─────────────────────────────────────────────────────
     epochs: int = 10
@@ -49,6 +59,15 @@ class Config:
     momentum: float = 0.9             # for SGD
     grad_clip: Optional[float] = None
     label_smoothing: float = 0.0       # cross-entropy label smoothing (0.1 recommended)
+
+    # ── Generation (language_model / seq2seq) ────────────────────────
+    generate_every: int = 0           # generate samples every N epochs (0=off)
+    generate_max_tokens: int = 100
+    generate_temperature: float = 0.8
+    generate_top_k: Optional[int] = 50
+    generate_top_p: float = 0.95
+    generate_prompts: List[str] = field(default_factory=lambda: ["Once upon a time"])
+    num_generate_samples: int = 3
 
     # ── Logging ──────────────────────────────────────────────────────
     logger: str = "tensorboard"        # tensorboard, wandb, console, all

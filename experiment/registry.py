@@ -724,3 +724,350 @@ def _np_imagenet(config):
     return (NpLoader(train_ds, batch_size=config.batch_size, shuffle=True, num_workers=8),
             NpLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=8),
             NpLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=8))
+
+
+# =============================================================================
+# Built-in Models — Sequence (PyTorch only)
+# =============================================================================
+
+@register_model('gpt2', 'pytorch')
+def _pt_gpt2(config):
+    from pytorch.sequence.transformers.gpt import GPT, GPT2_SMALL_CONFIG
+    cfg = {**GPT2_SMALL_CONFIG, **config.model_args}
+    cfg['max_seq_len'] = config.max_seq_len
+    model = GPT(**cfg)
+    if getattr(config, 'pretrained_weights', None):
+        from pytorch.sequence.transformers.pretrained import load_gpt2_weights
+        model = load_gpt2_weights(model, config.pretrained_weights)
+    return model
+
+
+@register_model('gpt2-medium', 'pytorch')
+def _pt_gpt2_medium(config):
+    from pytorch.sequence.transformers.gpt import GPT, GPT2_MEDIUM_CONFIG
+    cfg = {**GPT2_MEDIUM_CONFIG, **config.model_args}
+    cfg['max_seq_len'] = config.max_seq_len
+    model = GPT(**cfg)
+    if getattr(config, 'pretrained_weights', None):
+        from pytorch.sequence.transformers.pretrained import load_gpt2_weights
+        model = load_gpt2_weights(model, config.pretrained_weights)
+    return model
+
+
+@register_model('gpt2-large', 'pytorch')
+def _pt_gpt2_large(config):
+    from pytorch.sequence.transformers.gpt import GPT, GPT2_LARGE_CONFIG
+    cfg = {**GPT2_LARGE_CONFIG, **config.model_args}
+    cfg['max_seq_len'] = config.max_seq_len
+    model = GPT(**cfg)
+    if getattr(config, 'pretrained_weights', None):
+        from pytorch.sequence.transformers.pretrained import load_gpt2_weights
+        model = load_gpt2_weights(model, config.pretrained_weights)
+    return model
+
+
+@register_model('transformer_base', 'pytorch')
+def _pt_transformer_base(config):
+    from pytorch.sequence.transformers.encoder_decoder import (
+        TransformerEncoderDecoder, TRANSFORMER_BASE_CONFIG,
+    )
+    cfg = {**TRANSFORMER_BASE_CONFIG, **config.model_args}
+    if hasattr(config, 'max_seq_len'):
+        cfg['max_src_len'] = getattr(config, 'src_max_seq_len', None) or config.max_seq_len
+        cfg['max_tgt_len'] = getattr(config, 'tgt_max_seq_len', None) or config.max_seq_len
+    return TransformerEncoderDecoder(**cfg)
+
+
+@register_model('t5_base', 'pytorch')
+def _pt_t5_base(config):
+    from pytorch.sequence.transformers.encoder_decoder import (
+        TransformerEncoderDecoder, T5_BASE_CONFIG,
+    )
+    cfg = {**T5_BASE_CONFIG, **config.model_args}
+    if hasattr(config, 'max_seq_len'):
+        cfg['max_src_len'] = getattr(config, 'src_max_seq_len', None) or config.max_seq_len
+        cfg['max_tgt_len'] = getattr(config, 'tgt_max_seq_len', None) or config.max_seq_len
+    return TransformerEncoderDecoder(**cfg)
+
+
+# =============================================================================
+# Built-in Datasets — Sequence (PyTorch only)
+# =============================================================================
+
+class _TokenizedTextDataset:
+    """Wraps tokenized text chunks as a PyTorch dataset returning (input_ids,)."""
+    def __init__(self, token_ids):
+        import torch
+        if not isinstance(token_ids, torch.Tensor):
+            token_ids = torch.tensor(token_ids, dtype=torch.long)
+        self.token_ids = token_ids
+
+    def __len__(self):
+        return len(self.token_ids)
+
+    def __getitem__(self, idx):
+        return (self.token_ids[idx],)
+
+
+class _Seq2SeqDataset:
+    """Wraps parallel source/target token ID tensors as a PyTorch dataset."""
+    def __init__(self, src_ids, tgt_ids):
+        import torch
+        if not isinstance(src_ids, torch.Tensor):
+            src_ids = torch.tensor(src_ids, dtype=torch.long)
+        if not isinstance(tgt_ids, torch.Tensor):
+            tgt_ids = torch.tensor(tgt_ids, dtype=torch.long)
+        self.src_ids = src_ids
+        self.tgt_ids = tgt_ids
+
+    def __len__(self):
+        return len(self.src_ids)
+
+    def __getitem__(self, idx):
+        return self.src_ids[idx], self.tgt_ids[idx]
+
+
+def _tokenize_and_chunk(texts, tokenizer, max_seq_len, subset=None):
+    """Tokenize a list of texts and chunk into fixed-length sequences."""
+    import torch
+
+    all_tokens = []
+    for text in texts:
+        if text.strip():
+            tokens = tokenizer.encode(text, add_special_tokens=False)
+            all_tokens.extend(tokens)
+
+    n_chunks = len(all_tokens) // max_seq_len
+    if n_chunks == 0:
+        all_tokens = all_tokens + [tokenizer.eos_token_id or 0] * (max_seq_len - len(all_tokens))
+        n_chunks = 1
+
+    all_tokens = all_tokens[:n_chunks * max_seq_len]
+    chunks = torch.tensor(all_tokens, dtype=torch.long).reshape(n_chunks, max_seq_len)
+
+    if subset and subset < len(chunks):
+        chunks = chunks[:subset]
+
+    return chunks
+
+
+@register_dataset('wikitext2', 'pytorch')
+def _pt_wikitext2(config):
+    import torch
+    from torch.utils.data import DataLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    ds = load_dataset('wikitext', 'wikitext-2-raw-v1')
+
+    train_chunks = _tokenize_and_chunk(ds['train']['text'], tokenizer, config.max_seq_len, config.subset)
+    val_chunks = _tokenize_and_chunk(ds['validation']['text'], tokenizer, config.max_seq_len)
+    test_chunks = _tokenize_and_chunk(ds['test']['text'], tokenizer, config.max_seq_len)
+
+    print(f"  WikiText-2: {len(train_chunks)} train, {len(val_chunks)} val, {len(test_chunks)} test sequences")
+
+    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
+              persistent_workers=config.num_workers > 0,
+              prefetch_factor=4 if config.num_workers > 0 else None)
+
+    train_ds = _TokenizedTextDataset(train_chunks)
+    train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
+    return (
+        DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
+        DataLoader(_TokenizedTextDataset(val_chunks), config.batch_size, shuffle=False, **kw),
+        DataLoader(_TokenizedTextDataset(test_chunks), config.batch_size, shuffle=False, **kw),
+    )
+
+
+@register_dataset('wikitext103', 'pytorch')
+def _pt_wikitext103(config):
+    import torch
+    from torch.utils.data import DataLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    ds = load_dataset('wikitext', 'wikitext-103-raw-v1')
+
+    train_chunks = _tokenize_and_chunk(ds['train']['text'], tokenizer, config.max_seq_len, config.subset)
+    val_chunks = _tokenize_and_chunk(ds['validation']['text'], tokenizer, config.max_seq_len)
+    test_chunks = _tokenize_and_chunk(ds['test']['text'], tokenizer, config.max_seq_len)
+
+    print(f"  WikiText-103: {len(train_chunks)} train, {len(val_chunks)} val, {len(test_chunks)} test sequences")
+
+    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
+              persistent_workers=config.num_workers > 0,
+              prefetch_factor=4 if config.num_workers > 0 else None)
+
+    train_ds = _TokenizedTextDataset(train_chunks)
+    train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
+    return (
+        DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
+        DataLoader(_TokenizedTextDataset(val_chunks), config.batch_size, shuffle=False, **kw),
+        DataLoader(_TokenizedTextDataset(test_chunks), config.batch_size, shuffle=False, **kw),
+    )
+
+
+@register_dataset('openwebtext', 'pytorch')
+def _pt_openwebtext(config):
+    import torch
+    from torch.utils.data import DataLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+    import numpy as np
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    ds = load_dataset('openwebtext', split='train', streaming=True)
+
+    max_texts = config.subset or 100000
+    texts = []
+    for i, example in enumerate(ds):
+        if i >= max_texts:
+            break
+        texts.append(example['text'])
+
+    np.random.seed(config.seed)
+    idx = np.random.permutation(len(texts))
+    n_val = max(len(texts) // 20, 1)
+    n_test = n_val
+
+    val_texts = [texts[i] for i in idx[:n_val]]
+    test_texts = [texts[i] for i in idx[n_val:n_val + n_test]]
+    train_texts = [texts[i] for i in idx[n_val + n_test:]]
+
+    train_chunks = _tokenize_and_chunk(train_texts, tokenizer, config.max_seq_len)
+    val_chunks = _tokenize_and_chunk(val_texts, tokenizer, config.max_seq_len)
+    test_chunks = _tokenize_and_chunk(test_texts, tokenizer, config.max_seq_len)
+
+    print(f"  OpenWebText: {len(train_chunks)} train, {len(val_chunks)} val, {len(test_chunks)} test sequences")
+
+    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
+              persistent_workers=config.num_workers > 0,
+              prefetch_factor=4 if config.num_workers > 0 else None)
+
+    train_ds = _TokenizedTextDataset(train_chunks)
+    train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
+    return (
+        DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
+        DataLoader(_TokenizedTextDataset(val_chunks), config.batch_size, shuffle=False, **kw),
+        DataLoader(_TokenizedTextDataset(test_chunks), config.batch_size, shuffle=False, **kw),
+    )
+
+
+def _tokenize_parallel(src_texts, tgt_texts, tokenizer, max_seq_len, subset=None):
+    """Tokenize parallel source/target texts with padding."""
+    import torch
+
+    src_ids_list = []
+    tgt_ids_list = []
+
+    for src, tgt in zip(src_texts, tgt_texts):
+        if not src.strip() or not tgt.strip():
+            continue
+        s = tokenizer.encode(src, max_length=max_seq_len, truncation=True,
+                             padding='max_length', return_tensors='pt').squeeze(0)
+        t = tokenizer.encode(tgt, max_length=max_seq_len, truncation=True,
+                             padding='max_length', return_tensors='pt').squeeze(0)
+        src_ids_list.append(s)
+        tgt_ids_list.append(t)
+
+    src_ids = torch.stack(src_ids_list)
+    tgt_ids = torch.stack(tgt_ids_list)
+
+    if subset and subset < len(src_ids):
+        src_ids = src_ids[:subset]
+        tgt_ids = tgt_ids[:subset]
+
+    return src_ids, tgt_ids
+
+
+@register_dataset('multi30k', 'pytorch')
+def _pt_multi30k(config):
+    import torch
+    from torch.utils.data import DataLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    max_seq_len = config.max_seq_len
+    ds = load_dataset('bentrevett/multi30k')
+
+    def process_split(split):
+        src_texts = [ex['en'] for ex in split]
+        tgt_texts = [ex['de'] for ex in split]
+        return _tokenize_parallel(src_texts, tgt_texts, tokenizer, max_seq_len)
+
+    train_src, train_tgt = process_split(ds['train'])
+    val_src, val_tgt = process_split(ds['validation'])
+    test_src, test_tgt = process_split(ds['test'])
+
+    if config.subset:
+        train_src, train_tgt = train_src[:config.subset], train_tgt[:config.subset]
+
+    print(f"  Multi30k: {len(train_src)} train, {len(val_src)} val, {len(test_src)} test pairs")
+
+    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
+              persistent_workers=config.num_workers > 0,
+              prefetch_factor=4 if config.num_workers > 0 else None)
+
+    train_ds = _Seq2SeqDataset(train_src, train_tgt)
+    train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
+    return (
+        DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
+        DataLoader(_Seq2SeqDataset(val_src, val_tgt), config.batch_size, shuffle=False, **kw),
+        DataLoader(_Seq2SeqDataset(test_src, test_tgt), config.batch_size, shuffle=False, **kw),
+    )
+
+
+@register_dataset('wmt14', 'pytorch')
+def _pt_wmt14(config):
+    import torch
+    from torch.utils.data import DataLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    max_seq_len = config.max_seq_len
+    ds = load_dataset('wmt14', 'de-en')
+
+    def process_split(split, subset=None):
+        src_texts = [ex['translation']['en'] for ex in split]
+        tgt_texts = [ex['translation']['de'] for ex in split]
+        if subset:
+            src_texts = src_texts[:subset]
+            tgt_texts = tgt_texts[:subset]
+        return _tokenize_parallel(src_texts, tgt_texts, tokenizer, max_seq_len)
+
+    train_src, train_tgt = process_split(ds['train'], config.subset)
+    val_src, val_tgt = process_split(ds['validation'])
+    test_src, test_tgt = process_split(ds['test'])
+
+    print(f"  WMT14: {len(train_src)} train, {len(val_src)} val, {len(test_src)} test pairs")
+
+    kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
+              persistent_workers=config.num_workers > 0,
+              prefetch_factor=4 if config.num_workers > 0 else None)
+
+    train_ds = _Seq2SeqDataset(train_src, train_tgt)
+    train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
+    return (
+        DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
+        DataLoader(_Seq2SeqDataset(val_src, val_tgt), config.batch_size, shuffle=False, **kw),
+        DataLoader(_Seq2SeqDataset(test_src, test_tgt), config.batch_size, shuffle=False, **kw),
+    )

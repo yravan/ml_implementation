@@ -1,0 +1,17 @@
+name: translation-multi30k
+task: seq2seq
+dataset: multi30k
+model: transformer_base
+tokenizer: bert-base-multilingual-cased
+max_seq_len: 128
+epochs: 30
+batch_size: 64
+lr: 1e-4
+optimizer: adamw
+scheduler: cosine
+warmup_epochs: 3
+grad_clip: 1.0
+label_smoothing: 0.1
+metrics: [bleu]
+logger: tensorboard
+log_interval: 50

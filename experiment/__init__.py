@@ -23,7 +23,7 @@ import os
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
 from .config import Config
-from .runner import run
+from .runner import run, get_runner, BaseRunner, ClassificationRunner, LanguageModelRunner, Seq2SeqRunner
 from .logger import Logger
 from .registry import (
     register_model, register_dataset,
@@ -32,7 +32,8 @@ from .registry import (
 )
 
 __all__ = [
-    'Config', 'run', 'Logger',
+    'Config', 'run', 'get_runner', 'Logger',
+    'BaseRunner', 'ClassificationRunner', 'LanguageModelRunner', 'Seq2SeqRunner',
     'register_model', 'register_dataset',
     'build_model', 'build_dataloaders', 'build_optimizer',
     'list_models', 'list_datasets',
