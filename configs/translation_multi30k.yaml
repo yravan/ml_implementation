@@ -1,9 +1,15 @@
 name: translation-multi30k
+wandb_project: translation-multi30k
+backend: pytorch
 task: seq2seq
 dataset: multi30k
 model: transformer_base
 tokenizer: bert-base-multilingual-cased
 max_seq_len: 128
+model_args:
+  src_vocab_size: 119547
+  tgt_vocab_size: 119547
+  pad_token_id: 0
 epochs: 30
 batch_size: 64
 lr: 1e-4
@@ -13,5 +19,11 @@ warmup_epochs: 3
 grad_clip: 1.0
 label_smoothing: 0.1
 metrics: [bleu]
-logger: tensorboard
+generate_every: 5
+generate_max_tokens: 128
+logger: wandb
 log_interval: 50
+num_workers: 8
+pin_memory: true
+amp: true
+cudnn_benchmark: true

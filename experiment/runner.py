@@ -218,6 +218,8 @@ class _NumpyBackend:
     def __init__(self):
         # Lazy imports — only when numpy backend is actually used
         self.is_main = True  # numpy backend is always single-process
+        self._use_amp = False
+        self._scaler = None
 
     @property
     def device(self):
@@ -509,19 +511,23 @@ class BaseRunner:
 
     def _optimizer_step(self, model, optimizer):
         """Execute optimizer step with grad clipping and AMP scaler."""
-        import torch
         backend = self.backend
         if backend._use_amp:
+            import torch
             if self.config.grad_clip:
                 backend._scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
             backend._scaler.step(optimizer)
             backend._scaler.update()
         else:
-            if self.config.grad_clip:
+            if self.config.grad_clip and self.config.backend == 'pytorch':
+                import torch
                 torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
             optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
+        if self.config.backend == 'pytorch':
+            optimizer.zero_grad(set_to_none=True)
+        else:
+            optimizer.zero_grad()
 
     def eval_step(self, model, batch, criterion):
         """Execute one eval step. Returns (logits, loss, n_samples, targets)."""
@@ -549,8 +555,8 @@ class BaseRunner:
             return float('inf')
         return 0.0
 
-    def run(self) -> Dict:
-        """Run the complete experiment."""
+    def _setup(self):
+        """Common setup: print header, build data/model/optimizer/logger."""
         config = self.config
         backend = self.backend
 
@@ -577,6 +583,7 @@ class BaseRunner:
         # ── Data ────────────────────────────────────────────────
         self.mprint(f"\n{'─'*70}\n Data\n{'─'*70}")
         train_loader, val_loader, test_loader = build_dataloaders(config)
+        self.val_loader = val_loader
 
         # ── Model ───────────────────────────────────────────────
         self.mprint(f"\n{'─'*70}\n Model\n{'─'*70}")
@@ -615,6 +622,226 @@ class BaseRunner:
 
         # ── Metrics ─────────────────────────────────────────────
         metric_fns = self.setup_metrics()
+
+        return model, train_loader, val_loader, test_loader, optimizer, scheduler, warmup, criterion, logger, metric_fns
+
+    def _generate_samples_at_step(self, model, logger, step):
+        """Hook for generating samples during step-based training. Override in subclasses."""
+        pass
+
+    def _run_step_based(self, model, train_loader, val_loader, test_loader,
+                        optimizer, scheduler, warmup, criterion, logger, metric_fns):
+        """Step-based training loop (when config.max_steps is set)."""
+        config = self.config
+        backend = self.backend
+        max_steps = config.max_steps
+        warmup_steps = config.warmup_steps
+        save_every = config.save_every_steps
+
+        self.mprint(f"\n{'─'*70}\n Training (step-based: {max_steps} steps)\n{'─'*70}")
+        if logger:
+            logger.begin_training()
+
+        primary_metric = list(metric_fns.keys())[0] if metric_fns else 'loss'
+        best_metric = self.initial_best_metric(primary_metric)
+        best_step = 0
+        history = {}
+
+        grad_accum = config.gradient_accumulation_steps
+        seq_len = getattr(config, 'max_seq_len', 1)
+
+        global_step = 0
+        epoch = 0
+
+        while global_step < max_steps:
+            epoch += 1
+            if config.ddp:
+                _set_epoch_samplers(train_loader, epoch)
+
+            model.train()
+            total_loss = 0.0
+            total_samples = 0
+            total_tokens = 0
+            interval_start = time.time()
+            interval_tokens = 0
+            if config.backend == 'pytorch':
+                optimizer.zero_grad(set_to_none=True)
+            else:
+                optimizer.zero_grad()
+
+            for batch_idx, batch in enumerate(train_loader):
+                is_accumulating = ((batch_idx + 1) % grad_accum != 0)
+
+                logits, batch_loss, n, targets_d = self.train_step(
+                    model, batch, criterion, optimizer, is_accumulating=is_accumulating
+                )
+
+                total_loss = total_loss + batch_loss * n
+                total_samples += n
+                batch_tokens = n * seq_len
+                total_tokens += batch_tokens
+                interval_tokens += batch_tokens
+
+                # Optimizer step at accumulation boundary
+                if not is_accumulating:
+                    self._optimizer_step(model, optimizer)
+                    global_step += 1
+
+                    # LR step (per training step)
+                    current_lr = backend.get_lr(optimizer)
+                    if warmup and global_step <= warmup_steps:
+                        warmup.step()
+                    elif scheduler is not None:
+                        scheduler.step()
+
+                    # Per-step logging
+                    if config.log_interval and global_step % config.log_interval == 0:
+                        avg_loss = float(total_loss) / total_samples
+                        ppl = math.exp(min(avg_loss, 100))
+                        now = time.time()
+                        interval_elapsed = now - interval_start
+                        tps = interval_tokens / interval_elapsed if interval_elapsed > 0 else 0.0
+                        world = backend.world_size if hasattr(backend, 'world_size') else 1
+                        tps_total = tps * world
+                        interval_start = now
+                        interval_tokens = 0
+                        parts_log = [f"Step {global_step:7d}/{max_steps}", f"Epoch {epoch}", f"Loss: {avg_loss:.4f}"]
+                        parts_log.append(f"perplexity: {self.format_metric('perplexity', ppl)}")
+                        if world > 1:
+                            parts_log.append(f"{tps_total:.0f} tok/s ({tps:.0f}/rank × {world})")
+                        else:
+                            parts_log.append(f"{tps_total:.0f} tok/s")
+                        parts_log.append(f"lr: {current_lr:.2e}")
+                        if backend.is_main:
+                            print(f"    {' | '.join(parts_log)}")
+                        if logger:
+                            logger.log_scalar('train/batch_loss', avg_loss, step=global_step)
+                            logger.log_scalar('train/perplexity', ppl, step=global_step)
+                            logger.log_scalar('train/throughput', tps_total, step=global_step)
+                            logger.log_scalar('train/lr', current_lr, step=global_step)
+                            logger.log_scalar('epoch', epoch, step=global_step)
+                            logger.flush()
+
+                    # Periodic save/validate/generate
+                    if save_every and global_step % save_every == 0:
+                        self.mprint(f"\n  ── Step {global_step} checkpoint ──")
+
+                        # Validate
+                        val_results = self._evaluate(model, val_loader, criterion, metric_fns)
+                        self.mprint(f"  Val loss: {val_results['loss']:.4f}")
+                        for k, v in val_results.items():
+                            if k != 'loss':
+                                self.mprint(f"  Val {k}: {self.format_metric(k, v)}")
+                        if logger:
+                            for k, v in val_results.items():
+                                logger.log_scalar(f'val/{k}', v, step=global_step)
+                            logger.flush()
+
+                        # Track history
+                        for k, v in val_results.items():
+                            history.setdefault(f'val_{k}', []).append(v)
+
+                        # Best model tracking
+                        current = val_results.get(primary_metric, val_results.get('loss', 0))
+                        is_best = self.primary_metric_improves(current, best_metric, primary_metric)
+                        if is_best:
+                            best_metric = current
+                            best_step = global_step
+                            self.mprint(f"  ★ New best {primary_metric}!")
+                            ext = '.pt' if config.backend == 'pytorch' else '.npy'
+                            best_path = config.run_dir / f'best{ext}'
+                            best_path.parent.mkdir(parents=True, exist_ok=True)
+                            backend.save_checkpoint(model, optimizer, epoch, config, best_path)
+
+                        # Periodic checkpoint
+                        ext = '.pt' if config.backend == 'pytorch' else '.npy'
+                        ckpt_path = config.run_dir / f'checkpoint_step{global_step}{ext}'
+                        backend.save_checkpoint(model, optimizer, epoch, config, ckpt_path)
+
+                        # Generate samples (no-op unless overridden)
+                        self._generate_samples_at_step(model, logger, global_step)
+
+                        model.train()
+
+                        # DDP barrier
+                        if config.ddp:
+                            import torch.distributed as dist
+                            dist.barrier()
+
+                    if global_step >= max_steps:
+                        break
+
+        # ── Final validation at end if not on a save_every boundary ──
+        if not save_every or global_step % save_every != 0:
+            val_results = self._evaluate(model, val_loader, criterion, metric_fns)
+            self.mprint(f"\n  Final val loss: {val_results['loss']:.4f}")
+            for k, v in val_results.items():
+                if k != 'loss':
+                    self.mprint(f"  Final val {k}: {self.format_metric(k, v)}")
+            if logger:
+                for k, v in val_results.items():
+                    logger.log_scalar(f'val/{k}', v, step=global_step)
+            for k, v in val_results.items():
+                history.setdefault(f'val_{k}', []).append(v)
+            current = val_results.get(primary_metric, val_results.get('loss', 0))
+            is_best = self.primary_metric_improves(current, best_metric, primary_metric)
+            if is_best:
+                best_metric = current
+                best_step = global_step
+                ext = '.pt' if config.backend == 'pytorch' else '.npy'
+                best_path = config.run_dir / f'best{ext}'
+                best_path.parent.mkdir(parents=True, exist_ok=True)
+                backend.save_checkpoint(model, optimizer, epoch, config, best_path)
+
+        # ── Test ────────────────────────────────────────────────
+        self.mprint(f"\n{'─'*70}\n Test Evaluation\n{'─'*70}")
+        ext = '.pt' if config.backend == 'pytorch' else '.npy'
+        best_path = config.run_dir / f'best{ext}'
+        if best_path.exists():
+            backend.load_best(model, best_path)
+            self.mprint(f"  Loaded best model (step {best_step})")
+
+        test_results = self._evaluate(model, test_loader, criterion, metric_fns,
+                                       collect_predictions=True)
+
+        if logger:
+            final_step = global_step + 1
+            logger.log_scalars('test', {k: v for k, v in test_results.items()
+                                        if k not in ('logits', 'labels')}, step=final_step)
+            logger.flush()
+
+        # Summary
+        self.mprint(f"\n{'='*70}")
+        self.mprint(f" Done!  [{config.backend}] {global_step} steps, {epoch} epochs")
+        self.mprint(f"{'='*70}")
+        for k, v in test_results.items():
+            if k in ('logits', 'labels'):
+                continue
+            self.mprint(f"  Test {k}: {self.format_metric(k, v)}")
+        self.mprint(f"  Best step: {best_step}")
+
+        if logger:
+            logger.finish()
+
+        if config.ddp:
+            _cleanup_ddp()
+
+        return {
+            'model': model,
+            'history': history,
+            'test_results': test_results,
+            'config': config,
+        }
+
+    def run(self) -> Dict:
+        """Run the complete experiment."""
+        config = self.config
+        backend = self.backend
+        model, train_loader, val_loader, test_loader, optimizer, scheduler, warmup, criterion, logger, metric_fns = self._setup()
+
+        if config.max_steps is not None:
+            return self._run_step_based(model, train_loader, val_loader, test_loader,
+                                        optimizer, scheduler, warmup, criterion, logger, metric_fns)
 
         # ── Training ────────────────────────────────────────────
         self.mprint(f"\n{'─'*70}\n Training\n{'─'*70}")
@@ -750,7 +977,10 @@ class BaseRunner:
         interval_start = epoch_start
         interval_tokens = 0
 
-        optimizer.zero_grad(set_to_none=True)
+        if self.config.backend == 'pytorch':
+            optimizer.zero_grad(set_to_none=True)
+        else:
+            optimizer.zero_grad()
 
         for batch_idx, batch in enumerate(loader):
             is_accumulating = ((batch_idx + 1) % grad_accum != 0)
@@ -1001,9 +1231,7 @@ class LanguageModelRunner(BaseRunner):
 
         loss = criterion(logits_flat, targets_flat, reduction='mean')
 
-        optimizer.zero_grad()
         loss.backward()
-        optimizer.step()
 
         batch_loss = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
         return logits, batch_loss, B, targets
@@ -1100,262 +1328,6 @@ class LanguageModelRunner(BaseRunner):
         ppl = math.exp(min(results['loss'], 100))  # clamp to avoid overflow
         results['perplexity'] = ppl
         return results
-
-    def run(self) -> Dict:
-        """Override to support step-based training when max_steps is set."""
-        config = self.config
-        if config.max_steps is None:
-            return super().run()
-
-        backend = self.backend
-        max_steps = config.max_steps
-        warmup_steps = config.warmup_steps
-        save_every = config.save_every_steps
-
-        self.mprint(f"\n{'='*70}")
-        self.mprint(f" {config.name}  [{config.backend}] [{config.task}]")
-        self.mprint(f"{'='*70}")
-        self.mprint(config)
-        self.mprint(f"  Device: {backend.device}")
-        if config.ddp:
-            self.mprint(f"  DDP:    {backend.world_size} processes, backend={config.ddp_backend}")
-        if config.backend == 'pytorch':
-            parts = []
-            if getattr(backend, '_use_amp', False):
-                parts.append("AMP")
-            if config.cudnn_benchmark and backend.device.type == 'cuda':
-                parts.append("cuDNN benchmark")
-            if config.compile:
-                parts.append("torch.compile")
-            if config.ddp:
-                parts.append("DDP")
-            if parts:
-                self.mprint(f"  Perf:   {', '.join(parts)}")
-
-        # ── Data ────────────────────────────────────────────────
-        self.mprint(f"\n{'─'*70}\n Data\n{'─'*70}")
-        train_loader, val_loader, test_loader = build_dataloaders(config)
-
-        # ── Model ───────────────────────────────────────────────
-        self.mprint(f"\n{'─'*70}\n Model\n{'─'*70}")
-        model = build_model(config)
-        model = backend.to_device(model)
-        model = self.setup_model_extras(model)
-
-        if config.compile and config.backend == 'pytorch':
-            import torch
-            cache_dir = getattr(config, 'compile_cache_dir', None)
-            if cache_dir:
-                os.environ['TORCHINDUCTOR_CACHE_DIR'] = cache_dir
-                self.mprint(f"  torch.compile cache: {cache_dir}")
-            model = torch.compile(model, mode=config.compile_mode)
-            self.mprint(f"  torch.compile: enabled ({config.compile_mode})")
-
-        if config.ddp:
-            model = backend.wrap_ddp(model, config)
-            self.mprint(f"  DDP:    wrapped with DistributedDataParallel")
-
-        self.mprint(model)
-        self.mprint(f"  Parameters: {backend.param_count(backend._unwrap(model) if config.ddp else model):,}")
-
-        # ── Optimizer / Scheduler ───────────────────────────────
-        optimizer = build_optimizer(model, config)
-        scheduler = build_scheduler(optimizer, config)
-        warmup = build_warmup_scheduler(optimizer, config)
-        criterion = self.setup_criterion()
-
-        # ── Logger ──────────────────────────────────────────────
-        self.mprint(f"\n{'─'*70}\n Logger\n{'─'*70}")
-        logger = Logger(config) if self.is_main else None
-        if logger and config.backend == 'pytorch':
-            logger.watch_model(model)
-
-        # ── Metrics ─────────────────────────────────────────────
-        metric_fns = self.setup_metrics()
-
-        # ── Step-based Training ─────────────────────────────────
-        self.mprint(f"\n{'─'*70}\n Training (step-based: {max_steps} steps)\n{'─'*70}")
-        if logger:
-            logger.begin_training()
-
-        primary_metric = list(metric_fns.keys())[0] if metric_fns else 'loss'
-        best_metric = self.initial_best_metric(primary_metric)
-        best_step = 0
-
-        grad_accum = config.gradient_accumulation_steps
-        seq_len = config.max_seq_len
-
-        global_step = 0
-        epoch = 0
-
-        while global_step < max_steps:
-            epoch += 1
-            if config.ddp:
-                _set_epoch_samplers(train_loader, epoch)
-
-            model.train()
-            total_loss = 0.0
-            total_samples = 0
-            total_tokens = 0
-            interval_start = time.time()
-            interval_tokens = 0
-            optimizer.zero_grad(set_to_none=True)
-
-            for batch_idx, batch in enumerate(train_loader):
-                is_accumulating = ((batch_idx + 1) % grad_accum != 0)
-
-                logits, batch_loss, n, targets_d = self.train_step(
-                    model, batch, criterion, optimizer, is_accumulating=is_accumulating
-                )
-
-                total_loss = total_loss + batch_loss * n
-                total_samples += n
-                batch_tokens = n * seq_len
-                total_tokens += batch_tokens
-                interval_tokens += batch_tokens
-
-                # Optimizer step at accumulation boundary
-                if not is_accumulating:
-                    self._optimizer_step(model, optimizer)
-                    global_step += 1
-
-                    # LR step (per training step)
-                    current_lr = backend.get_lr(optimizer)
-                    if warmup and global_step <= warmup_steps:
-                        warmup.step()
-                    elif scheduler is not None:
-                        scheduler.step()
-
-                    # Per-step logging
-                    if config.log_interval and global_step % config.log_interval == 0:
-                        avg_loss = float(total_loss) / total_samples
-                        ppl = math.exp(min(avg_loss, 100))
-                        now = time.time()
-                        interval_elapsed = now - interval_start
-                        tps = interval_tokens / interval_elapsed if interval_elapsed > 0 else 0.0
-                        world = backend.world_size if hasattr(backend, 'world_size') else 1
-                        tps_total = tps * world
-                        interval_start = now
-                        interval_tokens = 0
-                        parts_log = [f"Step {global_step:7d}/{max_steps}", f"Epoch {epoch}", f"Loss: {avg_loss:.4f}"]
-                        parts_log.append(f"perplexity: {self.format_metric('perplexity', ppl)}")
-                        if world > 1:
-                            parts_log.append(f"{tps_total:.0f} tok/s ({tps:.0f}/rank × {world})")
-                        else:
-                            parts_log.append(f"{tps_total:.0f} tok/s")
-                        parts_log.append(f"lr: {current_lr:.2e}")
-                        if backend.is_main:
-                            print(f"    {' | '.join(parts_log)}")
-                        if logger:
-                            logger.log_scalar('train/batch_loss', avg_loss, step=global_step)
-                            logger.log_scalar('train/perplexity', ppl, step=global_step)
-                            logger.log_scalar('train/throughput', tps_total, step=global_step)
-                            logger.log_scalar('train/lr', current_lr, step=global_step)
-                            logger.log_scalar('epoch', epoch, step=global_step)
-
-                    # Periodic save/validate/generate
-                    if save_every and global_step % save_every == 0:
-                        self.mprint(f"\n  ── Step {global_step} checkpoint ──")
-
-                        # Validate
-                        val_results = self._evaluate(model, val_loader, criterion, metric_fns)
-                        self.mprint(f"  Val loss: {val_results['loss']:.4f}")
-                        for k, v in val_results.items():
-                            if k != 'loss':
-                                self.mprint(f"  Val {k}: {self.format_metric(k, v)}")
-                        if logger:
-                            for k, v in val_results.items():
-                                logger.log_scalar(f'val/{k}', v, step=global_step)
-
-                        # Best model tracking
-                        current = val_results.get(primary_metric, val_results.get('loss', 0))
-                        is_best = self.primary_metric_improves(current, best_metric, primary_metric)
-                        if is_best:
-                            best_metric = current
-                            best_step = global_step
-                            self.mprint(f"  ★ New best {primary_metric}!")
-                            ext = '.pt' if config.backend == 'pytorch' else '.npy'
-                            best_path = config.run_dir / f'best{ext}'
-                            best_path.parent.mkdir(parents=True, exist_ok=True)
-                            backend.save_checkpoint(model, optimizer, epoch, config, best_path)
-
-                        # Periodic checkpoint
-                        ext = '.pt' if config.backend == 'pytorch' else '.npy'
-                        ckpt_path = config.run_dir / f'checkpoint_step{global_step}{ext}'
-                        backend.save_checkpoint(model, optimizer, epoch, config, ckpt_path)
-
-                        # Generate samples
-                        self._generate_samples_at_step(model, logger, global_step)
-
-                        model.train()
-
-                        # DDP barrier
-                        if config.ddp:
-                            import torch.distributed as dist
-                            dist.barrier()
-
-                    if global_step >= max_steps:
-                        break
-
-        # ── Final validation at end if not on a save_every boundary ──
-        if not save_every or global_step % save_every != 0:
-            val_results = self._evaluate(model, val_loader, criterion, metric_fns)
-            self.mprint(f"\n  Final val loss: {val_results['loss']:.4f}")
-            for k, v in val_results.items():
-                if k != 'loss':
-                    self.mprint(f"  Final val {k}: {self.format_metric(k, v)}")
-            if logger:
-                for k, v in val_results.items():
-                    logger.log_scalar(f'val/{k}', v, step=global_step)
-            current = val_results.get(primary_metric, val_results.get('loss', 0))
-            is_best = self.primary_metric_improves(current, best_metric, primary_metric)
-            if is_best:
-                best_metric = current
-                best_step = global_step
-                ext = '.pt' if config.backend == 'pytorch' else '.npy'
-                best_path = config.run_dir / f'best{ext}'
-                best_path.parent.mkdir(parents=True, exist_ok=True)
-                backend.save_checkpoint(model, optimizer, epoch, config, best_path)
-
-        # ── Test ────────────────────────────────────────────────
-        self.mprint(f"\n{'─'*70}\n Test Evaluation\n{'─'*70}")
-        ext = '.pt' if config.backend == 'pytorch' else '.npy'
-        best_path = config.run_dir / f'best{ext}'
-        if best_path.exists():
-            backend.load_best(model, best_path)
-            self.mprint(f"  Loaded best model (step {best_step})")
-
-        test_results = self._evaluate(model, test_loader, criterion, metric_fns,
-                                       collect_predictions=True)
-
-        if logger:
-            final_step = global_step + 1
-            logger.log_scalars('test', {k: v for k, v in test_results.items()
-                                        if k not in ('logits', 'labels')}, step=final_step)
-            logger.flush()
-
-        # Summary
-        self.mprint(f"\n{'='*70}")
-        self.mprint(f" Done!  [{config.backend}] {global_step} steps, {epoch} epochs")
-        self.mprint(f"{'='*70}")
-        for k, v in test_results.items():
-            if k in ('logits', 'labels'):
-                continue
-            self.mprint(f"  Test {k}: {self.format_metric(k, v)}")
-        self.mprint(f"  Best step: {best_step}")
-
-        if logger:
-            logger.finish()
-
-        if config.ddp:
-            _cleanup_ddp()
-
-        return {
-            'model': model,
-            'history': {},
-            'test_results': test_results,
-            'config': config,
-        }
 
     def _generate_samples_at_step(self, model, logger, step):
         """Generate text samples at a given training step."""
@@ -1512,9 +1484,7 @@ class Seq2SeqRunner(BaseRunner):
 
         loss = criterion(logits_flat, targets_flat, reduction='mean')
 
-        optimizer.zero_grad()
         loss.backward()
-        optimizer.step()
 
         batch_loss = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
         return logits, batch_loss, B, tgt_target
@@ -1570,21 +1540,77 @@ class Seq2SeqRunner(BaseRunner):
         return logits, batch_loss, B, tgt_target
 
     def on_epoch_end(self, epoch, train_results, val_results, model, logger):
-        """Compute BLEU on validation subset if sacrebleu is available."""
+        """Compute BLEU on validation subset using model.generate() + sacrebleu."""
         if self.config.backend != 'pytorch':
+            return
+        if self.config.generate_every <= 0 or epoch % self.config.generate_every != 0:
             return
         try:
             import sacrebleu
         except ImportError:
+            self.mprint("  sacrebleu not installed — skipping BLEU")
             return
 
-        # Only compute BLEU periodically
-        if self.config.generate_every > 0 and epoch % self.config.generate_every == 0:
-            self.mprint(f"\n  Computing BLEU (epoch {epoch})...")
-            # BLEU computation would go here using model.generate() + tokenizer decode
-            # This is a placeholder — full implementation needs the val loader
-            if logger:
-                logger.log_scalar('val/bleu', 0.0, step=epoch)
+        import torch
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(self.config.tokenizer)
+        val_loader = getattr(self, 'val_loader', None)
+        if val_loader is None:
+            return
+
+        # Unwrap DDP/compiled model to get .generate()
+        raw_model = model
+        if hasattr(raw_model, '_orig_mod'):       # torch.compile wrapper
+            raw_model = raw_model._orig_mod
+        if hasattr(raw_model, 'module'):           # DDP wrapper
+            raw_model = raw_model.module
+
+        device = next(raw_model.parameters()).device
+        start_id = tokenizer.cls_token_id or 101
+        end_id = tokenizer.sep_token_id or 102
+        max_gen = self.config.generate_max_tokens
+
+        self.mprint(f"\n  Computing BLEU (epoch {epoch})...")
+        hypotheses, references = [], []
+        n_pairs = 0
+        max_pairs = 500
+
+        raw_model.eval()
+        with torch.no_grad():
+            for batch in val_loader:
+                src, tgt = batch
+                src = src.to(device)
+                generated = raw_model.generate(
+                    src, max_length=max_gen,
+                    start_token_id=start_id, end_token_id=end_id,
+                )
+                for i in range(src.shape[0]):
+                    hyp = tokenizer.decode(generated[i], skip_special_tokens=True)
+                    ref = tokenizer.decode(tgt[i], skip_special_tokens=True)
+                    hypotheses.append(hyp)
+                    references.append(ref)
+                    n_pairs += 1
+                if n_pairs >= max_pairs:
+                    break
+
+        bleu = sacrebleu.corpus_bleu(hypotheses, [references])
+        self.mprint(f"  BLEU: {bleu.score:.2f} ({n_pairs} pairs)")
+
+        # Print a few examples
+        for i in range(min(3, len(hypotheses))):
+            self.mprint(f"    ref: {references[i][:120]}")
+            self.mprint(f"    hyp: {hypotheses[i][:120]}")
+            self.mprint("")
+
+        if logger:
+            logger.log_scalar('val/bleu', bleu.score, step=epoch)
+            # Log example translations as text
+            examples_text = "\n".join(
+                f"ref: {references[i]}\nhyp: {hypotheses[i]}\n"
+                for i in range(min(5, len(hypotheses)))
+            )
+            logger.log_text('val/translations', examples_text, step=epoch)
 
     def format_metric(self, name, value):
         if name == 'loss':

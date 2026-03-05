@@ -871,22 +871,31 @@ class _TokenizedTextDataset:
         return (self.token_ids[idx],)
 
 
-class _Seq2SeqDataset:
-    """Wraps parallel source/target token ID tensors as a PyTorch dataset."""
-    def __init__(self, src_ids, tgt_ids):
-        import torch
-        if not isinstance(src_ids, torch.Tensor):
-            src_ids = torch.tensor(src_ids, dtype=torch.long)
-        if not isinstance(tgt_ids, torch.Tensor):
-            tgt_ids = torch.tensor(tgt_ids, dtype=torch.long)
-        self.src_ids = src_ids
-        self.tgt_ids = tgt_ids
-
+class _Seq2SeqArrowWrapper:
+    """Wraps Arrow dataset with src_input_ids/tgt_input_ids columns."""
+    def __init__(self, hf_dataset):
+        self.ds = hf_dataset
     def __len__(self):
-        return len(self.src_ids)
-
+        return len(self.ds)
     def __getitem__(self, idx):
-        return self.src_ids[idx], self.tgt_ids[idx]
+        row = self.ds[idx]
+        return (row['src_input_ids'], row['tgt_input_ids'])
+
+
+def _seq2seq_collate_fn(batch, pad_id=0):
+    """Pad each batch to longest-in-batch (dynamic padding)."""
+    import torch
+    src_list, tgt_list = zip(*batch)
+    src_max = max(len(s) for s in src_list)
+    tgt_max = max(len(t) for t in tgt_list)
+    src_padded = torch.full((len(batch), src_max), pad_id, dtype=torch.long)
+    tgt_padded = torch.full((len(batch), tgt_max), pad_id, dtype=torch.long)
+    for i, (s, t) in enumerate(zip(src_list, tgt_list)):
+        s_t = s if isinstance(s, torch.Tensor) else torch.tensor(s, dtype=torch.long)
+        t_t = t if isinstance(t, torch.Tensor) else torch.tensor(t, dtype=torch.long)
+        src_padded[i, :len(s_t)] = s_t
+        tgt_padded[i, :len(t_t)] = t_t
+    return src_padded, tgt_padded
 
 
 def _tokenize_and_chunk(texts, tokenizer, max_seq_len, subset=None):
@@ -1070,112 +1079,131 @@ def _pt_openwebtext(config):
     )
 
 
-def _tokenize_parallel(src_texts, tgt_texts, tokenizer, max_seq_len, subset=None):
-    """Tokenize parallel source/target texts with padding."""
-    import torch
-
-    src_ids_list = []
-    tgt_ids_list = []
-
-    for src, tgt in zip(src_texts, tgt_texts):
-        if not src.strip() or not tgt.strip():
-            continue
-        s = tokenizer.encode(src, max_length=max_seq_len, truncation=True,
-                             padding='max_length', return_tensors='pt').squeeze(0)
-        t = tokenizer.encode(tgt, max_length=max_seq_len, truncation=True,
-                             padding='max_length', return_tensors='pt').squeeze(0)
-        src_ids_list.append(s)
-        tgt_ids_list.append(t)
-
-    src_ids = torch.stack(src_ids_list)
-    tgt_ids = torch.stack(tgt_ids_list)
-
-    if subset and subset < len(src_ids):
-        src_ids = src_ids[:subset]
-        tgt_ids = tgt_ids[:subset]
-
-    return src_ids, tgt_ids
-
 
 @register_dataset('multi30k', 'pytorch')
 def _pt_multi30k(config):
-    import torch
+    import functools
     from torch.utils.data import DataLoader
     from datasets import load_dataset
     from transformers import AutoTokenizer
+    import os
+
+    os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 
     tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    pad_token_id = tokenizer.pad_token_id
 
     max_seq_len = config.max_seq_len
     ds = load_dataset('bentrevett/multi30k')
 
-    def process_split(split):
-        src_texts = [ex['en'] for ex in split]
-        tgt_texts = [ex['de'] for ex in split]
-        return _tokenize_parallel(src_texts, tgt_texts, tokenizer, max_seq_len)
+    def tokenize_fn(examples):
+        src = tokenizer(examples['en'], truncation=True, max_length=max_seq_len)
+        tgt = tokenizer(examples['de'], truncation=True, max_length=max_seq_len)
+        return {'src_input_ids': src['input_ids'], 'tgt_input_ids': tgt['input_ids']}
 
-    train_src, train_tgt = process_split(ds['train'])
-    val_src, val_tgt = process_split(ds['validation'])
-    test_src, test_tgt = process_split(ds['test'])
+    for split_name in ds:
+        ds[split_name] = ds[split_name].map(
+            tokenize_fn, batched=True, num_proc=os.cpu_count(),
+            remove_columns=ds[split_name].column_names,
+            desc=f"Tokenizing {split_name}",
+        )
 
-    if config.subset:
-        train_src, train_tgt = train_src[:config.subset], train_tgt[:config.subset]
+    if config.subset and config.subset < len(ds['train']):
+        ds['train'] = ds['train'].select(range(config.subset))
 
-    print(f"  Multi30k: {len(train_src)} train, {len(val_src)} val, {len(test_src)} test pairs")
+    train_ds = _Seq2SeqArrowWrapper(ds['train'])
+    val_ds = _Seq2SeqArrowWrapper(ds['validation'])
+    test_ds = _Seq2SeqArrowWrapper(ds['test'])
 
+    print(f"  Multi30k: {len(train_ds)} train, {len(val_ds)} val, {len(test_ds)} test pairs")
+
+    collate = functools.partial(_seq2seq_collate_fn, pad_id=pad_token_id)
     kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
               persistent_workers=config.num_workers > 0,
-              prefetch_factor=4 if config.num_workers > 0 else None)
+              prefetch_factor=4 if config.num_workers > 0 else None,
+              collate_fn=collate)
 
-    train_ds = _Seq2SeqDataset(train_src, train_tgt)
     train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
     return (
         DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
-        DataLoader(_Seq2SeqDataset(val_src, val_tgt), config.batch_size, shuffle=False, **kw),
-        DataLoader(_Seq2SeqDataset(test_src, test_tgt), config.batch_size, shuffle=False, **kw),
+        DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
+        DataLoader(test_ds, config.batch_size, shuffle=False, **kw),
     )
 
 
 @register_dataset('wmt14', 'pytorch')  # noqa: E302
 def _pt_wmt14(config):
-    import torch
+    import functools
     from torch.utils.data import DataLoader
     from datasets import load_dataset
     from transformers import AutoTokenizer
+    import os
+
+    os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 
     tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    pad_token_id = tokenizer.pad_token_id
 
     max_seq_len = config.max_seq_len
-    ds = load_dataset('wmt14', 'de-en')
+    hf_cache = '/tmp/hf_datasets'
+    rank = int(os.environ.get('RANK', 0))
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
 
-    def process_split(split, subset=None):
-        src_texts = [ex['translation']['en'] for ex in split]
-        tgt_texts = [ex['translation']['de'] for ex in split]
-        if subset:
-            src_texts = src_texts[:subset]
-            tgt_texts = tgt_texts[:subset]
-        return _tokenize_parallel(src_texts, tgt_texts, tokenizer, max_seq_len)
+    def tokenize_fn(examples):
+        src_texts = [t['en'] for t in examples['translation']]
+        tgt_texts = [t['de'] for t in examples['translation']]
+        src = tokenizer(src_texts, truncation=True, max_length=max_seq_len)
+        tgt = tokenizer(tgt_texts, truncation=True, max_length=max_seq_len)
+        return {'src_input_ids': src['input_ids'], 'tgt_input_ids': tgt['input_ids']}
 
-    train_src, train_tgt = process_split(ds['train'], config.subset)
-    val_src, val_tgt = process_split(ds['validation'])
-    test_src, test_tgt = process_split(ds['test'])
+    def _load_and_process():
+        ds = load_dataset('wmt14', 'de-en', cache_dir=hf_cache)
+        for split_name in ds:
+            ds[split_name] = ds[split_name].map(
+                tokenize_fn, batched=True, batch_size=5000,
+                num_proc=os.cpu_count(),
+                remove_columns=ds[split_name].column_names,
+                desc=f"Tokenizing {split_name}",
+            )
+        return ds
 
-    print(f"  WMT14: {len(train_src)} train, {len(val_src)} val, {len(test_src)} test pairs")
+    # Rank 0 processes first; others wait then load from HF cache
+    if rank == 0:
+        print("  Downloading and tokenizing WMT14...")
+        ds = _load_and_process()
 
+    if world_size > 1:
+        import torch.distributed as dist
+        if dist.is_initialized():
+            dist.barrier()
+
+    if rank != 0:
+        ds = _load_and_process()
+
+    if config.subset and config.subset < len(ds['train']):
+        ds['train'] = ds['train'].select(range(config.subset))
+
+    train_ds = _Seq2SeqArrowWrapper(ds['train'])
+    val_ds = _Seq2SeqArrowWrapper(ds['validation'])
+    test_ds = _Seq2SeqArrowWrapper(ds['test'])
+
+    print(f"  WMT14: {len(train_ds)} train, {len(val_ds)} val, {len(test_ds)} test pairs")
+
+    collate = functools.partial(_seq2seq_collate_fn, pad_id=pad_token_id)
     kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
               persistent_workers=config.num_workers > 0,
-              prefetch_factor=4 if config.num_workers > 0 else None)
+              prefetch_factor=4 if config.num_workers > 0 else None,
+              collate_fn=collate)
 
-    train_ds = _Seq2SeqDataset(train_src, train_tgt)
     train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
     return (
         DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
-        DataLoader(_Seq2SeqDataset(val_src, val_tgt), config.batch_size, shuffle=False, **kw),
-        DataLoader(_Seq2SeqDataset(test_src, test_tgt), config.batch_size, shuffle=False, **kw),
+        DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
+        DataLoader(test_ds, config.batch_size, shuffle=False, **kw),
     )
 
 

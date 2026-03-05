@@ -1,20 +1,40 @@
 name: translation-wmt14
+wandb_project: translation-wmt14
+backend: pytorch
 task: seq2seq
 dataset: wmt14
 model: t5_base
 tokenizer: bert-base-multilingual-cased
 max_seq_len: 256
+model_args:
+  src_vocab_size: 119547
+  tgt_vocab_size: 119547
+  pad_token_id: 0
 epochs: 20
 batch_size: 32
+gradient_accumulation_steps: 2
 lr: 1e-4
 optimizer: adamw
+optimizer_args:
+  betas: [0.9, 0.98]
+weight_decay: 0.01
 scheduler: cosine
 warmup_epochs: 3
 grad_clip: 1.0
 label_smoothing: 0.1
-amp: true
+metrics: [bleu]
+generate_every: 2
+generate_max_tokens: 256
+logger: wandb
+log_interval: 200
 ddp: true
 ddp_backend: nccl
-metrics: [bleu]
-logger: tensorboard
-log_interval: 200
+ddp_find_unused: false
+ddp_gradient_as_bucket: true
+num_workers: 16
+pin_memory: true
+amp: true
+compile: true
+compile_mode: default
+compile_cache_dir: /tmp/torch_compile_cache
+cudnn_benchmark: true
