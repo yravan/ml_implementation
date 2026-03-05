@@ -202,7 +202,11 @@ def build_scheduler(optimizer, config):
     if name == 'step':
         return torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60, 80], gamma=0.1)
     elif name == 'cosine':
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs - config.warmup_epochs)
+        if config.max_steps is not None:
+            T_max = config.max_steps - config.warmup_steps
+        else:
+            T_max = config.epochs - config.warmup_epochs
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max)
     elif name in ('none', 'constant'):
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda e: 1.0)
     else:
@@ -210,7 +214,15 @@ def build_scheduler(optimizer, config):
 
 
 def build_warmup_scheduler(optimizer, config):
-    if config.backend != 'pytorch' or config.warmup_epochs <= 0:
+    if config.backend != 'pytorch':
+        return None
+    if config.max_steps is not None:
+        if config.warmup_steps <= 0:
+            return None
+        import torch
+        return torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0,
+                                                  total_iters=config.warmup_steps)
+    if config.warmup_epochs <= 0:
         return None
     import torch
     return torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0,
@@ -965,52 +977,96 @@ def _pt_wikitext103(config):
     )
 
 
+class _ArrowWrapper:
+    """Thin wrapper around a HuggingFace Dataset to return (input_ids,) tuples."""
+    def __init__(self, hf_dataset):
+        self.ds = hf_dataset
+    def __len__(self):
+        return len(self.ds)
+    def __getitem__(self, idx):
+        return (self.ds[idx]['input_ids'],)
+
+
 @register_dataset('openwebtext', 'pytorch')
 def _pt_openwebtext(config):
-    import torch
     from torch.utils.data import DataLoader
     from datasets import load_dataset
     from transformers import AutoTokenizer
-    import numpy as np
+    import os
 
-    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer, model_max_length=100000)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    ds = load_dataset('openwebtext', split='train', streaming=True)
+    max_seq_len = config.max_seq_len
+    hf_cache = '/tmp/hf_datasets'
+    rank = int(os.environ.get('RANK', 0))
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 
-    max_texts = config.subset or 100000
-    texts = []
-    for i, example in enumerate(ds):
-        if i >= max_texts:
-            break
-        texts.append(example['text'])
+    eos_id = tokenizer.eos_token_id
 
-    np.random.seed(config.seed)
-    idx = np.random.permutation(len(texts))
-    n_val = max(len(texts) // 20, 1)
-    n_test = n_val
+    def tokenize_fn(examples):
+        out = tokenizer(examples['text'], add_special_tokens=False)
+        for ids in out['input_ids']:
+            ids.append(eos_id)
+        return out
 
-    val_texts = [texts[i] for i in idx[:n_val]]
-    test_texts = [texts[i] for i in idx[n_val:n_val + n_test]]
-    train_texts = [texts[i] for i in idx[n_val + n_test:]]
+    def group_texts(examples):
+        from itertools import chain
+        concatenated = list(chain.from_iterable(examples['input_ids']))
+        total_length = (len(concatenated) // max_seq_len) * max_seq_len
+        result = {'input_ids': [concatenated[i:i + max_seq_len]
+                  for i in range(0, total_length, max_seq_len)]}
+        return result
 
-    train_chunks = _tokenize_and_chunk(train_texts, tokenizer, config.max_seq_len)
-    val_chunks = _tokenize_and_chunk(val_texts, tokenizer, config.max_seq_len)
-    test_chunks = _tokenize_and_chunk(test_texts, tokenizer, config.max_seq_len)
 
-    print(f"  OpenWebText: {len(train_chunks)} train, {len(val_chunks)} val, {len(test_chunks)} test sequences")
+    def _load_and_process():
+        ds = load_dataset('openwebtext', split='train', cache_dir=hf_cache)
+        tokenized = ds.map(tokenize_fn, batched=True, batch_size=5000,
+                           num_proc=os.cpu_count(), remove_columns=['text'],
+                           desc="Tokenizing")
+        chunked = tokenized.map(group_texts, batched=True, batch_size=5000,
+                                num_proc=os.cpu_count(),
+                                remove_columns=['input_ids', 'attention_mask'],
+                                desc="Chunking")
+        del ds, tokenized
+        return chunked
+
+    # Rank 0 processes first; others wait then load from HF cache
+    if rank == 0:
+        print("  Downloading and tokenizing OpenWebText...")
+        chunked = _load_and_process()
+
+    if world_size > 1:
+        import torch.distributed as dist
+        if dist.is_initialized():
+            dist.barrier()
+
+    if rank != 0:
+        chunked = _load_and_process()
+
+    chunked.set_format('torch')
+
+    # Split: 95% train, 2.5% val, 2.5% test
+    split = chunked.train_test_split(test_size=0.05, seed=config.seed)
+    val_test = split['test'].train_test_split(test_size=0.5, seed=config.seed)
+
+    train_ds = _ArrowWrapper(split['train'])
+    val_ds = _ArrowWrapper(val_test['train'])
+    test_ds = _ArrowWrapper(val_test['test'])
+
+    print(f"  OpenWebText: {len(train_ds)} train, {len(val_ds)} val, {len(test_ds)} test sequences")
 
     kw = dict(num_workers=config.num_workers, pin_memory=config.pin_memory,
               persistent_workers=config.num_workers > 0,
               prefetch_factor=4 if config.num_workers > 0 else None)
 
-    train_ds = _TokenizedTextDataset(train_chunks)
     train_sampler = _maybe_distributed_sampler(train_ds, config, shuffle=True)
     return (
         DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
-        DataLoader(_TokenizedTextDataset(val_chunks), config.batch_size, shuffle=False, **kw),
-        DataLoader(_TokenizedTextDataset(test_chunks), config.batch_size, shuffle=False, **kw),
+        DataLoader(val_ds, config.batch_size, shuffle=False, **kw),
+        DataLoader(test_ds, config.batch_size, shuffle=False, **kw),
     )
 
 

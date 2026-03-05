@@ -28,6 +28,7 @@ import os
 import math
 import numpy as np
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -502,9 +503,25 @@ class BaseRunner:
         """Post-processing after model build (e.g. channels_last). Returns model."""
         return model
 
-    def train_step(self, model, batch, criterion, optimizer):
+    def train_step(self, model, batch, criterion, optimizer, is_accumulating=False):
         """Execute one training step. Returns (logits, loss, n_samples, targets)."""
         return self.backend.train_step(model, batch, criterion, optimizer, self.config)
+
+    def _optimizer_step(self, model, optimizer):
+        """Execute optimizer step with grad clipping and AMP scaler."""
+        import torch
+        backend = self.backend
+        if backend._use_amp:
+            if self.config.grad_clip:
+                backend._scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
+            backend._scaler.step(optimizer)
+            backend._scaler.update()
+        else:
+            if self.config.grad_clip:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
+            optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
 
     def eval_step(self, model, batch, criterion):
         """Execute one eval step. Returns (logits, loss, n_samples, targets)."""
@@ -722,37 +739,50 @@ class BaseRunner:
         """Train for one epoch. Returns dict of averaged metrics."""
         config = self.config
         backend = self.backend
+        grad_accum = config.gradient_accumulation_steps
+        seq_len = config.max_seq_len
         model.train()
         total_loss = 0.0
         total_samples = 0
+        total_tokens = 0
         metric_totals = {name: 0.0 for name in metric_fns}
         epoch_start = time.time()
         interval_start = epoch_start
-        interval_samples = 0
+        interval_tokens = 0
+
+        optimizer.zero_grad(set_to_none=True)
 
         for batch_idx, batch in enumerate(loader):
+            is_accumulating = ((batch_idx + 1) % grad_accum != 0)
+
             logits, batch_loss, n, targets_d = self.train_step(
-                model, batch, criterion, optimizer
+                model, batch, criterion, optimizer, is_accumulating=is_accumulating
             )
 
             total_loss = total_loss + batch_loss * n
             total_samples += n
-            interval_samples += n
+            batch_tokens = n * seq_len
+            total_tokens += batch_tokens
+            interval_tokens += batch_tokens
 
             logits_d = logits.detach() if hasattr(logits, 'detach') else logits
             for name, fn in metric_fns.items():
                 metric_totals[name] = metric_totals[name] + fn(logits_d, targets_d)
+
+            # Optimizer step at accumulation boundary
+            if not is_accumulating:
+                self._optimizer_step(model, optimizer)
 
             global_step = (epoch - 1) * len(loader) + batch_idx
             if config.log_interval and (batch_idx + 1) % config.log_interval == 0:
                 avg_loss = float(total_loss) / total_samples
                 now = time.time()
                 interval_elapsed = now - interval_start
-                ips = interval_samples / interval_elapsed if interval_elapsed > 0 else 0.0
+                tps = interval_tokens / interval_elapsed if interval_elapsed > 0 else 0.0
                 world = backend.world_size if hasattr(backend, 'world_size') else 1
-                ips_total = ips * world
+                tps_total = tps * world
                 interval_start = now
-                interval_samples = 0
+                interval_tokens = 0
                 parts = [f"Batch {batch_idx+1:5d}/{len(loader)}", f"Loss: {avg_loss:.4f}"]
                 for name in metric_fns:
                     if name == 'perplexity':
@@ -761,17 +791,22 @@ class BaseRunner:
                     else:
                         parts.append(f"{name}: {self.format_metric(name, float(metric_totals[name])/total_samples)}")
                 if world > 1:
-                    parts.append(f"{ips_total:.0f} tok/s ({ips:.0f}/rank × {world})")
+                    parts.append(f"{tps_total:.0f} tok/s ({tps:.0f}/rank × {world})")
                 else:
-                    parts.append(f"{ips_total:.0f} tok/s")
+                    parts.append(f"{tps_total:.0f} tok/s")
                 if backend.is_main:
                     print(f"    {' | '.join(parts)}")
                 logger.log_scalar('train/batch_loss', avg_loss, step=global_step)
-                logger.log_scalar('train/throughput', ips_total, step=global_step)
+                logger.log_scalar('train/perplexity', math.exp(min(avg_loss, 100)), step=global_step)
+                logger.log_scalar('train/throughput', tps_total, step=global_step)
+
+        # Final accumulation step if epoch doesn't end on boundary
+        if len(loader) % grad_accum != 0:
+            self._optimizer_step(model, optimizer)
 
         epoch_elapsed = time.time() - epoch_start
         world = backend.world_size if hasattr(backend, 'world_size') else 1
-        throughput = (total_samples * world) / epoch_elapsed if epoch_elapsed > 0 else 0.0
+        throughput = (total_tokens * world) / epoch_elapsed if epoch_elapsed > 0 else 0.0
 
         results = {'loss': float(total_loss) / total_samples}
         for name in metric_fns:
@@ -904,40 +939,45 @@ class LanguageModelRunner(BaseRunner):
             return ce(logits, targets, label_smoothing=ls, reduction=reduction)
         return np_lm_criterion
 
-    def train_step(self, model, batch, criterion, optimizer):
-        """LM training: shift logits for next-token prediction."""
+    def train_step(self, model, batch, criterion, optimizer, is_accumulating=False):
+        """LM training: shift logits for next-token prediction.
+
+        When is_accumulating=True, runs forward+backward only (no optimizer step).
+        Loss is scaled by 1/gradient_accumulation_steps for correct averaging.
+        """
         if self.config.backend == 'numpy':
             return self._np_train_step(model, batch, criterion, optimizer)
 
         import torch
         backend = self.backend
+        grad_accum = self.config.gradient_accumulation_steps
         input_ids = batch[0].to(backend.device, non_blocking=True)
 
         # Input: all tokens except last; Target: all tokens except first
         inputs = input_ids[:, :-1]
         targets = input_ids[:, 1:]
 
-        if backend._use_amp:
-            with torch.amp.autocast('cuda'):
+        # Use no_sync context when accumulating with DDP to skip allreduce
+        ctx = model.no_sync() if (is_accumulating and hasattr(model, 'no_sync')) else nullcontext()
+
+        with ctx:
+            if backend._use_amp:
+                with torch.amp.autocast('cuda'):
+                    logits = model(inputs)
+                    loss = criterion(logits, targets)
+                    if grad_accum > 1:
+                        loss = loss / grad_accum
+                backend._scaler.scale(loss).backward()
+            else:
                 logits = model(inputs)
                 loss = criterion(logits, targets)
-            optimizer.zero_grad(set_to_none=True)
-            backend._scaler.scale(loss).backward()
-            if self.config.grad_clip:
-                backend._scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
-            backend._scaler.step(optimizer)
-            backend._scaler.update()
-        else:
-            logits = model(inputs)
-            loss = criterion(logits, targets)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            if self.config.grad_clip:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
-            optimizer.step()
+                if grad_accum > 1:
+                    loss = loss / grad_accum
+                loss.backward()
 
-        return logits, loss.detach(), inputs.shape[0], targets
+        # Return un-scaled loss for logging
+        raw_loss = loss.detach() * grad_accum if grad_accum > 1 else loss.detach()
+        return logits, raw_loss, inputs.shape[0], targets
 
     def _np_train_step(self, model, batch, criterion, optimizer):
         """Numpy backend LM training step."""
@@ -1061,6 +1101,294 @@ class LanguageModelRunner(BaseRunner):
         results['perplexity'] = ppl
         return results
 
+    def run(self) -> Dict:
+        """Override to support step-based training when max_steps is set."""
+        config = self.config
+        if config.max_steps is None:
+            return super().run()
+
+        backend = self.backend
+        max_steps = config.max_steps
+        warmup_steps = config.warmup_steps
+        save_every = config.save_every_steps
+
+        self.mprint(f"\n{'='*70}")
+        self.mprint(f" {config.name}  [{config.backend}] [{config.task}]")
+        self.mprint(f"{'='*70}")
+        self.mprint(config)
+        self.mprint(f"  Device: {backend.device}")
+        if config.ddp:
+            self.mprint(f"  DDP:    {backend.world_size} processes, backend={config.ddp_backend}")
+        if config.backend == 'pytorch':
+            parts = []
+            if getattr(backend, '_use_amp', False):
+                parts.append("AMP")
+            if config.cudnn_benchmark and backend.device.type == 'cuda':
+                parts.append("cuDNN benchmark")
+            if config.compile:
+                parts.append("torch.compile")
+            if config.ddp:
+                parts.append("DDP")
+            if parts:
+                self.mprint(f"  Perf:   {', '.join(parts)}")
+
+        # ── Data ────────────────────────────────────────────────
+        self.mprint(f"\n{'─'*70}\n Data\n{'─'*70}")
+        train_loader, val_loader, test_loader = build_dataloaders(config)
+
+        # ── Model ───────────────────────────────────────────────
+        self.mprint(f"\n{'─'*70}\n Model\n{'─'*70}")
+        model = build_model(config)
+        model = backend.to_device(model)
+        model = self.setup_model_extras(model)
+
+        if config.compile and config.backend == 'pytorch':
+            import torch
+            cache_dir = getattr(config, 'compile_cache_dir', None)
+            if cache_dir:
+                os.environ['TORCHINDUCTOR_CACHE_DIR'] = cache_dir
+                self.mprint(f"  torch.compile cache: {cache_dir}")
+            model = torch.compile(model, mode=config.compile_mode)
+            self.mprint(f"  torch.compile: enabled ({config.compile_mode})")
+
+        if config.ddp:
+            model = backend.wrap_ddp(model, config)
+            self.mprint(f"  DDP:    wrapped with DistributedDataParallel")
+
+        self.mprint(model)
+        self.mprint(f"  Parameters: {backend.param_count(backend._unwrap(model) if config.ddp else model):,}")
+
+        # ── Optimizer / Scheduler ───────────────────────────────
+        optimizer = build_optimizer(model, config)
+        scheduler = build_scheduler(optimizer, config)
+        warmup = build_warmup_scheduler(optimizer, config)
+        criterion = self.setup_criterion()
+
+        # ── Logger ──────────────────────────────────────────────
+        self.mprint(f"\n{'─'*70}\n Logger\n{'─'*70}")
+        logger = Logger(config) if self.is_main else None
+        if logger and config.backend == 'pytorch':
+            logger.watch_model(model)
+
+        # ── Metrics ─────────────────────────────────────────────
+        metric_fns = self.setup_metrics()
+
+        # ── Step-based Training ─────────────────────────────────
+        self.mprint(f"\n{'─'*70}\n Training (step-based: {max_steps} steps)\n{'─'*70}")
+        if logger:
+            logger.begin_training()
+
+        primary_metric = list(metric_fns.keys())[0] if metric_fns else 'loss'
+        best_metric = self.initial_best_metric(primary_metric)
+        best_step = 0
+
+        grad_accum = config.gradient_accumulation_steps
+        seq_len = config.max_seq_len
+
+        global_step = 0
+        epoch = 0
+
+        while global_step < max_steps:
+            epoch += 1
+            if config.ddp:
+                _set_epoch_samplers(train_loader, epoch)
+
+            model.train()
+            total_loss = 0.0
+            total_samples = 0
+            total_tokens = 0
+            interval_start = time.time()
+            interval_tokens = 0
+            optimizer.zero_grad(set_to_none=True)
+
+            for batch_idx, batch in enumerate(train_loader):
+                is_accumulating = ((batch_idx + 1) % grad_accum != 0)
+
+                logits, batch_loss, n, targets_d = self.train_step(
+                    model, batch, criterion, optimizer, is_accumulating=is_accumulating
+                )
+
+                total_loss = total_loss + batch_loss * n
+                total_samples += n
+                batch_tokens = n * seq_len
+                total_tokens += batch_tokens
+                interval_tokens += batch_tokens
+
+                # Optimizer step at accumulation boundary
+                if not is_accumulating:
+                    self._optimizer_step(model, optimizer)
+                    global_step += 1
+
+                    # LR step (per training step)
+                    current_lr = backend.get_lr(optimizer)
+                    if warmup and global_step <= warmup_steps:
+                        warmup.step()
+                    elif scheduler is not None:
+                        scheduler.step()
+
+                    # Per-step logging
+                    if config.log_interval and global_step % config.log_interval == 0:
+                        avg_loss = float(total_loss) / total_samples
+                        ppl = math.exp(min(avg_loss, 100))
+                        now = time.time()
+                        interval_elapsed = now - interval_start
+                        tps = interval_tokens / interval_elapsed if interval_elapsed > 0 else 0.0
+                        world = backend.world_size if hasattr(backend, 'world_size') else 1
+                        tps_total = tps * world
+                        interval_start = now
+                        interval_tokens = 0
+                        parts_log = [f"Step {global_step:7d}/{max_steps}", f"Epoch {epoch}", f"Loss: {avg_loss:.4f}"]
+                        parts_log.append(f"perplexity: {self.format_metric('perplexity', ppl)}")
+                        if world > 1:
+                            parts_log.append(f"{tps_total:.0f} tok/s ({tps:.0f}/rank × {world})")
+                        else:
+                            parts_log.append(f"{tps_total:.0f} tok/s")
+                        parts_log.append(f"lr: {current_lr:.2e}")
+                        if backend.is_main:
+                            print(f"    {' | '.join(parts_log)}")
+                        if logger:
+                            logger.log_scalar('train/batch_loss', avg_loss, step=global_step)
+                            logger.log_scalar('train/perplexity', ppl, step=global_step)
+                            logger.log_scalar('train/throughput', tps_total, step=global_step)
+                            logger.log_scalar('train/lr', current_lr, step=global_step)
+                            logger.log_scalar('epoch', epoch, step=global_step)
+
+                    # Periodic save/validate/generate
+                    if save_every and global_step % save_every == 0:
+                        self.mprint(f"\n  ── Step {global_step} checkpoint ──")
+
+                        # Validate
+                        val_results = self._evaluate(model, val_loader, criterion, metric_fns)
+                        self.mprint(f"  Val loss: {val_results['loss']:.4f}")
+                        for k, v in val_results.items():
+                            if k != 'loss':
+                                self.mprint(f"  Val {k}: {self.format_metric(k, v)}")
+                        if logger:
+                            for k, v in val_results.items():
+                                logger.log_scalar(f'val/{k}', v, step=global_step)
+
+                        # Best model tracking
+                        current = val_results.get(primary_metric, val_results.get('loss', 0))
+                        is_best = self.primary_metric_improves(current, best_metric, primary_metric)
+                        if is_best:
+                            best_metric = current
+                            best_step = global_step
+                            self.mprint(f"  ★ New best {primary_metric}!")
+                            ext = '.pt' if config.backend == 'pytorch' else '.npy'
+                            best_path = config.run_dir / f'best{ext}'
+                            best_path.parent.mkdir(parents=True, exist_ok=True)
+                            backend.save_checkpoint(model, optimizer, epoch, config, best_path)
+
+                        # Periodic checkpoint
+                        ext = '.pt' if config.backend == 'pytorch' else '.npy'
+                        ckpt_path = config.run_dir / f'checkpoint_step{global_step}{ext}'
+                        backend.save_checkpoint(model, optimizer, epoch, config, ckpt_path)
+
+                        # Generate samples
+                        self._generate_samples_at_step(model, logger, global_step)
+
+                        model.train()
+
+                        # DDP barrier
+                        if config.ddp:
+                            import torch.distributed as dist
+                            dist.barrier()
+
+                    if global_step >= max_steps:
+                        break
+
+        # ── Final validation at end if not on a save_every boundary ──
+        if not save_every or global_step % save_every != 0:
+            val_results = self._evaluate(model, val_loader, criterion, metric_fns)
+            self.mprint(f"\n  Final val loss: {val_results['loss']:.4f}")
+            for k, v in val_results.items():
+                if k != 'loss':
+                    self.mprint(f"  Final val {k}: {self.format_metric(k, v)}")
+            if logger:
+                for k, v in val_results.items():
+                    logger.log_scalar(f'val/{k}', v, step=global_step)
+            current = val_results.get(primary_metric, val_results.get('loss', 0))
+            is_best = self.primary_metric_improves(current, best_metric, primary_metric)
+            if is_best:
+                best_metric = current
+                best_step = global_step
+                ext = '.pt' if config.backend == 'pytorch' else '.npy'
+                best_path = config.run_dir / f'best{ext}'
+                best_path.parent.mkdir(parents=True, exist_ok=True)
+                backend.save_checkpoint(model, optimizer, epoch, config, best_path)
+
+        # ── Test ────────────────────────────────────────────────
+        self.mprint(f"\n{'─'*70}\n Test Evaluation\n{'─'*70}")
+        ext = '.pt' if config.backend == 'pytorch' else '.npy'
+        best_path = config.run_dir / f'best{ext}'
+        if best_path.exists():
+            backend.load_best(model, best_path)
+            self.mprint(f"  Loaded best model (step {best_step})")
+
+        test_results = self._evaluate(model, test_loader, criterion, metric_fns,
+                                       collect_predictions=True)
+
+        if logger:
+            final_step = global_step + 1
+            logger.log_scalars('test', {k: v for k, v in test_results.items()
+                                        if k not in ('logits', 'labels')}, step=final_step)
+            logger.flush()
+
+        # Summary
+        self.mprint(f"\n{'='*70}")
+        self.mprint(f" Done!  [{config.backend}] {global_step} steps, {epoch} epochs")
+        self.mprint(f"{'='*70}")
+        for k, v in test_results.items():
+            if k in ('logits', 'labels'):
+                continue
+            self.mprint(f"  Test {k}: {self.format_metric(k, v)}")
+        self.mprint(f"  Best step: {best_step}")
+
+        if logger:
+            logger.finish()
+
+        if config.ddp:
+            _cleanup_ddp()
+
+        return {
+            'model': model,
+            'history': {},
+            'test_results': test_results,
+            'config': config,
+        }
+
+    def _generate_samples_at_step(self, model, logger, step):
+        """Generate text samples at a given training step."""
+        config = self.config
+        if self.tokenizer is None or config.backend != 'pytorch':
+            return
+
+        import torch
+        self.mprint(f"\n  ── Generated Samples (Step {step}) ──")
+        raw_model = self.backend._unwrap(model)
+
+        for prompt_text in config.generate_prompts[:config.num_generate_samples]:
+            input_ids = self.tokenizer.encode(prompt_text, return_tensors='pt')
+            input_ids = input_ids.to(self.backend.device)
+
+            if hasattr(raw_model, 'generate'):
+                output_ids = raw_model.generate(
+                    input_ids,
+                    max_new_tokens=config.generate_max_tokens,
+                    temperature=config.generate_temperature,
+                    top_k=config.generate_top_k,
+                    top_p=config.generate_top_p,
+                )
+            else:
+                output_ids = input_ids
+
+            text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
+            self.mprint(f"  Prompt: {prompt_text!r}")
+            self.mprint(f"  Output: {text!r}\n")
+
+            if logger:
+                logger.log_text(f'generation/step_{step}', text, step=step)
+
     def _train_one_epoch(self, model, loader, criterion, optimizer, logger, metric_fns, epoch):
         """Override to compute perplexity from loss."""
         results = super()._train_one_epoch(model, loader, criterion, optimizer, logger, metric_fns, epoch)
@@ -1120,40 +1448,45 @@ class Seq2SeqRunner(BaseRunner):
             return ce(logits, targets, ignore_index=pad_id, label_smoothing=ls, reduction=reduction)
         return np_seq2seq_criterion
 
-    def train_step(self, model, batch, criterion, optimizer):
-        """Seq2seq training with teacher forcing."""
+    def train_step(self, model, batch, criterion, optimizer, is_accumulating=False):
+        """Seq2seq training with teacher forcing.
+
+        When is_accumulating=True, runs forward+backward only (no optimizer step).
+        Loss is scaled by 1/gradient_accumulation_steps for correct averaging.
+        """
         if self.config.backend == 'numpy':
             return self._np_train_step(model, batch, criterion, optimizer)
 
         import torch
         backend = self.backend
+        grad_accum = self.config.gradient_accumulation_steps
         src_ids = batch[0].to(backend.device, non_blocking=True)
         tgt_ids = batch[1].to(backend.device, non_blocking=True)
 
         tgt_input = tgt_ids[:, :-1]
         tgt_target = tgt_ids[:, 1:]
 
-        if backend._use_amp:
-            with torch.amp.autocast('cuda'):
+        # Use no_sync context when accumulating with DDP to skip allreduce
+        ctx = model.no_sync() if (is_accumulating and hasattr(model, 'no_sync')) else nullcontext()
+
+        with ctx:
+            if backend._use_amp:
+                with torch.amp.autocast('cuda'):
+                    logits = model(src_ids, tgt_input)
+                    loss = criterion(logits, tgt_target)
+                    if grad_accum > 1:
+                        loss = loss / grad_accum
+                backend._scaler.scale(loss).backward()
+            else:
                 logits = model(src_ids, tgt_input)
                 loss = criterion(logits, tgt_target)
-            optimizer.zero_grad(set_to_none=True)
-            backend._scaler.scale(loss).backward()
-            if self.config.grad_clip:
-                backend._scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
-            backend._scaler.step(optimizer)
-            backend._scaler.update()
-        else:
-            logits = model(src_ids, tgt_input)
-            loss = criterion(logits, tgt_target)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            if self.config.grad_clip:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
-            optimizer.step()
+                if grad_accum > 1:
+                    loss = loss / grad_accum
+                loss.backward()
 
-        return logits, loss.detach(), src_ids.shape[0], tgt_target
+        # Return un-scaled loss for logging
+        raw_loss = loss.detach() * grad_accum if grad_accum > 1 else loss.detach()
+        return logits, raw_loss, src_ids.shape[0], tgt_target
 
     def _np_train_step(self, model, batch, criterion, optimizer):
         """Numpy backend seq2seq training step."""

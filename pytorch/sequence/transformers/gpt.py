@@ -5,7 +5,7 @@ Port of python/sequence/transformers/gpt.py to torch.nn.
 
 Key differences from custom numpy version:
   - nn.Embedding instead of Parameter + manual lookup
-  - nn.MultiheadAttention with is_causal=True
+  - F.scaled_dot_product_attention with is_causal=True (Flash Attention)
   - torch.multinomial + torch.topk for generation
   - Weight tying via shared nn.Embedding.weight
 """
@@ -27,10 +27,11 @@ class GPTBlock(nn.Module):
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
         self.ln1 = nn.LayerNorm(d_model)
-        self.attn = nn.MultiheadAttention(
-            d_model, num_heads, dropout=dropout, batch_first=True,
-        )
+        self.qkv_proj = nn.Linear(d_model, 3 * d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
         self.ln2 = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
             nn.Linear(d_model, d_ff),
@@ -38,19 +39,25 @@ class GPTBlock(nn.Module):
             nn.Linear(d_ff, d_model),
             nn.Dropout(dropout),
         )
-        self.attn_dropout = nn.Dropout(dropout)
+        self.attn_dropout = dropout
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Causal self-attention
-        T = x.size(1)
-        causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(T, device=x.device)
+        B, T, C = x.shape
         residual = x
         x = self.ln1(x)
-        x, _ = self.attn(x, x, x, attn_mask=causal_mask, is_causal=True)
-        x = self.attn_dropout(x)
+        qkv = self.qkv_proj(x).reshape(B, T, 3, self.num_heads, self.head_dim)
+        q, k, v = qkv.unbind(dim=2)  # each: [B, T, num_heads, head_dim]
+        q = q.transpose(1, 2)  # [B, num_heads, T, head_dim]
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        x = F.scaled_dot_product_attention(
+            q, k, v, is_causal=True,
+            dropout_p=self.attn_dropout if self.training else 0.0,
+        )
+        x = x.transpose(1, 2).reshape(B, T, C)
+        x = self.out_proj(x)
         x = x + residual
 
-        # Feed-forward
         residual = x
         x = self.ln2(x)
         x = self.ffn(x)
@@ -135,6 +142,7 @@ class GPT(nn.Module):
                 nn.init.zeros_(module.bias)
         # Scale residual projections by 1/sqrt(2*num_layers) per GPT-2 paper
         for block in self.blocks:
+            nn.init.normal_(block.out_proj.weight, std=0.02 / math.sqrt(2 * self.num_layers))
             nn.init.normal_(block.ffn[-2].weight, std=0.02 / math.sqrt(2 * self.num_layers))
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
