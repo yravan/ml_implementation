@@ -418,5 +418,79 @@ class TestDatasetRegistration:
         assert 'wmt14' in datasets
 
 
+# =============================================================================
+# Numpy Backend Registration Tests
+# =============================================================================
+
+class TestNumpyModelRegistration:
+    """Test that sequence models are registered for numpy backend."""
+
+    def test_gpt2_numpy_registered(self):
+        from experiment.registry import list_models
+        models = list_models('numpy')
+        assert 'gpt2' in models
+
+    def test_gpt2_medium_numpy_registered(self):
+        from experiment.registry import list_models
+        models = list_models('numpy')
+        assert 'gpt2-medium' in models
+
+    def test_transformer_base_numpy_registered(self):
+        from experiment.registry import list_models
+        models = list_models('numpy')
+        assert 'transformer_base' in models
+
+    def test_t5_base_numpy_registered(self):
+        from experiment.registry import list_models
+        models = list_models('numpy')
+        assert 't5_base' in models
+
+    def test_build_gpt2_numpy(self):
+        from experiment.registry import build_model
+        config = Config(model='gpt2', backend='numpy', max_seq_len=32,
+                        model_args={'d_model': 32, 'num_heads': 2, 'num_layers': 1,
+                                    'd_ff': 64, 'vocab_size': 50})
+        model = build_model(config)
+        assert model is not None
+
+    def test_build_transformer_base_numpy(self):
+        from experiment.registry import build_model
+        config = Config(model='transformer_base', backend='numpy', max_seq_len=32,
+                        model_args={'d_model': 32, 'num_heads': 2,
+                                    'num_encoder_layers': 1, 'num_decoder_layers': 1,
+                                    'd_ff': 64, 'src_vocab_size': 50, 'tgt_vocab_size': 50})
+        model = build_model(config)
+        assert model is not None
+
+
+class TestNumpyDatasetRegistration:
+    """Test that sequence datasets are registered for numpy backend."""
+
+    def test_wikitext2_numpy_registered(self):
+        from experiment.registry import list_datasets
+        datasets = list_datasets('numpy')
+        assert 'wikitext2' in datasets
+
+    def test_wikitext103_numpy_registered(self):
+        from experiment.registry import list_datasets
+        datasets = list_datasets('numpy')
+        assert 'wikitext103' in datasets
+
+    def test_openwebtext_numpy_registered(self):
+        from experiment.registry import list_datasets
+        datasets = list_datasets('numpy')
+        assert 'openwebtext' in datasets
+
+    def test_multi30k_numpy_registered(self):
+        from experiment.registry import list_datasets
+        datasets = list_datasets('numpy')
+        assert 'multi30k' in datasets
+
+    def test_wmt14_numpy_registered(self):
+        from experiment.registry import list_datasets
+        datasets = list_datasets('numpy')
+        assert 'wmt14' in datasets
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

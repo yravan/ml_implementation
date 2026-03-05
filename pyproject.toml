@@ -5,10 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "cupy-cuda13x",
+    "cupy-cuda13x; sys_platform == 'linux'",
+    "datasets>=3.0.0",
     "kaggle>=2.0.0",
     "pyyaml>=6.0.3",
+    "sacrebleu>=2.4.0",
     "torch>=2.10.0",
     "torchvision>=0.25.0",
+    "transformers>=4.40.0",
     "wandb>=0.25.0",
 ]

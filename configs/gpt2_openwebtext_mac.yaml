@@ -1,0 +1,25 @@
+name: gpt2-openwebtext
+backend: numpy
+task: language_model
+dataset: openwebtext
+model: gpt2
+tokenizer: gpt2
+pretrained_weights: gpt2
+max_seq_len: 512
+epochs: 5
+batch_size: 8
+lr: 1e-4
+optimizer: adamw
+weight_decay: 0.01
+scheduler: cosine
+warmup_epochs: 1
+grad_clip: 1.0
+amp: true
+ddp: true
+ddp_backend: nccl
+metrics: [perplexity]
+generate_every: 1
+generate_max_tokens: 100
+generate_prompts: ["The future of artificial intelligence", "Scientists have discovered"]
+logger: tensorboard
+log_interval: 500

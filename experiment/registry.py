@@ -727,7 +727,7 @@ def _np_imagenet(config):
 
 
 # =============================================================================
-# Built-in Models — Sequence (PyTorch only)
+# Built-in Models — Sequence (PyTorch)
 # =============================================================================
 
 @register_model('gpt2', 'pytorch')
@@ -791,7 +791,57 @@ def _pt_t5_base(config):
 
 
 # =============================================================================
-# Built-in Datasets — Sequence (PyTorch only)
+# Built-in Models — Sequence (Numpy)
+# =============================================================================
+
+@register_model('gpt2', 'numpy')
+def _np_gpt2(config):
+    from python.sequence.transformers.gpt import GPT, GPT2_SMALL_CONFIG
+    cfg = {**GPT2_SMALL_CONFIG, **config.model_args}
+    cfg['max_seq_len'] = config.max_seq_len
+    return GPT(**cfg)
+
+
+@register_model('gpt2-medium', 'numpy')
+def _np_gpt2_medium(config):
+    from python.sequence.transformers.gpt import GPT, GPT2_MEDIUM_CONFIG
+    cfg = {**GPT2_MEDIUM_CONFIG, **config.model_args}
+    cfg['max_seq_len'] = config.max_seq_len
+    return GPT(**cfg)
+
+
+@register_model('gpt2-large', 'numpy')
+def _np_gpt2_large(config):
+    from python.sequence.transformers.gpt import GPT, GPT2_LARGE_CONFIG
+    cfg = {**GPT2_LARGE_CONFIG, **config.model_args}
+    cfg['max_seq_len'] = config.max_seq_len
+    return GPT(**cfg)
+
+
+@register_model('transformer_base', 'numpy')
+def _np_transformer_base(config):
+    from python.sequence.transformers.encoder_decoder import (
+        TransformerEncoderDecoder, TRANSFORMER_BASE_CONFIG,
+    )
+    cfg = {**TRANSFORMER_BASE_CONFIG, **config.model_args}
+    cfg['max_src_len'] = getattr(config, 'src_max_seq_len', None) or config.max_seq_len
+    cfg['max_tgt_len'] = getattr(config, 'tgt_max_seq_len', None) or config.max_seq_len
+    return TransformerEncoderDecoder(**cfg)
+
+
+@register_model('t5_base', 'numpy')
+def _np_t5_base(config):
+    from python.sequence.transformers.encoder_decoder import (
+        TransformerEncoderDecoder, T5_BASE_CONFIG,
+    )
+    cfg = {**T5_BASE_CONFIG, **config.model_args}
+    cfg['max_src_len'] = getattr(config, 'src_max_seq_len', None) or config.max_seq_len
+    cfg['max_tgt_len'] = getattr(config, 'tgt_max_seq_len', None) or config.max_seq_len
+    return TransformerEncoderDecoder(**cfg)
+
+
+# =============================================================================
+# Built-in Datasets — Sequence (PyTorch)
 # =============================================================================
 
 class _TokenizedTextDataset:
@@ -1032,7 +1082,7 @@ def _pt_multi30k(config):
     )
 
 
-@register_dataset('wmt14', 'pytorch')
+@register_dataset('wmt14', 'pytorch')  # noqa: E302
 def _pt_wmt14(config):
     import torch
     from torch.utils.data import DataLoader
@@ -1070,4 +1120,195 @@ def _pt_wmt14(config):
         DataLoader(train_ds, config.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, **kw),
         DataLoader(_Seq2SeqDataset(val_src, val_tgt), config.batch_size, shuffle=False, **kw),
         DataLoader(_Seq2SeqDataset(test_src, test_tgt), config.batch_size, shuffle=False, **kw),
+    )
+
+
+# =============================================================================
+# Built-in Datasets — Sequence (Numpy)
+# =============================================================================
+
+class _NpTokenizedTextDataset:
+    """Numpy-backend dataset for tokenized text chunks. Returns (input_ids,)."""
+    def __init__(self, token_ids):
+        import numpy as np
+        if not isinstance(token_ids, np.ndarray):
+            token_ids = np.array(token_ids, dtype=np.int64)
+        self.token_ids = token_ids
+        self.samples = list(range(len(token_ids)))
+
+    def __len__(self):
+        return len(self.token_ids)
+
+    def load_sample(self, idx):
+        return (self.token_ids[idx],)
+
+
+class _NpSeq2SeqDataset:
+    """Numpy-backend dataset for parallel src/tgt token IDs."""
+    def __init__(self, src_ids, tgt_ids):
+        import numpy as np
+        if not isinstance(src_ids, np.ndarray):
+            src_ids = np.array(src_ids, dtype=np.int64)
+        if not isinstance(tgt_ids, np.ndarray):
+            tgt_ids = np.array(tgt_ids, dtype=np.int64)
+        self.src_ids = src_ids
+        self.tgt_ids = tgt_ids
+        self.samples = list(range(len(src_ids)))
+
+    def __len__(self):
+        return len(self.src_ids)
+
+    def load_sample(self, idx):
+        return (self.src_ids[idx], self.tgt_ids[idx])
+
+
+@register_dataset('wikitext2', 'numpy')
+def _np_wikitext2(config):
+    from python.utils.data_utils import DataLoader as NpLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    ds = load_dataset('wikitext', 'wikitext-2-raw-v1')
+    max_seq_len = config.max_seq_len
+
+    train_chunks = _tokenize_and_chunk(ds['train']['text'], tokenizer, max_seq_len, config.subset)
+    val_chunks = _tokenize_and_chunk(ds['validation']['text'], tokenizer, max_seq_len)
+    test_chunks = _tokenize_and_chunk(ds['test']['text'], tokenizer, max_seq_len)
+
+    print(f"  WikiText-2 (numpy): {len(train_chunks)} train, {len(val_chunks)} val, {len(test_chunks)} test chunks")
+
+    return (
+        NpLoader(_NpTokenizedTextDataset(train_chunks), batch_size=config.batch_size, shuffle=True),
+        NpLoader(_NpTokenizedTextDataset(val_chunks), batch_size=config.batch_size, shuffle=False),
+        NpLoader(_NpTokenizedTextDataset(test_chunks), batch_size=config.batch_size, shuffle=False),
+    )
+
+
+@register_dataset('wikitext103', 'numpy')
+def _np_wikitext103(config):
+    from python.utils.data_utils import DataLoader as NpLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    ds = load_dataset('wikitext', 'wikitext-103-raw-v1')
+    max_seq_len = config.max_seq_len
+
+    train_chunks = _tokenize_and_chunk(ds['train']['text'], tokenizer, max_seq_len, config.subset)
+    val_chunks = _tokenize_and_chunk(ds['validation']['text'], tokenizer, max_seq_len)
+    test_chunks = _tokenize_and_chunk(ds['test']['text'], tokenizer, max_seq_len)
+
+    print(f"  WikiText-103 (numpy): {len(train_chunks)} train, {len(val_chunks)} val, {len(test_chunks)} test chunks")
+
+    return (
+        NpLoader(_NpTokenizedTextDataset(train_chunks), batch_size=config.batch_size, shuffle=True),
+        NpLoader(_NpTokenizedTextDataset(val_chunks), batch_size=config.batch_size, shuffle=False),
+        NpLoader(_NpTokenizedTextDataset(test_chunks), batch_size=config.batch_size, shuffle=False),
+    )
+
+
+@register_dataset('openwebtext', 'numpy')
+def _np_openwebtext(config):
+    from python.utils.data_utils import DataLoader as NpLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    max_seq_len = config.max_seq_len
+    ds = load_dataset('openwebtext', split='train', streaming=True)
+
+    limit = config.subset or 100_000
+    texts = []
+    for i, ex in enumerate(ds):
+        if i >= limit:
+            break
+        texts.append(ex['text'])
+
+    all_chunks = _tokenize_and_chunk(texts, tokenizer, max_seq_len)
+    n = len(all_chunks)
+    n_val = max(1, int(n * 0.05))
+    n_test = max(1, int(n * 0.05))
+
+    import numpy as np
+    np.random.seed(config.seed)
+    idx = np.random.permutation(n)
+    test_chunks = [all_chunks[i] for i in idx[:n_test]]
+    val_chunks = [all_chunks[i] for i in idx[n_test:n_test + n_val]]
+    train_chunks = [all_chunks[i] for i in idx[n_test + n_val:]]
+
+    print(f"  OpenWebText (numpy): {len(train_chunks)} train, {len(val_chunks)} val, {len(test_chunks)} test chunks")
+
+    return (
+        NpLoader(_NpTokenizedTextDataset(train_chunks), batch_size=config.batch_size, shuffle=True),
+        NpLoader(_NpTokenizedTextDataset(val_chunks), batch_size=config.batch_size, shuffle=False),
+        NpLoader(_NpTokenizedTextDataset(test_chunks), batch_size=config.batch_size, shuffle=False),
+    )
+
+
+@register_dataset('multi30k', 'numpy')
+def _np_multi30k(config):
+    from python.utils.data_utils import DataLoader as NpLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    max_seq_len = config.max_seq_len
+    ds = load_dataset('bentrevett/multi30k')
+
+    def process_split(split, subset=None):
+        src_texts = [ex['en'] for ex in split]
+        tgt_texts = [ex['de'] for ex in split]
+        if subset:
+            src_texts = src_texts[:subset]
+            tgt_texts = tgt_texts[:subset]
+        return _tokenize_parallel(src_texts, tgt_texts, tokenizer, max_seq_len)
+
+    train_src, train_tgt = process_split(ds['train'], config.subset)
+    val_src, val_tgt = process_split(ds['validation'])
+    test_src, test_tgt = process_split(ds['test'])
+
+    print(f"  Multi30k (numpy): {len(train_src)} train, {len(val_src)} val, {len(test_src)} test pairs")
+
+    return (
+        NpLoader(_NpSeq2SeqDataset(train_src, train_tgt), batch_size=config.batch_size, shuffle=True),
+        NpLoader(_NpSeq2SeqDataset(val_src, val_tgt), batch_size=config.batch_size, shuffle=False),
+        NpLoader(_NpSeq2SeqDataset(test_src, test_tgt), batch_size=config.batch_size, shuffle=False),
+    )
+
+
+@register_dataset('wmt14', 'numpy')
+def _np_wmt14(config):
+    from python.utils.data_utils import DataLoader as NpLoader
+    from datasets import load_dataset
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    max_seq_len = config.max_seq_len
+    ds = load_dataset('wmt14', 'de-en')
+
+    def process_split(split, subset=None):
+        src_texts = [ex['translation']['en'] for ex in split]
+        tgt_texts = [ex['translation']['de'] for ex in split]
+        if subset:
+            src_texts = src_texts[:subset]
+            tgt_texts = tgt_texts[:subset]
+        return _tokenize_parallel(src_texts, tgt_texts, tokenizer, max_seq_len)
+
+    train_src, train_tgt = process_split(ds['train'], config.subset)
+    val_src, val_tgt = process_split(ds['validation'])
+    test_src, test_tgt = process_split(ds['test'])
+
+    print(f"  WMT14 (numpy): {len(train_src)} train, {len(val_src)} val, {len(test_src)} test pairs")
+
+    return (
+        NpLoader(_NpSeq2SeqDataset(train_src, train_tgt), batch_size=config.batch_size, shuffle=True),
+        NpLoader(_NpSeq2SeqDataset(val_src, val_tgt), batch_size=config.batch_size, shuffle=False),
+        NpLoader(_NpSeq2SeqDataset(test_src, test_tgt), batch_size=config.batch_size, shuffle=False),
     )

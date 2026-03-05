@@ -863,14 +863,13 @@ class LanguageModelRunner(BaseRunner):
     def __init__(self, config: Config):
         super().__init__(config)
         self.tokenizer = None
-        if config.backend == 'pytorch':
-            try:
-                from transformers import AutoTokenizer
-                self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
-                if self.tokenizer.pad_token is None:
-                    self.tokenizer.pad_token = self.tokenizer.eos_token
-            except ImportError:
-                self.mprint("  [Warning] transformers not installed, generation disabled")
+        try:
+            from transformers import AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+        except ImportError:
+            self.mprint("  [Warning] transformers not installed, generation disabled")
 
     def setup_metrics(self):
         def perplexity_metric(logits, targets):
@@ -892,10 +891,14 @@ class LanguageModelRunner(BaseRunner):
                     label_smoothing=ls if ls > 0 else 0.0,
                 )
             return lm_criterion
+        # Numpy: flattening done in _np_train_step/_np_eval_step
         return self.backend.criterion(self.config)
 
     def train_step(self, model, batch, criterion, optimizer):
         """LM training: shift logits for next-token prediction."""
+        if self.config.backend == 'numpy':
+            return self._np_train_step(model, batch, criterion, optimizer)
+
         import torch
         backend = self.backend
         input_ids = batch[0].to(backend.device, non_blocking=True)
@@ -926,8 +929,40 @@ class LanguageModelRunner(BaseRunner):
 
         return logits, loss.detach(), inputs.shape[0], targets
 
+    def _np_train_step(self, model, batch, criterion, optimizer):
+        """Numpy backend LM training step."""
+        from python.foundations.computational_graph import Tensor
+        import numpy as np
+
+        input_ids = batch[0]
+        if hasattr(input_ids, 'numpy'):
+            input_ids = input_ids.numpy()
+
+        inputs = input_ids[:, :-1]
+        targets = input_ids[:, 1:]
+
+        x = Tensor(inputs, requires_grad=True)
+        logits = model(x)  # [B, T, V]
+
+        # Flatten for cross-entropy: [B*T, V] and [B*T]
+        B, T = targets.shape
+        logits_flat = logits.reshape(B * T, -1)
+        targets_flat = Tensor(targets.reshape(B * T))
+
+        loss = criterion(logits_flat, targets_flat, reduction='mean')
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        batch_loss = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
+        return logits, batch_loss, B, targets
+
     def eval_step(self, model, batch, criterion):
         """LM eval: same shift as training."""
+        if self.config.backend == 'numpy':
+            return self._np_eval_step(model, batch, criterion)
+
         import torch
         backend = self.backend
         input_ids = batch[0].to(backend.device, non_blocking=True)
@@ -943,6 +978,29 @@ class LanguageModelRunner(BaseRunner):
             loss = criterion(logits, targets)
 
         return logits, loss.detach(), inputs.shape[0], targets
+
+    def _np_eval_step(self, model, batch, criterion):
+        """Numpy backend LM eval step."""
+        from python.foundations.computational_graph import Tensor
+
+        input_ids = batch[0]
+        if hasattr(input_ids, 'numpy'):
+            input_ids = input_ids.numpy()
+
+        inputs = input_ids[:, :-1]
+        targets = input_ids[:, 1:]
+
+        x = Tensor(inputs, requires_grad=False)
+        logits = model(x)
+
+        B, T = targets.shape
+        logits_flat = logits.reshape(B * T, -1)
+        targets_flat = Tensor(targets.reshape(B * T))
+
+        loss = criterion(logits_flat, targets_flat, reduction='mean')
+
+        batch_loss = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
+        return logits, batch_loss, B, targets
 
     def on_epoch_end(self, epoch, train_results, val_results, model, logger):
         """Generate text samples periodically."""
@@ -1018,14 +1076,13 @@ class Seq2SeqRunner(BaseRunner):
         super().__init__(config)
         self.tokenizer = None
         self.pad_token_id = 0
-        if config.backend == 'pytorch':
-            try:
-                from transformers import AutoTokenizer
-                self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
-                if self.tokenizer.pad_token is not None:
-                    self.pad_token_id = self.tokenizer.pad_token_id
-            except ImportError:
-                self.mprint("  [Warning] transformers not installed")
+        try:
+            from transformers import AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+            if self.tokenizer.pad_token is not None:
+                self.pad_token_id = self.tokenizer.pad_token_id
+        except ImportError:
+            self.mprint("  [Warning] transformers not installed")
 
     def setup_metrics(self):
         # BLEU computed separately in on_epoch_end, not per-batch
@@ -1044,10 +1101,14 @@ class Seq2SeqRunner(BaseRunner):
                     label_smoothing=ls if ls > 0 else 0.0,
                 )
             return seq2seq_criterion
+        # Numpy: flattening done in _np_train_step/_np_eval_step
         return self.backend.criterion(self.config)
 
     def train_step(self, model, batch, criterion, optimizer):
         """Seq2seq training with teacher forcing."""
+        if self.config.backend == 'numpy':
+            return self._np_train_step(model, batch, criterion, optimizer)
+
         import torch
         backend = self.backend
         src_ids = batch[0].to(backend.device, non_blocking=True)
@@ -1078,8 +1139,42 @@ class Seq2SeqRunner(BaseRunner):
 
         return logits, loss.detach(), src_ids.shape[0], tgt_target
 
+    def _np_train_step(self, model, batch, criterion, optimizer):
+        """Numpy backend seq2seq training step."""
+        from python.foundations.computational_graph import Tensor
+
+        src_ids = batch[0]
+        tgt_ids = batch[1]
+        if hasattr(src_ids, 'numpy'):
+            src_ids = src_ids.numpy()
+        if hasattr(tgt_ids, 'numpy'):
+            tgt_ids = tgt_ids.numpy()
+
+        tgt_input = tgt_ids[:, :-1]
+        tgt_target = tgt_ids[:, 1:]
+
+        src = Tensor(src_ids, requires_grad=True)
+        tgt_in = Tensor(tgt_input, requires_grad=True)
+        logits = model(src, tgt_in)  # [B, T, V]
+
+        B, T = tgt_target.shape
+        logits_flat = logits.reshape(B * T, -1)
+        targets_flat = Tensor(tgt_target.reshape(B * T))
+
+        loss = criterion(logits_flat, targets_flat, reduction='mean')
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        batch_loss = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
+        return logits, batch_loss, B, tgt_target
+
     def eval_step(self, model, batch, criterion):
         """Seq2seq eval with teacher forcing."""
+        if self.config.backend == 'numpy':
+            return self._np_eval_step(model, batch, criterion)
+
         import torch
         backend = self.backend
         src_ids = batch[0].to(backend.device, non_blocking=True)
@@ -1097,6 +1192,33 @@ class Seq2SeqRunner(BaseRunner):
             loss = criterion(logits, tgt_target)
 
         return logits, loss.detach(), src_ids.shape[0], tgt_target
+
+    def _np_eval_step(self, model, batch, criterion):
+        """Numpy backend seq2seq eval step."""
+        from python.foundations.computational_graph import Tensor
+
+        src_ids = batch[0]
+        tgt_ids = batch[1]
+        if hasattr(src_ids, 'numpy'):
+            src_ids = src_ids.numpy()
+        if hasattr(tgt_ids, 'numpy'):
+            tgt_ids = tgt_ids.numpy()
+
+        tgt_input = tgt_ids[:, :-1]
+        tgt_target = tgt_ids[:, 1:]
+
+        src = Tensor(src_ids, requires_grad=False)
+        tgt_in = Tensor(tgt_input, requires_grad=False)
+        logits = model(src, tgt_in)
+
+        B, T = tgt_target.shape
+        logits_flat = logits.reshape(B * T, -1)
+        targets_flat = Tensor(tgt_target.reshape(B * T))
+
+        loss = criterion(logits_flat, targets_flat, reduction='mean')
+
+        batch_loss = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
+        return logits, batch_loss, B, tgt_target
 
     def on_epoch_end(self, epoch, train_results, val_results, model, logger):
         """Compute BLEU on validation subset if sacrebleu is available."""

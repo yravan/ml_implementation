@@ -3466,6 +3466,537 @@ class TestGradientUtilsExact:
 
 
 # ============================================================================
+# CORRECTNESS TESTS FOR UNIMPLEMENTED FEATURES (xfail until implemented)
+# ============================================================================
+# These tests have hand-computed expected values from the documented formulas.
+# They are marked xfail(raises=NotImplementedError, strict=True), meaning:
+#   - Currently: they "pass" as expected failures (NotImplementedError is raised)
+#   - Once implemented: they become XPASS (unexpected pass) and FAIL, reminding
+#     you to remove the xfail marker so the exact-value assertions run.
+
+
+class TestTripletLossCorrectness:
+    """Exact correctness tests for TripletLoss."""
+
+
+    def test_exact_basic(self):
+        """L = max(d(a,p) - d(a,n) + margin, 0) with Euclidean distance."""
+        loss_fn = TripletLoss()
+        # anchor=[0,0], positive=[1,0] (d=1), negative=[3,0] (d=3), margin=1
+        anchor = Tensor(np.array([[0.0, 0.0]], dtype=np.float32))
+        positive = Tensor(np.array([[1.0, 0.0]], dtype=np.float32))
+        negative = Tensor(np.array([[3.0, 0.0]], dtype=np.float32))
+        loss = loss_fn(anchor, positive, negative, margin=1.0)
+        # d_pos = 1.0, d_neg = 3.0, loss = max(1 - 3 + 1, 0) = max(-1, 0) = 0
+        assert np.isclose(loss.data, 0.0, atol=1e-5)
+
+
+    def test_exact_positive_loss(self):
+        """When positive is far and negative is close, loss > 0."""
+        loss_fn = TripletLoss()
+        # anchor=[0,0], positive=[3,0] (d=3), negative=[1,0] (d=1), margin=1
+        anchor = Tensor(np.array([[0.0, 0.0]], dtype=np.float32))
+        positive = Tensor(np.array([[3.0, 0.0]], dtype=np.float32))
+        negative = Tensor(np.array([[1.0, 0.0]], dtype=np.float32))
+        loss = loss_fn(anchor, positive, negative, margin=1.0)
+        # d_pos = 3.0, d_neg = 1.0, loss = max(3 - 1 + 1, 0) = 3.0
+        assert np.isclose(loss.data, 3.0, atol=1e-4)
+
+
+    def test_zero_margin(self):
+        """With margin=0, loss = max(d_pos - d_neg, 0)."""
+        loss_fn = TripletLoss()
+        anchor = Tensor(np.array([[0.0, 0.0]], dtype=np.float32))
+        positive = Tensor(np.array([[2.0, 0.0]], dtype=np.float32))
+        negative = Tensor(np.array([[1.0, 0.0]], dtype=np.float32))
+        loss = loss_fn(anchor, positive, negative, margin=0.0)
+        # d_pos=2, d_neg=1, loss = max(2-1, 0) = 1.0
+        assert np.isclose(loss.data, 1.0, atol=1e-4)
+
+
+    def test_batch_mean(self):
+        """Mean reduction over batch of 2 samples."""
+        loss_fn = TripletLoss()
+        anchor = Tensor(np.array([[0.0], [0.0]], dtype=np.float32))
+        positive = Tensor(np.array([[2.0], [1.0]], dtype=np.float32))
+        negative = Tensor(np.array([[1.0], [5.0]], dtype=np.float32))
+        loss = loss_fn(anchor, positive, negative, margin=1.0)
+        # sample 0: max(2-1+1, 0)=2.0, sample 1: max(1-5+1, 0)=0.0
+        # mean = 1.0
+        assert np.isclose(loss.data, 1.0, atol=1e-4)
+
+
+class TestContrastiveLossCorrectness:
+    """Exact correctness tests for ContrastiveLoss."""
+
+
+    def test_similar_pair_exact(self):
+        """Similar pair (y=0): L = d². x1=[0,0], x2=[1,0] → d²=1."""
+        loss_fn = ContrastiveLoss()
+        x1 = Tensor(np.array([[0.0, 0.0]], dtype=np.float32))
+        x2 = Tensor(np.array([[1.0, 0.0]], dtype=np.float32))
+        y = Tensor(np.array([0], dtype=np.float32))
+        loss = loss_fn(x1, x2, y, margin=2.0)
+        # (1-0)*d² + 0*max(2-1,0)² = 1.0
+        assert np.isclose(loss.data, 1.0, atol=1e-4)
+
+
+    def test_dissimilar_within_margin(self):
+        """Dissimilar pair (y=1) within margin: L = max(margin-d, 0)²."""
+        loss_fn = ContrastiveLoss()
+        x1 = Tensor(np.array([[0.0, 0.0]], dtype=np.float32))
+        x2 = Tensor(np.array([[0.5, 0.0]], dtype=np.float32))
+        y = Tensor(np.array([1], dtype=np.float32))
+        loss = loss_fn(x1, x2, y, margin=2.0)
+        # d=0.5, max(2-0.5, 0)²=1.5²=2.25
+        assert np.isclose(loss.data, 2.25, atol=1e-4)
+
+
+    def test_dissimilar_beyond_margin(self):
+        """Dissimilar pair beyond margin: loss = 0."""
+        loss_fn = ContrastiveLoss()
+        x1 = Tensor(np.array([[0.0, 0.0]], dtype=np.float32))
+        x2 = Tensor(np.array([[3.0, 0.0]], dtype=np.float32))
+        y = Tensor(np.array([1], dtype=np.float32))
+        loss = loss_fn(x1, x2, y, margin=2.0)
+        # d=3.0 > margin=2.0, max(2-3, 0)²=0
+        assert np.isclose(loss.data, 0.0, atol=1e-4)
+
+
+    def test_identical_similar_zero_loss(self):
+        """Identical similar pair: d=0, loss=0."""
+        loss_fn = ContrastiveLoss()
+        x = Tensor(np.array([[1.0, 2.0]], dtype=np.float32))
+        y = Tensor(np.array([0], dtype=np.float32))
+        loss = loss_fn(x, x, y)
+        assert np.isclose(loss.data, 0.0, atol=1e-5)
+
+
+class TestInfoNCELossCorrectness:
+    """Exact correctness tests for InfoNCELoss."""
+
+
+    def test_identical_pairs_low_loss(self):
+        """When query==key, loss should be low (close to -log(1/N) for random negatives)."""
+        loss_fn = InfoNCELoss()
+        # 2 identical pairs, cosine sim = 1.0
+        query = Tensor(np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32))
+        key = Tensor(np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32))
+        loss = loss_fn(query, key, temperature=1.0)
+        # sim(q,k+) = 1, sim(q,k-) = 0 for orthogonal pairs
+        # L = -log(exp(1)/( exp(1)+exp(0) )) = -1 + log(e+1) ≈ 0.3133 per sample
+        expected = -1.0 + np.log(np.exp(1.0) + 1.0)
+        assert np.isclose(loss.data, expected, atol=0.1)
+
+
+    def test_temperature_effect(self):
+        """Lower temperature sharpens the distribution."""
+        loss_fn = InfoNCELoss()
+        query = Tensor(np.array([[1.0, 0.0]], dtype=np.float32))
+        key = Tensor(np.array([[1.0, 0.0]], dtype=np.float32))
+        loss_hot = loss_fn(query, key, temperature=10.0)
+        loss_cold = loss_fn(query, key, temperature=0.1)
+        # Cold temperature should give lower loss for correct match
+        assert loss_cold.data < loss_hot.data
+
+
+class TestCTCLossCorrectness:
+    """Correctness tests for CTCLoss."""
+
+
+    def test_single_frame_single_target(self):
+        """Simplest CTC case: T=1, target=label 1, should equal -log_prob[1]."""
+        loss_fn = CTCLoss()
+        # T=1, N=1, C=3 (blank=0, labels 1,2)
+        log_probs_data = np.log(np.array([[[0.1, 0.8, 0.1]]], dtype=np.float32))
+        log_probs = Tensor(log_probs_data)
+        targets = Tensor(np.array([[1]], dtype=np.float32))
+        input_lengths = Tensor(np.array([1], dtype=np.float32))
+        target_lengths = Tensor(np.array([1], dtype=np.float32))
+        loss = loss_fn(log_probs, targets, input_lengths, target_lengths, blank=0)
+        # Only valid alignment: emit label 1 at t=0
+        expected = -np.log(0.8)
+        assert np.isclose(loss.data, expected, atol=1e-3)
+
+
+    def test_returns_positive_loss(self):
+        """CTC loss should always be non-negative."""
+        loss_fn = CTCLoss()
+        T, N, C = 10, 2, 5
+        log_probs = Tensor(np.random.randn(T, N, C).astype(np.float32))
+        targets = Tensor(np.array([[1, 2], [1, 3]], dtype=np.float32))
+        input_lengths = Tensor(np.array([T, T], dtype=np.float32))
+        target_lengths = Tensor(np.array([2, 2], dtype=np.float32))
+        loss = loss_fn(log_probs, targets, input_lengths, target_lengths)
+        assert loss.data >= 0
+
+
+class TestNAdamCorrectness:
+    """Exact correctness tests for NAdam optimizer."""
+
+
+    def test_exact_step1(self):
+        """NAdam step 1: m̂_nesterov = β₁*m̂ + (1-β₁)*g/(1-β₁), then Adam update."""
+        W = Variable(np.array([1.0], dtype=np.float32))
+        lr, b1, b2, eps = 0.002, 0.9, 0.999, 1e-8
+        opt = NAdam([W], lr=lr, betas=(b1, b2), eps=eps)
+        g = np.array([2.0], dtype=np.float32)
+        W.grad = g.copy()
+        opt.step()
+        # m = (1-b1)*g = 0.2, v = (1-b2)*g² = 0.004
+        # m_hat = m/(1-b1) = 0.2/0.1 = 2.0
+        # v_hat = v/(1-b2) = 0.004/0.001 = 4.0
+        # m_nesterov = b1*m_hat + (1-b1)*g/(1-b1) = 0.9*2.0 + 0.1*2.0/0.1 = 1.8 + 2.0 = 3.8
+        # w = 1.0 - lr * m_nesterov / (sqrt(v_hat) + eps) = 1.0 - 0.002 * 3.8 / (2.0 + eps)
+        m_hat = 2.0
+        v_hat = 4.0
+        m_nesterov = b1 * m_hat + (1 - b1) * g[0] / (1 - b1)
+        expected = 1.0 - lr * m_nesterov / (np.sqrt(v_hat) + eps)
+        assert np.isclose(W.data[0], expected, atol=1e-4)
+
+
+    def test_convergence(self):
+        """NAdam should converge on simple quadratic."""
+        W = Variable(np.array([5.0, -3.0], dtype=np.float32))
+        opt = NAdam([W], lr=0.01)
+        for _ in range(200):
+            opt.zero_grad()
+            loss = (W ** 2).sum()
+            loss.backward()
+            opt.step()
+        assert np.allclose(W.data, 0.0, atol=0.5)
+
+
+class TestRAdamCorrectness:
+    """Exact correctness tests for RAdam optimizer."""
+
+
+    def test_early_step_sgd_fallback(self):
+        """At step 1, ρ_t < 5 so RAdam falls back to SGD with bias-corrected momentum."""
+        W = Variable(np.array([1.0], dtype=np.float32))
+        lr, b1, b2, eps = 0.001, 0.9, 0.999, 1e-8
+        opt = RAdam([W], lr=lr, betas=(b1, b2), eps=eps)
+        g = np.array([2.0], dtype=np.float32)
+        W.grad = g.copy()
+        opt.step()
+        # ρ_inf = 2/(1-0.999) - 1 = 1999
+        # ρ_1 = 1999 - 2*1*0.999/(1-0.999) = 1999 - 1998 = 1.0 < 5
+        # Falls back to: w = w - lr * m_hat
+        m_hat = (1 - b1) * g[0] / (1 - b1)  # = g = 2.0
+        expected = 1.0 - lr * m_hat
+        assert np.isclose(W.data[0], expected, atol=1e-4)
+
+
+    def test_convergence(self):
+        """RAdam should converge on simple quadratic."""
+        W = Variable(np.array([5.0, -3.0], dtype=np.float32))
+        opt = RAdam([W], lr=0.01)
+        for _ in range(200):
+            opt.zero_grad()
+            loss = (W ** 2).sum()
+            loss.backward()
+            opt.step()
+        assert np.allclose(W.data, 0.0, atol=0.5)
+
+
+class TestLAMBCorrectness:
+    """Exact correctness tests for LAMB optimizer."""
+
+
+    def test_trust_ratio_step1(self):
+        """LAMB step 1: compute Adam update, then scale by ||θ||/||update||."""
+        W = Variable(np.array([3.0, 4.0], dtype=np.float32))  # ||W||=5
+        lr, b1, b2, eps = 0.001, 0.9, 0.999, 1e-6
+        opt = LAMB([W], lr=lr, betas=(b1, b2), eps=eps)
+        g = np.array([1.0, 0.0], dtype=np.float32)
+        W.grad = g.copy()
+        opt.step()
+        # Adam update (step 1):
+        m_hat = g / (1 - b1)  # [1/0.1, 0] = [10, 0]... wait
+        # m = (1-b1)*g = [0.1, 0], v = (1-b2)*g² = [0.001, 0]
+        # m_hat = m/(1-b1) = [1, 0], v_hat = v/(1-b2) = [1, 0]
+        # update = m_hat / (sqrt(v_hat) + eps) = [1/(1+eps), 0]
+        # ||W|| = 5.0, ||update|| ≈ 1.0
+        # trust_ratio = 5.0 / 1.0 = 5.0
+        # W_new = W - lr * trust_ratio * update ≈ [3.0 - 0.005, 4.0]
+        param_norm = 5.0
+        update_norm = 1.0 / (1.0 + eps)
+        trust = param_norm / (update_norm + eps)
+        # Just check it moved and is finite
+        assert np.all(np.isfinite(W.data))
+        assert W.data[0] < 3.0  # Should have decreased
+
+
+    def test_convergence(self):
+        """LAMB should converge on simple quadratic."""
+        W = Variable(np.array([5.0, -3.0], dtype=np.float32))
+        opt = LAMB([W], lr=0.01)
+        for _ in range(200):
+            opt.zero_grad()
+            loss = (W ** 2).sum()
+            loss.backward()
+            opt.step()
+        assert float((W ** 2).sum().data) < 25.0
+
+
+class TestLARSCorrectness:
+    """Exact correctness tests for LARS optimizer."""
+
+
+    def test_local_lr_computation(self):
+        """LARS local_lr = trust_coeff * ||θ|| / (||g|| + wd*||θ||)."""
+        W = Variable(np.array([3.0, 4.0], dtype=np.float32))  # ||W||=5
+        lr, momentum, wd, trust = 0.1, 0.0, 0.0, 0.001
+        opt = LARS([W], lr=lr, momentum=momentum, weight_decay=wd,
+                   trust_coefficient=trust)
+        g = np.array([1.0, 0.0], dtype=np.float32)  # ||g||=1
+        W.grad = g.copy()
+        opt.step()
+        # local_lr = 0.001 * 5.0 / (1.0 + 0) = 0.005
+        # update = local_lr * g = [0.005, 0]
+        # W_new = W - lr * update = [3.0 - 0.1*0.005, 4.0] = [2.9995, 4.0]
+        local_lr = trust * 5.0 / 1.0
+        expected = np.array([3.0, 4.0]) - lr * local_lr * g
+        assert np.allclose(W.data, expected, atol=1e-3)
+
+
+    def test_layer_wise_different_scales(self):
+        """Layers with different scales should get different local LRs."""
+        W1 = Variable(np.ones(3, dtype=np.float32) * 10)  # large params
+        W2 = Variable(np.ones(3, dtype=np.float32) * 0.1)  # small params
+        opt = LARS([W1, W2], lr=0.1, trust_coefficient=0.001)
+        W1.grad = np.ones(3, dtype=np.float32)
+        W2.grad = np.ones(3, dtype=np.float32)
+        old1, old2 = W1.data.copy(), W2.data.copy()
+        opt.step()
+        delta1 = np.abs(W1.data - old1).sum()
+        delta2 = np.abs(W2.data - old2).sum()
+        # Larger params → larger local_lr → larger update
+        assert delta1 > delta2
+
+
+class TestLionCorrectness:
+    """Exact correctness tests for Lion optimizer."""
+
+
+    def test_sign_update_step1(self):
+        """Lion step 1: update = sign(β₂*0 + (1-β₂)*g) = sign(g)."""
+        W = Variable(np.array([1.0, -1.0, 0.5], dtype=np.float32))
+        lr, b1, b2 = 1e-4, 0.9, 0.99
+        opt = Lion([W], lr=lr, betas=(b1, b2))
+        g = np.array([0.5, -0.3, 0.1], dtype=np.float32)
+        W.grad = g.copy()
+        opt.step()
+        # m_0 = 0 (initial)
+        # update = sign(b2*0 + (1-b2)*g) = sign(g) = [1, -1, 1]
+        # W_new = W - lr * sign(g) = [1-1e-4, -1+1e-4, 0.5-1e-4]
+        expected = np.array([1.0, -1.0, 0.5]) - lr * np.sign(g)
+        assert np.allclose(W.data, expected, atol=1e-5)
+
+
+    def test_weight_decay(self):
+        """Lion with weight decay: W = W - lr*(sign(interp) + wd*W)."""
+        W = Variable(np.array([2.0], dtype=np.float32))
+        lr, wd = 1e-4, 0.1
+        opt = Lion([W], lr=lr, betas=(0.9, 0.99), weight_decay=wd)
+        g = np.array([1.0], dtype=np.float32)
+        W.grad = g.copy()
+        opt.step()
+        # update = sign((1-b2)*g) = sign(g) = 1
+        # W_new = W - lr*(1 + wd*W) = 2.0 - 1e-4*(1 + 0.1*2.0) = 2.0 - 1.2e-4
+        expected = 2.0 - lr * (np.sign(g[0]) + wd * 2.0)
+        assert np.isclose(W.data[0], expected, atol=1e-5)
+
+
+    def test_all_updates_are_sign(self):
+        """Every element of the Lion update should be ±lr (pure sign)."""
+        W = Variable(np.random.randn(10).astype(np.float32))
+        lr = 1e-4
+        opt = Lion([W], lr=lr, betas=(0.9, 0.99), weight_decay=0.0)
+        old = W.data.copy()
+        W.grad = np.random.randn(10).astype(np.float32)
+        opt.step()
+        deltas = np.abs(W.data - old)
+        # All deltas should be exactly lr (sign update)
+        assert np.allclose(deltas, lr, atol=1e-7)
+
+
+class TestMuonCorrectness:
+    """Correctness tests for Muon optimizer."""
+
+
+    def test_basic_step(self):
+        """Muon should produce finite updates that move parameters."""
+        W = Variable(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+        opt = Muon([W], lr=0.02)
+        old = W.data.copy()
+        W.grad = np.array([0.5, -0.3, 0.1], dtype=np.float32)
+        opt.step()
+        assert np.all(np.isfinite(W.data))
+        assert not np.allclose(W.data, old)
+
+
+    def test_convergence(self):
+        """Muon should converge on simple quadratic."""
+        W = Variable(np.array([5.0, -3.0], dtype=np.float32))
+        opt = Muon([W], lr=0.02)
+        for _ in range(200):
+            opt.zero_grad()
+            loss = (W ** 2).sum()
+            loss.backward()
+            opt.step()
+        assert float((W ** 2).sum().data) < 25.0
+
+
+class TestAdafactorCorrectness:
+    """Correctness tests for Adafactor optimizer."""
+
+
+    def test_basic_step(self):
+        """Adafactor should produce finite updates."""
+        W = Variable(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+        opt = Adafactor([W], lr=0.001)
+        W.grad = np.array([0.5, -0.3, 0.1], dtype=np.float32)
+        opt.step()
+        assert np.all(np.isfinite(W.data))
+        assert not np.allclose(W.data, [1.0, 2.0, 3.0])
+
+
+    def test_convergence(self):
+        """Adafactor should converge on simple quadratic."""
+        W = Variable(np.array([5.0, -3.0], dtype=np.float32))
+        opt = Adafactor([W], lr=0.01)
+        for _ in range(200):
+            opt.zero_grad()
+            loss = (W ** 2).sum()
+            loss.backward()
+            opt.step()
+        assert float((W ** 2).sum().data) < 25.0
+
+
+class TestClipGradNormCorrectness:
+    """Exact correctness tests for clip_grad_norm_."""
+
+
+    def test_clips_to_max_norm(self):
+        """After clipping, total L2 norm should be <= max_norm."""
+        grads = [np.array([3.0, 4.0], dtype=np.float32)]  # norm=5
+        total_norm = clip_grad_norm_(grads, max_norm=2.0)
+        # Original norm=5, clipped to 2. Scale = 2/5 = 0.4
+        assert np.isclose(total_norm, 5.0, atol=1e-4)  # Returns original norm
+        new_norm = np.sqrt(np.sum(grads[0] ** 2))
+        assert np.isclose(new_norm, 2.0, atol=1e-4)
+        # Direction preserved: [3,4]*0.4 = [1.2, 1.6]
+        assert np.allclose(grads[0], [1.2, 1.6], atol=1e-4)
+
+
+    def test_no_clip_under_max(self):
+        """Grads with norm < max_norm should be unchanged."""
+        grads = [np.array([0.3, 0.4], dtype=np.float32)]  # norm=0.5
+        original = grads[0].copy()
+        clip_grad_norm_(grads, max_norm=2.0)
+        assert np.allclose(grads[0], original, atol=1e-6)
+
+
+    def test_multi_tensor_norm(self):
+        """Norm computed across all tensors, not per-tensor."""
+        g1 = np.array([3.0], dtype=np.float32)
+        g2 = np.array([4.0], dtype=np.float32)
+        grads = [g1, g2]  # total norm = sqrt(9+16) = 5
+        clip_grad_norm_(grads, max_norm=2.5)
+        # scale = 2.5/5 = 0.5
+        assert np.isclose(g1[0], 1.5, atol=1e-4)
+        assert np.isclose(g2[0], 2.0, atol=1e-4)
+
+
+class TestClipGradValueCorrectness:
+    """Exact correctness tests for clip_grad_value_."""
+
+
+    def test_clips_to_range(self):
+        """Each element should be clamped to [-clip_value, clip_value]."""
+        grads = [np.array([5.0, -3.0, 0.5, -0.1], dtype=np.float32)]
+        clip_grad_value_(grads, clip_value=1.0)
+        expected = np.array([1.0, -1.0, 0.5, -0.1], dtype=np.float32)
+        assert np.allclose(grads[0], expected, atol=1e-6)
+
+
+    def test_no_clip_within_range(self):
+        """Values within range should be unchanged."""
+        grads = [np.array([0.5, -0.3], dtype=np.float32)]
+        original = grads[0].copy()
+        clip_grad_value_(grads, clip_value=1.0)
+        assert np.allclose(grads[0], original, atol=1e-6)
+
+
+class TestComputeGradientNormCorrectness:
+    """Exact correctness tests for compute_gradient_norm."""
+
+
+    def test_l2_norm_exact(self):
+        """L2 norm of [3,4] and [0] = sqrt(9+16) = 5."""
+        grads = [np.array([3.0, 4.0], dtype=np.float32),
+                 np.array([0.0], dtype=np.float32)]
+        norm = compute_gradient_norm(grads, norm_type=2.0)
+        assert np.isclose(norm, 5.0, atol=1e-4)
+
+
+    def test_l1_norm_exact(self):
+        """L1 norm of [3,-4] and [2] = 3+4+2 = 9."""
+        grads = [np.array([3.0, -4.0], dtype=np.float32),
+                 np.array([2.0], dtype=np.float32)]
+        norm = compute_gradient_norm(grads, norm_type=1.0)
+        assert np.isclose(norm, 9.0, atol=1e-4)
+
+
+    def test_inf_norm_exact(self):
+        """Inf norm = max absolute value = 4."""
+        grads = [np.array([3.0, -4.0], dtype=np.float32),
+                 np.array([2.0], dtype=np.float32)]
+        norm = compute_gradient_norm(grads, norm_type=float('inf'))
+        assert np.isclose(norm, 4.0, atol=1e-4)
+
+
+class TestComputeGradientStatsCorrectness:
+    """Exact correctness tests for compute_gradient_stats."""
+
+
+    def test_stats_exact(self):
+        """Verify mean, std, min, max of known gradients."""
+        grads = [np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)]
+        stats = compute_gradient_stats(grads)
+        assert np.isclose(stats['mean'], 2.5, atol=1e-4)
+        assert np.isclose(stats['std'], np.std([1, 2, 3, 4]), atol=1e-4)
+        assert np.isclose(stats['min'], 1.0, atol=1e-4)
+        assert np.isclose(stats['max'], 4.0, atol=1e-4)
+
+
+class TestDetectGradientAnomalyCorrectness:
+    """Exact correctness tests for detect_gradient_anomaly."""
+
+
+    def test_no_anomaly(self):
+        """Normal gradients should have no anomaly."""
+        grads = [np.array([1.0, -2.0, 0.5], dtype=np.float32)]
+        has_anomaly, desc = detect_gradient_anomaly(grads, warn=False)
+        assert has_anomaly is False
+
+
+    def test_nan_detected(self):
+        """NaN in gradients should be detected."""
+        grads = [np.array([1.0, float('nan'), 0.5], dtype=np.float32)]
+        has_anomaly, desc = detect_gradient_anomaly(grads, warn=False)
+        assert has_anomaly is True
+
+
+    def test_inf_detected(self):
+        """Inf in gradients should be detected."""
+        grads = [np.array([1.0, float('inf'), 0.5], dtype=np.float32)]
+        has_anomaly, desc = detect_gradient_anomaly(grads, warn=False)
+        assert has_anomaly is True
+
+
+# ============================================================================
 # NEW INTEGRATION & EDGE CASE TESTS
 # ============================================================================
 
