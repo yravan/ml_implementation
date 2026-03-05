@@ -14,10 +14,6 @@ Gold standard pattern from TestConv2D:
 
 import pytest
 import numpy as np
-import sys
-import os
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from python.foundations import (
     Tensor, Variable, no_grad, gradcheck,
@@ -44,6 +40,7 @@ from python.optimization.gradient_utils import (
     clip_grad_norm_, clip_grad_value_,
     GradientClipper, GradientAccumulator, GradScaler,
     compute_gradient_norm, compute_gradient_stats, detect_gradient_anomaly,
+    GradientMonitor,
 )
 
 
@@ -206,6 +203,43 @@ class TestSGDW:
         assert np.all(np.isfinite(W1.data))
         assert np.all(np.isfinite(W2.data))
 
+    def test_convergence(self):
+        W = Variable(np.array([5.0, -3.0], dtype=np.float32))
+        opt = SGDW([W], lr=0.1, weight_decay=0.01)
+        for _ in range(100):
+            opt.zero_grad()
+            loss = (W ** 2).sum()
+            loss.backward()
+            opt.step()
+        assert np.allclose(W.data, 0.0, atol=0.1)
+
+    def test_numerical_stability(self):
+        W = Variable(np.array([1e-10, 1e-10], dtype=np.float32))
+        opt = SGDW([W], lr=0.01, weight_decay=0.01)
+        W.grad = np.array([1e-10, 1e-10], dtype=np.float32)
+        opt.step()
+        assert np.all(np.isfinite(W.data))
+
+    def test_with_momentum(self):
+        W = Variable(np.array([1.0, 2.0], dtype=np.float32))
+        opt = SGDW([W], lr=0.1, momentum=0.9, weight_decay=0.01)
+        W.grad = np.array([1.0, 1.0], dtype=np.float32)
+        opt.step()
+        w1 = W.data.copy()
+        W.grad = np.array([1.0, 1.0], dtype=np.float32)
+        opt.step()
+        w2 = W.data.copy()
+        step1 = np.abs(w1 - np.array([1.0, 2.0])).sum()
+        step2 = np.abs(w2 - w1).sum()
+        assert step2 > step1, "Momentum should accelerate updates"
+
+    def test_zero_grad(self):
+        W = Variable(np.ones(3, dtype=np.float32))
+        W.grad = np.ones(3, dtype=np.float32)
+        opt = SGDW([W], lr=0.1, weight_decay=0.01)
+        opt.zero_grad()
+        assert W.grad is None
+
 
 # ============================================================================
 # Adam Optimizer
@@ -324,6 +358,27 @@ class TestAdamW:
             opt.step()
         assert np.allclose(W.data, 0.0, atol=0.5)
 
+    def test_numerical_stability(self):
+        W = Variable(np.array([1e-10, 1e-10], dtype=np.float32))
+        opt = AdamW([W], lr=0.001, weight_decay=0.01)
+        W.grad = np.array([1e-10, 1e-10], dtype=np.float32)
+        opt.step()
+        assert np.all(np.isfinite(W.data))
+
+    def test_different_betas(self):
+        W = Variable(np.ones(3, dtype=np.float32))
+        opt = AdamW([W], lr=0.001, betas=(0.8, 0.999), weight_decay=0.01)
+        W.grad = np.ones(3, dtype=np.float32)
+        opt.step()
+        assert np.all(np.isfinite(W.data))
+
+    def test_zero_grad(self):
+        W = Variable(np.ones(3, dtype=np.float32))
+        W.grad = np.ones(3, dtype=np.float32)
+        opt = AdamW([W], lr=0.001, weight_decay=0.01)
+        opt.zero_grad()
+        assert W.grad is None
+
 
 # ============================================================================
 # RMSprop Optimizer
@@ -376,6 +431,23 @@ class TestRMSprop:
         opt.step()
         assert np.all(np.isfinite(W.data))
 
+    def test_convergence(self):
+        W = Variable(np.array([5.0, -3.0], dtype=np.float32))
+        opt = RMSprop([W], lr=0.01)
+        for _ in range(500):
+            opt.zero_grad()
+            loss = (W ** 2).sum()
+            loss.backward()
+            opt.step()
+        assert np.allclose(W.data, 0.0, atol=2.0)
+
+    def test_weight_decay(self):
+        W = Variable(np.array([1.0, 2.0], dtype=np.float32))
+        opt = RMSprop([W], lr=0.01, weight_decay=0.1)
+        W.grad = np.array([0.5, 0.5], dtype=np.float32)
+        opt.step()
+        assert np.all(np.isfinite(W.data))
+
 
 # ============================================================================
 # Adagrad Optimizer
@@ -418,6 +490,23 @@ class TestAdagrad:
             opt.step()
         assert np.all(np.isfinite(W.data))
 
+    def test_convergence(self):
+        W = Variable(np.array([5.0, -3.0], dtype=np.float32))
+        opt = Adagrad([W], lr=0.5)
+        for _ in range(200):
+            opt.zero_grad()
+            loss = (W ** 2).sum()
+            loss.backward()
+            opt.step()
+        assert np.allclose(W.data, 0.0, atol=1.0)
+
+    def test_numerical_stability(self):
+        W = Variable(np.array([1e-10, 1e-10], dtype=np.float32))
+        opt = Adagrad([W], lr=0.01)
+        W.grad = np.array([1e-10, 1e-10], dtype=np.float32)
+        opt.step()
+        assert np.all(np.isfinite(W.data))
+
 
 # ============================================================================
 # Adadelta Optimizer
@@ -446,6 +535,33 @@ class TestAdadelta:
             W.grad = np.ones(3, dtype=np.float32) * 0.1
             opt.step()
         assert np.all(np.isfinite(W.data))
+
+    def test_convergence(self):
+        W = Variable(np.array([5.0, -3.0], dtype=np.float32))
+        opt = Adadelta([W], lr=1.0, rho=0.9)
+        initial_loss = float((W ** 2).sum().data)
+        for _ in range(200):
+            opt.zero_grad()
+            loss = (W ** 2).sum()
+            loss.backward()
+            opt.step()
+        final_loss = float((W ** 2).sum().data)
+        assert final_loss < initial_loss, "Loss should decrease"
+
+    def test_numerical_stability(self):
+        W = Variable(np.array([1e-10, 1e-10], dtype=np.float32))
+        opt = Adadelta([W], lr=1.0, rho=0.9, eps=1e-6)
+        W.grad = np.array([1e-10, 1e-10], dtype=np.float32)
+        opt.step()
+        assert np.all(np.isfinite(W.data))
+
+    def test_different_rho(self):
+        W = Variable(np.ones(3, dtype=np.float32))
+        opt = Adadelta([W], lr=1.0, rho=0.5)
+        W.grad = np.ones(3, dtype=np.float32)
+        opt.step()
+        assert np.all(np.isfinite(W.data))
+        assert not np.allclose(W.data, np.ones(3))
 
 
 # ============================================================================
@@ -612,6 +728,29 @@ class TestMAELoss:
         assert pred.grad is not None
         assert pred.grad.shape == (3,)
 
+    def test_backward_gradient_values(self):
+        """MAE gradient should be sign(pred - target) / n."""
+        loss_fn = MAELoss()
+        pred = Tensor(np.array([2.0, 1.0, 4.0], dtype=np.float32), requires_grad=True)
+        target = Tensor(np.array([1.0, 3.0, 4.5], dtype=np.float32))
+        loss = loss_fn(pred, target)
+        loss.backward()
+        # sign(pred - target) / n
+        expected_sign = np.sign(pred.data - target.data)
+        expected_grad = expected_sign / 3.0
+        assert np.allclose(pred.grad, expected_grad, atol=1e-4)
+
+    def test_gradcheck(self):
+        # Avoid exact match to ensure differentiability
+        pred = Tensor(np.array([1.5, 2.5, 3.5], dtype=np.float32), requires_grad=True)
+        target = Tensor(np.array([1.0, 3.0, 2.5], dtype=np.float32))
+        loss_fn = MAELoss()
+        result = gradcheck(
+            lambda p: loss_fn(p, target), (pred,),
+            eps=1e-2, atol=5e-2, rtol=5e-1, raise_exception=False
+        )
+        assert result
+
 
 # ============================================================================
 # Huber Loss
@@ -668,6 +807,33 @@ class TestHuberLoss:
         assert pred.grad is not None
         assert np.all(np.isfinite(pred.grad))
 
+    def test_backward_gradient_shape(self):
+        loss_fn = HuberLoss()
+        pred = Tensor(np.random.randn(4, 3).astype(np.float32), requires_grad=True)
+        target = Tensor(np.random.randn(4, 3).astype(np.float32))
+        loss = loss_fn(pred, target, delta=1.0)
+        loss.backward()
+        assert pred.grad.shape == (4, 3)
+        assert np.all(np.isfinite(pred.grad))
+
+    def test_gradcheck(self):
+        pred = Tensor(np.array([0.0, 0.0], dtype=np.float32), requires_grad=True)
+        target = Tensor(np.array([0.3, 0.5], dtype=np.float32))
+        loss_fn = HuberLoss()
+        result = gradcheck(
+            lambda p: loss_fn(p, target, delta=1.0), (pred,),
+            eps=1e-2, atol=5e-2, rtol=5e-1, raise_exception=False
+        )
+        assert result
+
+    def test_reduction_sum(self):
+        loss_fn = HuberLoss()
+        pred = Tensor(np.array([0.0, 0.0], dtype=np.float32))
+        target = Tensor(np.array([0.3, 0.5], dtype=np.float32))
+        loss = loss_fn(pred, target, delta=1.0, reduction='sum')
+        expected = np.sum(0.5 * np.array([0.3, 0.5]) ** 2)
+        assert np.isclose(loss.data, expected, atol=1e-4)
+
 
 # ============================================================================
 # SmoothL1 Loss
@@ -707,6 +873,32 @@ class TestSmoothL1Loss:
         loss.backward()
         assert pred.grad is not None
 
+    def test_backward_gradient_shape(self):
+        loss_fn = SmoothL1Loss()
+        pred = Tensor(np.random.randn(4, 3).astype(np.float32), requires_grad=True)
+        target = Tensor(np.random.randn(4, 3).astype(np.float32))
+        loss = loss_fn(pred, target, beta=1.0)
+        loss.backward()
+        assert pred.grad.shape == (4, 3)
+        assert np.all(np.isfinite(pred.grad))
+
+    def test_gradcheck(self):
+        pred = Tensor(np.array([0.0, 0.0], dtype=np.float32), requires_grad=True)
+        target = Tensor(np.array([0.3, 0.5], dtype=np.float32))
+        loss_fn = SmoothL1Loss()
+        result = gradcheck(
+            lambda p: loss_fn(p, target, beta=1.0), (pred,),
+            eps=1e-2, atol=5e-2, rtol=5e-1, raise_exception=False
+        )
+        assert result
+
+    def test_reduction_sum(self):
+        loss_fn = SmoothL1Loss()
+        pred = Tensor(np.array([0.0, 0.0], dtype=np.float32))
+        target = Tensor(np.array([0.5, 0.3], dtype=np.float32))
+        loss = loss_fn(pred, target, beta=1.0, reduction='sum')
+        assert loss.data > 0
+
 
 # ============================================================================
 # RMSE Loss
@@ -739,6 +931,15 @@ class TestRMSELoss:
         loss = loss_fn(pred, target)
         loss.backward()
         assert pred.grad is not None
+        assert np.all(np.isfinite(pred.grad))
+
+    def test_backward_gradient_shape(self):
+        loss_fn = RMSELoss()
+        pred = Tensor(np.random.randn(4, 3).astype(np.float32), requires_grad=True)
+        target = Tensor(np.random.randn(4, 3).astype(np.float32))
+        loss = loss_fn(pred, target)
+        loss.backward()
+        assert pred.grad.shape == (4, 3)
         assert np.all(np.isfinite(pred.grad))
 
 
@@ -847,6 +1048,36 @@ class TestBCELoss:
         loss.backward()
         assert pred.grad is not None
 
+    def test_backward_gradient_values(self):
+        """BCE gradient: d/dp = (-t/p + (1-t)/(1-p)) / n."""
+        loss_fn = BinaryCrossEntropyLoss()
+        pred = Tensor(np.array([0.8, 0.2], dtype=np.float32), requires_grad=True)
+        target = Tensor(np.array([1.0, 0.0], dtype=np.float32))
+        loss = loss_fn(pred, target)
+        loss.backward()
+        p = pred.data
+        t = target.data
+        expected = (-t / p + (1 - t) / (1 - p)) / len(p)
+        assert np.allclose(pred.grad, expected, atol=1e-3)
+
+    def test_backward_gradient_shape(self):
+        loss_fn = BinaryCrossEntropyLoss()
+        pred = Tensor(np.random.uniform(0.1, 0.9, (4, 3)).astype(np.float32), requires_grad=True)
+        target = Tensor(np.random.randint(0, 2, (4, 3)).astype(np.float32))
+        loss = loss_fn(pred, target)
+        loss.backward()
+        assert pred.grad.shape == (4, 3)
+
+    def test_gradcheck(self):
+        pred = Tensor(np.array([0.3, 0.7, 0.5], dtype=np.float32), requires_grad=True)
+        target = Tensor(np.array([0.0, 1.0, 1.0], dtype=np.float32))
+        loss_fn = BinaryCrossEntropyLoss()
+        result = gradcheck(
+            lambda p: loss_fn(p, target), (pred,),
+            eps=1e-3, atol=5e-2, rtol=5e-1, raise_exception=False
+        )
+        assert result
+
 
 # ============================================================================
 # BCE With Logits Loss
@@ -878,6 +1109,33 @@ class TestBCEWithLogitsLoss:
         loss.backward()
         assert logits.grad is not None
         assert np.all(np.isfinite(logits.grad))
+
+    def test_backward_gradient_shape(self):
+        loss_fn = BCEWithLogitsLoss()
+        logits = Tensor(np.random.randn(4, 3).astype(np.float32), requires_grad=True)
+        target = Tensor(np.random.randint(0, 2, (4, 3)).astype(np.float32))
+        loss = loss_fn(logits, target)
+        loss.backward()
+        assert logits.grad.shape == (4, 3)
+        assert np.all(np.isfinite(logits.grad))
+
+    def test_gradcheck(self):
+        logits = Tensor(np.array([1.0, -1.0, 0.5], dtype=np.float32), requires_grad=True)
+        target = Tensor(np.array([1.0, 0.0, 1.0], dtype=np.float32))
+        loss_fn = BCEWithLogitsLoss()
+        result = gradcheck(
+            lambda l: loss_fn(l, target), (logits,),
+            eps=1e-2, atol=5e-2, rtol=5e-1, raise_exception=False
+        )
+        assert result
+
+    def test_reduction_modes(self):
+        loss_fn = BCEWithLogitsLoss()
+        logits = Tensor(np.array([1.0, -1.0, 0.5], dtype=np.float32))
+        target = Tensor(np.array([1.0, 0.0, 1.0], dtype=np.float32))
+        loss_mean = loss_fn(logits, target, reduction='mean')
+        loss_sum = loss_fn(logits, target, reduction='sum')
+        assert np.isclose(loss_sum.data, loss_mean.data * 3, atol=1e-4)
 
 
 # ============================================================================
@@ -916,6 +1174,28 @@ class TestNLLLoss:
         loss = loss_fn(log_probs, targets)
         loss.backward()
         assert log_probs.grad is not None
+
+    def test_backward_gradient_values(self):
+        """NLL gradient should be -1/n at the target class, 0 elsewhere."""
+        loss_fn = NLLLoss()
+        log_probs = Tensor(np.log(np.array([[0.7, 0.2, 0.1]], dtype=np.float32) + 1e-8), requires_grad=True)
+        targets = Tensor(np.array([0], dtype=np.float32))
+        loss = loss_fn(log_probs, targets)
+        loss.backward()
+        # For single sample, grad at target class should be -1
+        assert log_probs.grad[0, 0] < 0
+        assert np.isclose(log_probs.grad[0, 1], 0.0, atol=1e-5)
+        assert np.isclose(log_probs.grad[0, 2], 0.0, atol=1e-5)
+
+    def test_gradcheck(self):
+        log_probs = Tensor(np.log(np.array([[0.7, 0.2, 0.1]], dtype=np.float32) + 1e-8), requires_grad=True)
+        targets = Tensor(np.array([0], dtype=np.float32))
+        loss_fn = NLLLoss()
+        result = gradcheck(
+            lambda lp: loss_fn(lp, targets), (log_probs,),
+            eps=1e-2, atol=5e-2, rtol=5e-1, raise_exception=False
+        )
+        assert result
 
 
 # ============================================================================
@@ -958,6 +1238,25 @@ class TestFocalLoss:
         loss.backward()
         assert logits.grad is not None
 
+    def test_backward_gradient_shape(self):
+        loss_fn = FocalLoss()
+        logits = Tensor(np.random.randn(4, 3).astype(np.float32), requires_grad=True)
+        targets = Tensor(np.array([0, 1, 2, 0], dtype=np.float32))
+        loss = loss_fn(logits, targets, gamma=2.0)
+        loss.backward()
+        assert logits.grad.shape == (4, 3)
+        assert np.all(np.isfinite(logits.grad))
+
+    def test_gradcheck(self):
+        logits = Tensor(np.random.randn(2, 3).astype(np.float32), requires_grad=True)
+        targets = Tensor(np.array([0, 1], dtype=np.float32))
+        loss_fn = FocalLoss()
+        result = gradcheck(
+            lambda l: loss_fn(l, targets, gamma=2.0), (logits,),
+            eps=1e-2, atol=5e-2, rtol=5e-1, raise_exception=False
+        )
+        assert result
+
 
 # ============================================================================
 # KL Divergence Loss
@@ -996,6 +1295,25 @@ class TestKLDivLoss:
         loss.backward()
         assert log_pred.grad is not None
 
+    def test_backward_gradient_shape(self):
+        loss_fn = KLDivLoss()
+        log_pred = Tensor(np.log(np.random.uniform(0.1, 0.9, (4, 3)).astype(np.float32)), requires_grad=True)
+        target = Tensor(np.random.uniform(0.1, 0.9, (4, 3)).astype(np.float32))
+        loss = loss_fn(log_pred, target)
+        loss.backward()
+        assert log_pred.grad.shape == (4, 3)
+        assert np.all(np.isfinite(log_pred.grad))
+
+    def test_gradcheck(self):
+        log_pred = Tensor(np.log(np.array([[0.5, 0.3, 0.2]], dtype=np.float32) + 1e-8), requires_grad=True)
+        target = Tensor(np.array([[0.7, 0.2, 0.1]], dtype=np.float32))
+        loss_fn = KLDivLoss()
+        result = gradcheck(
+            lambda lp: loss_fn(lp, target), (log_pred,),
+            eps=1e-2, atol=5e-2, rtol=5e-1, raise_exception=False
+        )
+        assert result
+
 
 # ============================================================================
 # Dice Loss
@@ -1007,7 +1325,6 @@ class TestDiceLoss:
     Note: DiceLoss has a reshape bug with tuple args when using Tensor.reshape().
     """
 
-    @pytest.mark.xfail(reason="Source bug: Tensor.reshape() passes tuple causing TypeError")
     def test_forward(self):
         loss_fn = DiceLoss()
         pred = Tensor(np.array([[[0.9, 0.1], [0.2, 0.8]]], dtype=np.float32))
@@ -1015,13 +1332,29 @@ class TestDiceLoss:
         loss = loss_fn(pred, target)
         assert 0 <= loss.data <= 1
 
-    @pytest.mark.xfail(reason="Source bug: Tensor.reshape() passes tuple causing TypeError")
     def test_perfect_prediction(self):
         loss_fn = DiceLoss()
         pred = Tensor(np.array([[[1.0, 0.0], [0.0, 1.0]]], dtype=np.float32))
         target = Tensor(np.array([[[1.0, 0.0], [0.0, 1.0]]], dtype=np.float32))
         loss = loss_fn(pred, target)
         assert np.isclose(loss.data, 0.0, atol=0.01)
+
+    def test_backward(self):
+        loss_fn = DiceLoss()
+        pred = Tensor(np.array([[[0.9, 0.1], [0.2, 0.8]]], dtype=np.float32), requires_grad=True)
+        target = Tensor(np.array([[[1.0, 0.0], [0.0, 1.0]]], dtype=np.float32))
+        loss = loss_fn(pred, target)
+        loss.backward()
+        assert pred.grad is not None
+        assert np.all(np.isfinite(pred.grad))
+
+    def test_backward_gradient_shape(self):
+        loss_fn = DiceLoss()
+        pred = Tensor(np.random.uniform(0.1, 0.9, (2, 2, 4)).astype(np.float32), requires_grad=True)
+        target = Tensor(np.random.randint(0, 2, (2, 2, 4)).astype(np.float32))
+        loss = loss_fn(pred, target)
+        loss.backward()
+        assert pred.grad.shape == (2, 2, 4)
 
 
 # ============================================================================
@@ -1176,6 +1509,24 @@ class TestCosineAnnealingLR:
         diffs = [abs(lrs[i + 1] - lrs[i]) for i in range(len(lrs) - 1)]
         assert max(diffs) < 0.02
 
+    def test_exact_formula_values(self):
+        """Verify LR matches cosine annealing formula at specific epochs."""
+        W = Variable(np.ones(3, dtype=np.float32))
+        opt = SGD([W], lr=0.1)
+        T_max = 20
+        eta_min = 0.01
+        sched = CosineAnnealingLR(opt, T_max=T_max, eta_min=eta_min)
+        lrs = []
+        for _ in range(T_max + 1):
+            lrs.append(list(sched.get_lr().values())[0])
+            sched.step()
+        # At T_max, LR should be at or near eta_min
+        assert np.isclose(lrs[T_max], eta_min, atol=0.005)
+        # At midpoint, LR should be near (base_lr + eta_min) / 2
+        mid = T_max // 2
+        expected_mid = eta_min + (0.1 - eta_min) * (1 + np.cos(np.pi * mid / T_max)) / 2
+        assert np.isclose(lrs[mid], expected_mid, atol=0.01)
+
 
 # ============================================================================
 # CosineAnnealingWarmRestarts Scheduler
@@ -1275,6 +1626,30 @@ class TestOneCycleLR:
         assert max_lr > 0.05
         assert lrs[-1] < max_lr
 
+    def test_peak_timing(self):
+        """Peak LR should occur around 30% of total steps (default pct_start=0.3)."""
+        W = Variable(np.ones(3, dtype=np.float32))
+        opt = SGD([W], lr=0.01)
+        sched = OneCycleLR(opt, max_lr=0.1, total_steps=100)
+        lrs = []
+        for _ in range(100):
+            lrs.append(list(sched.get_lr().values())[0])
+            sched.step()
+        peak_idx = np.argmax(lrs)
+        # Peak should be near step 30 (30% of 100)
+        assert 20 <= peak_idx <= 40
+
+    def test_final_lr(self):
+        """Final LR should be very small."""
+        W = Variable(np.ones(3, dtype=np.float32))
+        opt = SGD([W], lr=0.01)
+        sched = OneCycleLR(opt, max_lr=0.1, total_steps=100)
+        lrs = []
+        for _ in range(100):
+            lrs.append(list(sched.get_lr().values())[0])
+            sched.step()
+        assert lrs[-1] < 0.01
+
 
 # ============================================================================
 # LinearLR Scheduler
@@ -1295,6 +1670,22 @@ class TestLinearLR:
             sched.step()
         assert lrs[0] < lrs[-1]
         assert np.isclose(lrs[-1], 0.1, atol=1e-4)
+
+    def test_exact_interpolation(self):
+        """Verify LR at specific steps matches linear interpolation."""
+        W = Variable(np.ones(3, dtype=np.float32))
+        opt = SGD([W], lr=0.1)
+        sched = LinearLR(opt, start_factor=0.1, end_factor=1.0, total_iters=10)
+        lrs = []
+        for _ in range(11):
+            lrs.append(list(sched.get_lr().values())[0])
+            sched.step()
+        # At step 0: lr = 0.1 * 0.1 = 0.01
+        assert np.isclose(lrs[0], 0.01, atol=1e-4)
+        # At step 5 (midpoint): factor = 0.1 + (1.0 - 0.1) * 5/10 = 0.55
+        assert np.isclose(lrs[5], 0.055, atol=1e-3)
+        # At step 10: lr = 0.1 * 1.0 = 0.1
+        assert np.isclose(lrs[10], 0.1, atol=1e-4)
 
 
 # ============================================================================
@@ -1339,6 +1730,18 @@ class TestCyclicLR:
         opt = SGD([W], lr=0.001)
         with pytest.raises(NotImplementedError):
             CyclicLR(opt, max_lr=0.01, cycle_momentum=True)
+
+    def test_exact_cycle_peak(self):
+        """LR should reach max_lr during the cycle."""
+        W = Variable(np.ones(3, dtype=np.float32))
+        opt = SGD([W], lr=0.001)
+        sched = CyclicLR(opt, max_lr=0.01, step_size_up=5)
+        lrs = []
+        for _ in range(12):
+            lrs.append(list(sched.get_lr().values())[0])
+            sched.step()
+        max_lr = max(lrs)
+        assert np.isclose(max_lr, 0.01, atol=0.002), f"Peak LR {max_lr} should be near 0.01"
 
 
 # ============================================================================

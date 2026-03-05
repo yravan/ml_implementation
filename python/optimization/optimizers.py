@@ -155,7 +155,15 @@ def _load_optim_c():
             )
             return None
 
-    lib = ctypes.CDLL(str(so))
+    try:
+        lib = ctypes.CDLL(str(so))
+    except OSError:
+        warnings.warn(
+            "Failed to load C extension — using pure-numpy fallback.",
+            RuntimeWarning, stacklevel=3,
+        )
+        return None
+
     lib.adamw_step_f32.argtypes = [
         _f32p, _f32p, _f32p, _f32p, _ci,
         _cf, _cf, _cf, _cf, _cf, _cf, _cf,

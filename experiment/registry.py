@@ -432,7 +432,7 @@ def _pt_imagenette(config):
                          T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
     t_val = T.Compose([T.Resize(int(sz * 256/224)), T.CenterCrop(sz), T.ToTensor(),
                        T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-    root = Path(config.data_dir) / 'imagenette2-320'
+    root = Path(config.data_dir).expanduser() / 'imagenette2-320'
     if not root.exists():
         import urllib.request, tarfile
         tar = Path(config.data_dir) / 'imagenette2-320.tgz'
@@ -523,7 +523,7 @@ def _pt_imagenet_ffcv(config):
         RandomHorizontalFlip, Squeeze,
     )
 
-    root = Path(config.data_dir)
+    root = Path(config.data_dir).expanduser()
     ddp = getattr(config, 'ddp', False)
 
     # beton_dir: use config override (e.g. /tmp/ffcv for fast local SSD),
@@ -542,11 +542,13 @@ def _pt_imagenet_ffcv(config):
 
     # Pre-built betons: copy from pool/source storage into fast local beton_dir
     beton_source = getattr(config, 'beton_source_dir', None)
+    if beton_source:
+        beton_source = str(Path(beton_source).expanduser())
     if is_main:
         for name in ('train.beton', 'val.beton'):
             dst = beton_dir / name
             if not dst.exists() and beton_source:
-                src = Path(beton_source) / name
+                src = Path(beton_source).expanduser() / name
                 if src.exists():
                     import shutil
                     print(f"  Copying {src} → {dst} ...")

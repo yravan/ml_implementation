@@ -255,13 +255,22 @@ class MatMul(Function):
         global _no_grad
         if not _no_grad:
             self.x = x
-            self.y = y
+            if y.ndim == 1:
+                self.y = y[:, np.newaxis]
+            else:
+                self.y = y
         return x @ y
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Compute gradients for matrix multiplication."""
+        if grad_output.ndim == 1:
+            grad_output = grad_output[:, np.newaxis]
         dx = grad_output @ self.y.swapaxes(-1, -2)
         dy = self.x.swapaxes(-1, -2) @ grad_output
+        # Sum over batch dims when x has more dims than y
+        # e.g., x: [B, seq, d] @ y: [d, d] -> dy should be [d, d] not [B, d, d]
+        while dy.ndim > self.y.ndim:
+            dy = dy.sum(axis=0)
         return dx, dy
 
 
@@ -396,8 +405,8 @@ class Transpose(Function):
     def forward(self, x: np.ndarray, *axes: Optional[Tuple[int, ...]]) -> np.ndarray:
         if isinstance(x, (float, int)):
             x = np.array([x])
-        if len(axes) == 0:
-            axes = None
+        # if len(axes) == 0:
+        #     axes = None
         global _no_grad
         if not _no_grad:
             self.axes = axes
@@ -405,7 +414,7 @@ class Transpose(Function):
         return x.transpose(*axes)
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
-        if self.axes is None:
+        if len(self.axes) == 0:
             return (grad_output.T,)
         inverse_axes = np.argsort(self.axes)
         return (grad_output.transpose(inverse_axes),)

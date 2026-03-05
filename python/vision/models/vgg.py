@@ -33,6 +33,7 @@ from python.nn_core import (
     Linear,
     Conv2d,
     MaxPool2d,
+    BatchNorm2d,
 )
 from python.nn_core.module import Flatten
 
@@ -98,7 +99,10 @@ def make_layers(cfg: List[Union[int, str]], batch_norm: bool = False) -> Module:
     for channels in cfg:
         if isinstance(channels, int):
             feature_layers.append(Conv2d(prev_channels, channels, kernel_size=3, padding=1))
+            if batch_norm:
+                feature_layers.append(BatchNorm2d(channels))
             feature_layers.append(ReLU())
+            prev_channels = channels
         elif isinstance(channels, str) and channels == 'M':
             feature_layers.append(MaxPool2d(kernel_size=2, stride=2))
         else:

@@ -102,9 +102,24 @@ class Config:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Config":
-        """Create config from dict, ignoring unknown keys."""
-        valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered = {k: v for k, v in d.items() if k in valid_keys}
+        """Create config from dict, ignoring unknown keys.
+
+        Coerces values to match the declared field types so that YAML
+        strings like '4e-3' are properly converted to float.
+        """
+        valid_fields = {f.name: f for f in cls.__dataclass_fields__.values()}
+        filtered = {}
+        for k, v in d.items():
+            if k not in valid_fields:
+                continue
+            # Coerce str → float / int when the field expects a numeric type
+            ftype = valid_fields[k].type
+            if v is not None and isinstance(v, str):
+                if ftype is float or ftype == 'float':
+                    v = float(v)
+                elif ftype is int or ftype == 'int':
+                    v = int(v)
+            filtered[k] = v
         return cls(**filtered)
 
     @classmethod

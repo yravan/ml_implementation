@@ -20,7 +20,7 @@ model_args:
 # NOTE: batch_size is PER GPU. Effective batch = batch_size * nproc_per_node
 # With 4 GPUs and batch_size 256: effective batch = 1024
 epochs: 200
-batch_size: 1024
+batch_size: 640
 lr: 4e-3
 optimizer: adamw
 weight_decay: 0.05
@@ -39,7 +39,7 @@ num_workers: 8
 pin_memory: true
 amp: true
 compile: true
-compile_mode: max-autotune
+compile_mode: default
 compile_cache_dir: /tmp/torch_compile_cache  # persists across restarts within same job
 cudnn_benchmark: true
 ffcv: true

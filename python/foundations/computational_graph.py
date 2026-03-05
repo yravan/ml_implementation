@@ -131,18 +131,22 @@ def convert_to_function(cls):
         f.fn = fn
         class_args = list(class_args)
         children = []
+        child_indices = []  # track which positional args are Tensors
         for i, arg in enumerate(class_args):
             if isinstance(arg, Tensor):
                 children.append(arg)
+                child_indices.append(i)
                 class_args[i] = arg.data
             elif isinstance(arg, np.ndarray):
                 if arg.dtype == np.float64:
                     class_args[i] = arg.astype(np.float32, copy=False)
             elif isinstance(arg, float):
                 class_args[i] = np.float32(arg)
+        kwarg_child_keys = []
         for k, v in class_kwargs.items():
             if isinstance(v, Tensor):
                 children.append(v)
+                kwarg_child_keys.append(k)
                 class_kwargs[k] = v.data
             elif isinstance(v, np.ndarray):
                 if v.dtype == np.float64:
@@ -154,6 +158,8 @@ def convert_to_function(cls):
                      requires_grad=requires_grad,
                      _children=tuple(children),
                      _grad_fn=fn)
+        # Store which gradient indices correspond to each child
+        out._child_grad_indices = child_indices
         return out
     return f
 
@@ -232,6 +238,9 @@ class Tensor:
         """Total number of elements."""
         return self.data.size
 
+    def __len__(self) -> int:
+        return self.shape[0]
+
     def numpy(self) -> np.ndarray:
         """Return the underlying numpy array."""
         return self.data
@@ -290,7 +299,15 @@ class Tensor:
         for node in reversed(topo):
             if node.requires_grad and node._grad_fn is not None:
                 child_grads = node._grad_fn.backward(node.grad)
-                for child, child_grad in zip(node._children, child_grads):
+                # Map gradients to the correct children using stored indices
+                indices = getattr(node, '_child_grad_indices', None)
+                if indices is not None:
+                    # Select only the gradients that correspond to Tensor children
+                    mapped_grads = [child_grads[i] for i in indices]
+                else:
+                    # Fallback: 1-to-1 mapping (for ops not created via convert_to_function)
+                    mapped_grads = child_grads
+                for child, child_grad in zip(node._children, mapped_grads):
                     if child.requires_grad:
                         if child.grad is None:
                             child.grad = np.array(child_grad) if isinstance(child_grad, np.ndarray) else child_grad
@@ -397,7 +414,7 @@ class Tensor:
     def __invert__(self) -> 'Tensor':
         # if not self.dtype == np.bool_:
         #     raise RuntimeError('Cannot invert non bool tensor')
-        return Tensor(~(self.data).astype(np.bool))
+        return Tensor(~(self.data).astype(bool))
 
     def copy(self) -> 'Tensor':
         identity = convert_to_function(Identity)
@@ -444,6 +461,9 @@ class Tensor:
     def reshape(self, *shape: int) -> 'Tensor':
         """Reshape tensor."""
         reshape = convert_to_function(Reshape)
+        # Handle both x.reshape(2, 3) and x.reshape((2, 3))
+        if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
+            shape = tuple(shape[0])
         return reshape(self, shape)
 
     def transpose(self, *axes: int) -> 'Tensor':
@@ -454,11 +474,27 @@ class Tensor:
     def permute(self, *axes: int) -> 'Tensor':
         """Permute tensor dimensions (alias for transpose with axes)."""
         transpose = convert_to_function(Transpose)
-        return transpose(self, axes)
+        return transpose(self, *axes)
 
-    def split(self, indices_or_sections, axis:int = 0) -> 'Tensor':
-        split = convert_to_function(Split)
-        return split(self, indices_or_sections, axis=axis)
+    def split(self, indices_or_sections, axis: int = 0) -> list:
+        """Split tensor into parts along axis, returning a list of Tensors."""
+        size = self.data.shape[axis]
+        if isinstance(indices_or_sections, int):
+            # Split into N equal parts
+            n = indices_or_sections
+            part_size = size // n
+            indices = [part_size * i for i in range(1, n)]
+        else:
+            indices = list(indices_or_sections)
+
+        # Build slice boundaries: [0, idx1, idx2, ..., size]
+        boundaries = [0] + indices + [size]
+        parts = []
+        for i in range(len(boundaries) - 1):
+            slices = [slice(None)] * self.data.ndim
+            slices[axis] = slice(boundaries[i], boundaries[i + 1])
+            parts.append(self[tuple(slices)])
+        return parts
 
     def fill(self, value: float) -> 'Tensor':
         self.data[:] = value

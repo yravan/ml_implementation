@@ -41,23 +41,22 @@ class LinearOp(Function):
         return out
 
     def backward(self, grad_output):
-        # grad_input: (B, out) @ (out, in) = (B, in)
+        # grad_input: (..., out) @ (out, in) = (..., in)
         grad_x = grad_output @ self.weight.T
 
-        # grad_weight: (in, B) @ (B, out) = (in, out)
-        # Use pre-allocated buffer if available to avoid large malloc
-        if '_grad_weight' in self.__dict__:
-            np.matmul(self.x.T, grad_output, out=self._grad_weight)
-        else:
-            grad_weight = self.x.T @ grad_output
-            self._grad_weight = grad_weight
+        # grad_weight: (in, ...) @ (..., out) = (in, out)
+        # For 3D+ inputs, transpose last two dims and sum over batch dims
+        x_t = np.swapaxes(self.x, -2, -1)
+        raw_grad_weight = x_t @ grad_output
+        # Sum over batch dimensions to get (in, out)
+        while raw_grad_weight.ndim > 2:
+            raw_grad_weight = raw_grad_weight.sum(axis=0)
+        self._grad_weight = raw_grad_weight
 
         if self.has_bias:
-            if '_grad_bias' in self.__dict__:
-                np.sum(grad_output, axis=0, out=self._grad_bias)
-            else:
-                grad_bias = grad_output.sum(axis=0)
-                self._grad_bias = grad_bias
+            # Sum over all dims except the last (out_features)
+            grad_bias = grad_output.reshape(-1, grad_output.shape[-1]).sum(axis=0)
+            self._grad_bias = grad_bias
             return grad_x, self._grad_weight, self._grad_bias
 
         return grad_x, self._grad_weight, None

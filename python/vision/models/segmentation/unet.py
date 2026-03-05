@@ -56,10 +56,11 @@ from python.nn_core import (
     Dropout2d,
     kaiming_normal_,
     zeros_,
+    Dropout,
 )
 from python.foundations import concat, Tensor
 from python.foundations.functionals import Function
-from python.foundations.computational_graph import convert_to_function
+from python.foundations.computational_graph import convert_to_function, _no_grad
 
 
 class NearestUpsample2dFunction(Function):
@@ -76,12 +77,19 @@ class NearestUpsample2dFunction(Function):
     def forward(self, x: np.ndarray, scale_factor: int = 2) -> np.ndarray:
         # TODO: Implement nearest-neighbor upsample forward
         # Save self.scale and self.input_shape for backward
-        raise NotImplementedError("TODO: Implement NearestUpsample2dFunction forward")
+        out = np.repeat(x, scale_factor, axis=-1)
+        out = np.repeat(out, scale_factor, axis=-2)
+        global _no_grad
+        if not _no_grad:
+            self.input_shape = x.shape
+            self.scale_factor = scale_factor
+        return out
 
-    def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray]:
-        # TODO: Implement nearest-neighbor upsample backward
-        # Reshape grad to (B, C, H, s, W, s) and sum over (3, 5)
-        raise NotImplementedError("TODO: Implement NearestUpsample2dFunction backward")
+    def backward(self, grad_output: np.ndarray) -> np.ndarray:
+        B, C, H, W = self.input_shape
+        grad_input = grad_output.reshape((B, C, H, self.scale_factor, W, self.scale_factor))
+        grad_input = grad_input.sum(axis=(3,5))
+        return grad_input
 
 
 class Upsample2d(Module):
@@ -102,11 +110,10 @@ class Upsample2d(Module):
     def __init__(self, scale_factor: int = 2):
         super().__init__()
         self.scale_factor = scale_factor
-        # TODO: create self._upsample using convert_to_function
-        raise NotImplementedError("TODO: Implement Upsample2d")
+        self._upsample = convert_to_function(NearestUpsample2dFunction)
 
     def forward(self, x):
-        raise NotImplementedError("TODO: Implement Upsample2d forward")
+        return self._upsample(x, scale_factor=self.scale_factor)
 
 
 class DoubleConv(Module):
@@ -129,11 +136,19 @@ class DoubleConv(Module):
     def __init__(self, in_channels: int, out_channels: int,
                  mid_channels: Optional[int] = None):
         super().__init__()
-        # TODO: Build self.double_conv as a Sequential of the layers above
-        raise NotImplementedError("TODO: Implement DoubleConv")
+        if mid_channels is None:
+            mid_channels = out_channels
+        self.layers = Sequential(
+            Conv2d(in_channels, mid_channels, 3, padding=1, bias=False),
+            BatchNorm2d(mid_channels),
+            ReLU(),
+            Conv2d(mid_channels, out_channels, 3, padding=1, bias=False),
+            BatchNorm2d(out_channels),
+            ReLU(),
+        )
 
     def forward(self, x):
-        raise NotImplementedError("TODO: Implement DoubleConv forward")
+        return self.layers(x)
 
 
 class EncoderBlock(Module):
@@ -149,12 +164,11 @@ class EncoderBlock(Module):
 
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
-        # TODO: self.pool = MaxPool2d(kernel_size=2, stride=2)
-        # TODO: self.conv = DoubleConv(in_channels, out_channels)
-        raise NotImplementedError("TODO: Implement EncoderBlock")
+        self.pool = MaxPool2d(2)
+        self.double_conv = DoubleConv(in_channels, out_channels)
 
     def forward(self, x):
-        raise NotImplementedError("TODO: Implement EncoderBlock forward")
+        return self.double_conv(self.pool(x))
 
 
 class DecoderBlock(Module):
@@ -171,10 +185,9 @@ class DecoderBlock(Module):
 
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
-        # TODO: self.up = Upsample2d(scale_factor=2)
-        # TODO: self.reduce = Conv2d(in_channels, in_channels // 2, kernel_size=1, bias=False)
-        # TODO: self.conv = DoubleConv(in_channels, out_channels)
-        raise NotImplementedError("TODO: Implement DecoderBlock")
+        self.up = Upsample2d(scale_factor=2)
+        self.reduce = Conv2d(in_channels, in_channels // 2, kernel_size=1, bias=False)
+        self.conv = DoubleConv(in_channels, out_channels)
 
     def forward(self, x, skip):
         """
@@ -186,14 +199,11 @@ class DecoderBlock(Module):
 
         Returns:
             Decoded features (B, out_channels, 2H, 2W)
-
-        Steps:
-            x = self.up(x)        # (B, C, H, W) -> (B, C, 2H, 2W)
-            x = self.reduce(x)    # (B, C, 2H, 2W) -> (B, C/2, 2H, 2W)
-            x = concat(skip, x, axis=1)  # (B, C, 2H, 2W)
-            return self.conv(x)
         """
-        raise NotImplementedError("TODO: Implement DecoderBlock forward")
+        x = self.up(x)
+        x = self.reduce(x)
+        x = concat(skip, x, axis=1)
+        return self.conv(x)
 
 
 class UNet(Module):
@@ -251,8 +261,29 @@ class UNet(Module):
         dropout: float = 0.0,
     ):
         super().__init__()
-        # TODO: Implement UNet __init__
-        raise NotImplementedError("TODO: Implement UNet")
+        if features is None:
+            features = [64, 128, 256, 512]
+        self.encoders = []
+        prev_channels = in_channels
+        features = features + [features[-1] * 2]
+        for i, channel in enumerate(features):
+            if i == 0:
+                self.encoders.append(DoubleConv(prev_channels, channel))
+            else:
+                self.encoders.append(EncoderBlock(prev_channels, channel))
+            prev_channels = channel
+
+        if dropout > 1e-8:
+            self.dropout = Dropout(dropout)
+        else:
+            self.dropout = None
+
+        self.decoders = []
+        for i, channel in enumerate(features[-2::-1]):
+            self.decoders.append(DecoderBlock(prev_channels, channel))
+            prev_channels = channel
+
+        self.output = Conv2d(prev_channels, num_classes, kernel_size=1)
 
     def _init_weights(self):
         """Initialize weights with Kaiming normal for conv layers."""
@@ -268,7 +299,19 @@ class UNet(Module):
         Returns:
             Output tensor of shape (B, num_classes, H, W)
         """
-        raise NotImplementedError("TODO: Implement UNet forward")
+        skips = []
+        for encoder in self.encoders:
+            skips.append(x)
+            x = encoder(x)
+
+        if self.dropout is not None:
+            x = self.dropout(x)
+
+        for decoder in self.decoders:
+            x = decoder(x, skips[-1])
+            skips.pop()
+
+        return self.output(x)
 
 
 class UNetSmall(Module):
