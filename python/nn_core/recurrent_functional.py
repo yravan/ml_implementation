@@ -220,8 +220,9 @@ class LSTMCell(Function):
 
         grad_x = grad_gates @ self.W_ih
         grad_h = grad_gates @ self.W_hh
+        grad_c_input = f * grad_c
 
-        return grad_x, grad_h, grad_W_ih, grad_W_hh, grad_b_ih, grad_b_hh
+        return grad_x, grad_h, grad_c_input, grad_W_ih, grad_W_hh, grad_b_ih, grad_b_hh
 # =============================================================================
 # GRU Cell Function Class
 # =============================================================================

@@ -140,8 +140,10 @@ class GPT(Module):
         ])
         self.final_norm = LayerNorm(d_model)
         self.lm_head = Linear(d_model, vocab_size)
+        self.tie_embeddings = tie_embeddings
         if tie_embeddings:
-            self.lm_head.weight = self.token_embedding.T
+            # Remove lm_head.weight from parameters — we'll use token_embedding.T in forward
+            del self.lm_head._parameters['weight']
 
     def forward(
         self,
@@ -177,7 +179,10 @@ class GPT(Module):
 
         # Final norm + project to vocab
         x = self.final_norm(x)
-        logits = self.lm_head(x)
+        if self.tie_embeddings:
+            logits = x @ self.token_embedding.T + self.lm_head.bias
+        else:
+            logits = self.lm_head(x)
         return logits
 
 

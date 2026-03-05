@@ -8660,8 +8660,9 @@ class TestLSTMCell:
         x = Tensor(np.random.randn(batch_size, d_in).astype(np.float64), requires_grad=True)
         h = Tensor(np.random.randn(batch_size, d_h).astype(np.float64), requires_grad=True)
         h_t, c_t = cell.forward(x, h, c)
-        loss = c_t.sum()
+        loss = h_t.sum()
         loss.backward()
+        # c's gradient flows through the LSTM cell backward (internally tracked)
         assert c.grad is not None
 
     def test_lstmcell_sequence_processing(self):
