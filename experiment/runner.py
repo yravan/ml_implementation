@@ -602,6 +602,8 @@ class BaseRunner:
                 compile_mode = 'default'
                 self.mprint(f"  [Note] Downgraded compile mode from 'reduce-overhead' to 'default' "
                             f"(incompatible with gradient_accumulation_steps={config.gradient_accumulation_steps})")
+            os.environ.setdefault('TORCHINDUCTOR_FX_GRAPH_CACHE', '1')
+            os.environ.setdefault('TORCHINDUCTOR_AUTOGRAD_CACHE', '1')
             model = torch.compile(model, mode=compile_mode)
             self.mprint(f"  torch.compile: enabled ({compile_mode})")
 
@@ -617,6 +619,9 @@ class BaseRunner:
         optimizer = build_optimizer(model, config)
         scheduler = build_scheduler(optimizer, config)
         warmup = build_warmup_scheduler(optimizer, config)
+        if config.compile and config.compile_optimizer:
+            optimizer.step = torch.compile(optimizer.step)
+            self.mprint(f"  torch.compile optimizer: enabled")
         criterion = self.setup_criterion()
 
         # ── Logger ──────────────────────────────────────────────
