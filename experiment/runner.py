@@ -378,7 +378,7 @@ def train_one_epoch(model, loader, criterion, optimizer, config, logger,
 
 
 def evaluate(model, loader, criterion, metric_fns, backend,
-             collect_predictions=False):
+             collect_predictions=False, max_batches=0):
     """Evaluate model. Returns dict of averaged metrics."""
     model.eval()
     total_loss = 0.0       # GPU tensor for pytorch, float for numpy
@@ -388,7 +388,9 @@ def evaluate(model, loader, criterion, metric_fns, backend,
     all_labels = [] if collect_predictions else None
 
     with backend.no_grad_context():
-        for batch in loader:
+        for i, batch in enumerate(loader):
+            if max_batches and i >= max_batches:
+                break
             logits, batch_loss, n, targets_d = backend.eval_step(model, batch, criterion)
 
             total_loss = total_loss + batch_loss * n
@@ -649,6 +651,8 @@ class BaseRunner:
         save_every = config.save_every_steps
 
         self.mprint(f"\n{'─'*70}\n Training (step-based: {max_steps} steps)\n{'─'*70}")
+        if config.eval_max_batches > 0:
+            self.mprint(f"  eval_max_batches: {config.eval_max_batches} (capped)")
         if logger:
             logger.begin_training()
 
@@ -747,7 +751,8 @@ class BaseRunner:
                         self.mprint(f"\n  ── Step {global_step} checkpoint ──")
 
                         # Validate
-                        val_results = self._evaluate(model, val_loader, criterion, metric_fns)
+                        val_results = self._evaluate(model, val_loader, criterion, metric_fns,
+                                                       max_batches=self.config.eval_max_batches)
                         self.mprint(f"  Val loss: {val_results['loss']:.4f}")
                         for k, v in val_results.items():
                             if k != 'loss':
@@ -797,7 +802,8 @@ class BaseRunner:
 
         # ── Final validation at end if not on a save_every boundary ──
         if not save_every or global_step % save_every != 0:
-            val_results = self._evaluate(model, val_loader, criterion, metric_fns)
+            val_results = self._evaluate(model, val_loader, criterion, metric_fns,
+                                           max_batches=self.config.eval_max_batches)
             self.mprint(f"\n  Final val loss: {val_results['loss']:.4f}")
             for k, v in val_results.items():
                 if k != 'loss':
@@ -869,6 +875,8 @@ class BaseRunner:
 
         # ── Training ────────────────────────────────────────────
         self.mprint(f"\n{'─'*70}\n Training\n{'─'*70}")
+        if config.eval_max_batches > 0:
+            self.mprint(f"  eval_max_batches: {config.eval_max_batches} (capped)")
         if logger:
             logger.begin_training()
 
@@ -895,7 +903,8 @@ class BaseRunner:
             throughput = train_results.pop('_throughput', 0.0)
 
             # Val
-            val_results = self._evaluate(model, val_loader, criterion, metric_fns)
+            val_results = self._evaluate(model, val_loader, criterion, metric_fns,
+                                         max_batches=self.config.eval_max_batches)
 
             # LR step
             current_lr = backend.get_lr(optimizer)
@@ -1068,7 +1077,7 @@ class BaseRunner:
         results['_throughput'] = throughput
         return results
 
-    def _evaluate(self, model, loader, criterion, metric_fns, collect_predictions=False):
+    def _evaluate(self, model, loader, criterion, metric_fns, collect_predictions=False, max_batches=0):
         """Evaluate model. Returns dict of averaged metrics."""
         backend = self.backend
         model.eval()
@@ -1079,7 +1088,9 @@ class BaseRunner:
         all_labels = [] if collect_predictions else None
 
         with backend.no_grad_context():
-            for batch in loader:
+            for i, batch in enumerate(loader):
+                if max_batches and i >= max_batches:
+                    break
                 import torch; torch.compiler.cudagraph_mark_step_begin()
                 logits, batch_loss, n, targets_d = self.eval_step(model, batch, criterion)
 
@@ -1135,10 +1146,10 @@ class ClassificationRunner(BaseRunner):
             self.config, logger, metric_fns, self.backend, epoch,
         )
 
-    def _evaluate(self, model, loader, criterion, metric_fns, collect_predictions=False):
+    def _evaluate(self, model, loader, criterion, metric_fns, collect_predictions=False, max_batches=0):
         """Use original evaluate for exact backward compat."""
         return evaluate(model, loader, criterion, metric_fns, self.backend,
-                        collect_predictions=collect_predictions)
+                        collect_predictions=collect_predictions, max_batches=max_batches)
 
 
 # =============================================================================
@@ -1346,9 +1357,9 @@ class LanguageModelRunner(BaseRunner):
             return f"{value:.2f}"
         return f"{value:.4f}"
 
-    def _evaluate(self, model, loader, criterion, metric_fns, collect_predictions=False):
+    def _evaluate(self, model, loader, criterion, metric_fns, collect_predictions=False, max_batches=0):
         """Override to compute perplexity from loss."""
-        results = super()._evaluate(model, loader, criterion, metric_fns, collect_predictions)
+        results = super()._evaluate(model, loader, criterion, metric_fns, collect_predictions, max_batches=max_batches)
         # Compute perplexity from loss
         ppl = math.exp(min(results['loss'], 100))  # clamp to avoid overflow
         results['perplexity'] = ppl

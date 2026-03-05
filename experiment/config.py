@@ -63,6 +63,7 @@ class Config:
     max_steps: Optional[int] = None    # if set, train for N steps (overrides epochs)
     warmup_steps: int = 0              # linear warmup steps (used when max_steps is set)
     save_every_steps: int = 0          # save/validate/generate every N steps (0=off)
+    eval_max_batches: int = 0          # max batches per eval (0=full dataset)
 
     # ── Generation (language_model / seq2seq) ────────────────────────
     generate_every: int = 0           # generate samples every N epochs (0=off)
