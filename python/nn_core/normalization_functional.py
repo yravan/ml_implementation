@@ -142,7 +142,10 @@ class BatchNorm1d(Function):
                     _cf(eps),
                 )
                 output = out.reshape(x.shape)
-                norm_x = None  # not needed in eval
+                if ndim == 2:
+                    norm_x = (x - running_mean[None,:]) / np.sqrt(running_var[None,:] + eps)
+                else:
+                    norm_x = (x - running_mean[None,:,None]) / np.sqrt(running_var[None,:,None] + eps)
             else:
                 if ndim == 2:
                     norm_x = (x - running_mean[None,:]) / np.sqrt(running_var[None,:] + eps)
@@ -156,6 +159,7 @@ class BatchNorm1d(Function):
             self.norm_x = norm_x
             self.gamma = gamma
             self.beta = beta
+            self.training = training
             if training:
                 self.var = var
                 self.mean = mean
@@ -176,6 +180,20 @@ class BatchNorm1d(Function):
 
         B, C = grad_output.shape[:2]
         S = grad_output.shape[2] if ndim == 3 else 1
+
+        if not self.training:
+            # Eval mode: mean/var are constants, so grad is simple
+            if ndim == 2:
+                inv_std = 1.0 / np.sqrt(self.var[None,:] + self.eps)
+                grad_x = grad_output * self.gamma[None,:] * inv_std
+                grad_gamma = (self.norm_x * grad_output).sum(axis=0)
+                grad_beta = grad_output.sum(axis=0)
+            else:
+                inv_std = 1.0 / np.sqrt(self.var[None,:,None] + self.eps)
+                grad_x = grad_output * self.gamma[None,:,None] * inv_std
+                grad_gamma = (self.norm_x * grad_output).sum(axis=(0,2))
+                grad_beta = grad_output.sum(axis=(0,2))
+            return grad_x, grad_gamma, grad_beta
 
         if lib is not None and grad_output.dtype == np.float32:
             go = np.ascontiguousarray(grad_output.reshape(B, C, S))
@@ -300,7 +318,7 @@ class BatchNorm2d(Function):
                     _cf(eps),
                 )
                 output = out
-                norm_x = None
+                norm_x = (x - running_mean[None,:,None,None]) / np.sqrt(running_var[None,:,None,None] + eps)
             else:
                 norm_x = (x - running_mean[None,:,None,None]) / np.sqrt(running_var[None,:,None,None] + eps)
                 output = norm_x * gamma[None,:,None,None] + beta[None,:,None,None]
@@ -316,6 +334,7 @@ class BatchNorm2d(Function):
             self.norm_x = norm_x
             self.gamma = gamma
             self.beta = beta
+            self.training = training
             self.eps = eps
 
         return output
@@ -327,6 +346,14 @@ class BatchNorm2d(Function):
         B, C, H, W = grad_output.shape
         S = H * W
         lib = _load_bn_c()
+
+        if not self.training:
+            # Eval mode: mean/var are constants, so grad is simple
+            inv_std = 1.0 / np.sqrt(self.var[None,:,None,None] + self.eps)
+            grad_x = grad_output * self.gamma[None,:,None,None] * inv_std
+            grad_gamma = (self.norm_x * grad_output).sum(axis=(0,2,3))
+            grad_beta = grad_output.sum(axis=(0,2,3))
+            return grad_x, grad_gamma, grad_beta
 
         if lib is not None and grad_output.dtype == np.float32:
             go = np.ascontiguousarray(grad_output)

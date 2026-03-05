@@ -183,7 +183,7 @@ class Logger:
         self._epoch_start = time.time()
 
     def end_epoch(self, train_results, val_results, lr=None, throughput=None,
-                  step=None):
+                  step=None, format_metric=None):
         """Log end-of-epoch results to all backends."""
         if step is None:
             step = self._epoch
@@ -204,14 +204,21 @@ class Logger:
 
         # Console output
         if self._use_console:
-            parts_train = [f"Loss: {train_results.get('loss', 0):.4f}"]
-            parts_val = [f"Loss: {val_results.get('loss', 0):.4f}"]
+            def _fmt(name, value):
+                if format_metric:
+                    return format_metric(name, value)
+                if name == 'loss':
+                    return f"{value:.4f}"
+                return f"{value*100:.2f}%"
+
+            parts_train = [f"Loss: {_fmt('loss', train_results.get('loss', 0))}"]
+            parts_val = [f"Loss: {_fmt('loss', val_results.get('loss', 0))}"]
             for k, v in train_results.items():
                 if k != 'loss':
-                    parts_train.append(f"{k}: {v*100:.2f}%")
+                    parts_train.append(f"{k}: {_fmt(k, v)}")
             for k, v in val_results.items():
                 if k != 'loss':
-                    parts_val.append(f"{k}: {v*100:.2f}%")
+                    parts_val.append(f"{k}: {_fmt(k, v)}")
 
             print(f"  Train | {' | '.join(parts_train)}")
             print(f"  Val   | {' | '.join(parts_val)}")

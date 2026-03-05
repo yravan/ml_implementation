@@ -1,0 +1,26 @@
+name: gpt2-wikitext2
+wandb_project: gpt2-wikitext2
+backend: numpy
+task: language_model
+dataset: wikitext2
+
+model: gpt2
+tokenizer: gpt2
+max_seq_len: 256
+epochs: 10
+batch_size: 16
+lr: 3e-4
+optimizer: adamw
+optimizer_args:
+  betas: [0.9, 0.999]
+weight_decay: 0.01
+scheduler: cosine
+warmup_epochs: 1
+grad_clip: 1.0
+metrics: [perplexity]
+generate_every: 2
+generate_max_tokens: 50
+generate_prompts: ["The meaning of life is", "In the beginning"]
+logger: wandb
+log_interval: 100
+save_every: 2

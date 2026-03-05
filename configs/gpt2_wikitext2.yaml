@@ -1,10 +1,11 @@
 name: gpt2-wikitext2
+wandb_project: gpt2-wikitext2
 task: language_model
 dataset: wikitext2
 model: gpt2
 tokenizer: gpt2
-max_seq_len: 256
-epochs: 10
+max_seq_len: 1024
+epochs: 50
 batch_size: 16
 lr: 3e-4
 optimizer: adamw
@@ -13,8 +14,25 @@ scheduler: cosine
 warmup_epochs: 1
 grad_clip: 1.0
 metrics: [perplexity]
-generate_every: 2
+generate_every: 5
 generate_max_tokens: 50
 generate_prompts: ["The meaning of life is", "In the beginning"]
-logger: tensorboard
-log_interval: 100
+logger: wandb
+log_interval: 40
+
+
+# ── DDP ──────────────────────────────────────────────────────────
+ddp: true
+ddp_backend: nccl               # nccl for GPU, gloo for CPU/fallback
+ddp_find_unused: false
+ddp_gradient_as_bucket: true
+
+# ── Performance ──────────────────────────────────────────────────
+num_workers: 8
+pin_memory: true
+amp: true
+compile: true
+compile_mode: default
+compile_cache_dir: /tmp/torch_compile_cache  # persists across restarts within same job
+cudnn_benchmark: true
+

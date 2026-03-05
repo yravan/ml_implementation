@@ -178,9 +178,3 @@ class ScaledDotProductAttention(Function):
         grad_K = grad_pre_softmax.swapaxes(-1,-2) @ self.Q
 
         return grad_Q, grad_K, grad_V
-
-# =============================================================================
-# Functional Interfaces
-# =============================================================================
-
-scaled_dot_product_attention = convert_to_function(ScaledDotProductAttention)

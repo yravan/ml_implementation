@@ -670,6 +670,16 @@ class Slice(Function):
             else:
                 grad[self.slices] = grad_output
         else:
+            # Handle broadcast dimensions (e.g. from None/newaxis in slices)
+            target_shape = grad[self.slices].shape
+            if grad_output.shape != target_shape:
+                # Sum over axes that were broadcast (size 1 in target, >1 in grad)
+                reduce_axes = tuple(
+                    i for i in range(len(target_shape))
+                    if target_shape[i] == 1 and grad_output.shape[i] > 1
+                )
+                if reduce_axes:
+                    grad_output = grad_output.sum(axis=reduce_axes, keepdims=True)
             grad[self.slices] = grad_output
         return grad,
 

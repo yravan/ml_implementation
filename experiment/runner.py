@@ -277,7 +277,7 @@ class _NumpyBackend:
                 F._no_grad = self_._prev
         return _NoGrad()
 
-    def criterion(self):
+    def criterion(self, config=None):
         from python.optimization.losses import CrossEntropyLoss
         return CrossEntropyLoss()
 
@@ -647,7 +647,8 @@ class BaseRunner:
             if logger:
                 epoch_global_step = epoch * len(train_loader)
                 logger.end_epoch(train_results, val_results, lr=current_lr,
-                                 throughput=throughput, step=epoch_global_step)
+                                 throughput=throughput, step=epoch_global_step,
+                                 format_metric=self.format_metric)
 
             # Epoch end hook (generation, BLEU, etc.)
             self.on_epoch_end(epoch, train_results, val_results, model,
@@ -754,7 +755,11 @@ class BaseRunner:
                 interval_samples = 0
                 parts = [f"Batch {batch_idx+1:5d}/{len(loader)}", f"Loss: {avg_loss:.4f}"]
                 for name in metric_fns:
-                    parts.append(f"{name}: {self.format_metric(name, float(metric_totals[name])/total_samples)}")
+                    if name == 'perplexity':
+                        ppl = math.exp(min(avg_loss, 100))
+                        parts.append(f"perplexity: {self.format_metric('perplexity', ppl)}")
+                    else:
+                        parts.append(f"{name}: {self.format_metric(name, float(metric_totals[name])/total_samples)}")
                 if world > 1:
                     parts.append(f"{ips_total:.0f} tok/s ({ips:.0f}/rank × {world})")
                 else:
@@ -892,7 +897,12 @@ class LanguageModelRunner(BaseRunner):
                 )
             return lm_criterion
         # Numpy: flattening done in _np_train_step/_np_eval_step
-        return self.backend.criterion(self.config)
+        from python.optimization.losses import CrossEntropyLoss
+        ce = CrossEntropyLoss()
+        ls = self.config.label_smoothing
+        def np_lm_criterion(logits, targets, reduction='mean'):
+            return ce(logits, targets, label_smoothing=ls, reduction=reduction)
+        return np_lm_criterion
 
     def train_step(self, model, batch, criterion, optimizer):
         """LM training: shift logits for next-token prediction."""
@@ -1102,7 +1112,13 @@ class Seq2SeqRunner(BaseRunner):
                 )
             return seq2seq_criterion
         # Numpy: flattening done in _np_train_step/_np_eval_step
-        return self.backend.criterion(self.config)
+        from python.optimization.losses import CrossEntropyLoss
+        ce = CrossEntropyLoss()
+        ls = self.config.label_smoothing
+        pad_id = self.pad_token_id
+        def np_seq2seq_criterion(logits, targets, reduction='mean'):
+            return ce(logits, targets, ignore_index=pad_id, label_smoothing=ls, reduction=reduction)
+        return np_seq2seq_criterion
 
     def train_step(self, model, batch, criterion, optimizer):
         """Seq2seq training with teacher forcing."""

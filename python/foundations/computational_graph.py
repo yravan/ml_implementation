@@ -126,7 +126,12 @@ from .functionals import (
 
 
 def convert_to_function(cls):
+    import inspect
     fn = cls()
+    # Map forward() param names to their positional indices (excluding 'self')
+    params = [p.name for p in inspect.signature(cls.forward).parameters.values() if p.name != 'self']
+    param_index = {name: i for i, name in enumerate(params)}
+
     def f(*class_args, **class_kwargs):
         f.fn = fn
         class_args = list(class_args)
@@ -142,11 +147,10 @@ def convert_to_function(cls):
                     class_args[i] = arg.astype(np.float32, copy=False)
             elif isinstance(arg, float):
                 class_args[i] = np.float32(arg)
-        kwarg_child_keys = []
         for k, v in class_kwargs.items():
             if isinstance(v, Tensor):
                 children.append(v)
-                kwarg_child_keys.append(k)
+                child_indices.append(param_index[k])
                 class_kwargs[k] = v.data
             elif isinstance(v, np.ndarray):
                 if v.dtype == np.float64:
@@ -301,14 +305,17 @@ class Tensor:
                 child_grads = node._grad_fn.backward(node.grad)
                 # Map gradients to the correct children using stored indices
                 indices = getattr(node, '_child_grad_indices', None)
+                n_grads = len(child_grads)
                 if indices is not None:
-                    # Select only the gradients that correspond to Tensor children
-                    mapped_grads = [child_grads[i] for i in indices]
+                    # Select only the gradients that correspond to Tensor children.
+                    # If backward returns fewer grads than the max index
+                    # (e.g. mask/config args not differentiated), skip those.
+                    mapped_grads = [child_grads[i] if i < n_grads else None for i in indices]
                 else:
                     # Fallback: 1-to-1 mapping (for ops not created via convert_to_function)
                     mapped_grads = child_grads
                 for child, child_grad in zip(node._children, mapped_grads):
-                    if child.requires_grad:
+                    if child.requires_grad and child_grad is not None:
                         if child.grad is None:
                             child.grad = np.array(child_grad) if isinstance(child_grad, np.ndarray) else child_grad
                         else:
