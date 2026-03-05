@@ -6,7 +6,7 @@ dataset: openwebtext
 model: gpt2-large
 tokenizer: gpt2
 max_seq_len: 1024
-batch_size: 8
+batch_size: 10
 gradient_accumulation_steps: 4
 lr: 2e-4
 optimizer: adamw
@@ -16,9 +16,9 @@ weight_decay: 0.1
 scheduler: cosine
 grad_clip: 1.0
 metrics: [perplexity]
-max_steps: 800000
-warmup_steps: 5000
-save_every_steps: 5000
+max_steps: 100000
+warmup_steps: 625
+save_every_steps: 1000
 generate_max_tokens: 100
 generate_prompts: ["The future of artificial intelligence", "Scientists have discovered", "Once upon a time"]
 logger: wandb
@@ -30,10 +30,10 @@ ddp_find_unused: false
 ddp_gradient_as_bucket: true
 
 # ── Performance ──────────────────────────────────────────────────
-num_workers: 16
+num_workers: 4
 pin_memory: true
 amp: true
 compile: true
-compile_mode: default
+compile_mode: reduce-overhead
 compile_cache_dir: /tmp/torch_compile_cache
 cudnn_benchmark: true

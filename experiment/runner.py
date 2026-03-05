@@ -597,8 +597,13 @@ class BaseRunner:
             if cache_dir:
                 os.environ['TORCHINDUCTOR_CACHE_DIR'] = cache_dir
                 self.mprint(f"  torch.compile cache: {cache_dir}")
-            model = torch.compile(model, mode=config.compile_mode)
-            self.mprint(f"  torch.compile: enabled ({config.compile_mode})")
+            compile_mode = config.compile_mode
+            if compile_mode == 'reduce-overhead' and config.gradient_accumulation_steps > 1:
+                compile_mode = 'default'
+                self.mprint(f"  [Note] Downgraded compile mode from 'reduce-overhead' to 'default' "
+                            f"(incompatible with gradient_accumulation_steps={config.gradient_accumulation_steps})")
+            model = torch.compile(model, mode=compile_mode)
+            self.mprint(f"  torch.compile: enabled ({compile_mode})")
 
         # DDP wrap
         if config.ddp:
@@ -652,6 +657,7 @@ class BaseRunner:
 
         global_step = 0
         epoch = 0
+        training_start = time.time()
 
         while global_step < max_steps:
             epoch += 1
@@ -670,6 +676,7 @@ class BaseRunner:
                 optimizer.zero_grad()
 
             for batch_idx, batch in enumerate(train_loader):
+                import torch; torch.compiler.cudagraph_mark_step_begin()
                 is_accumulating = ((batch_idx + 1) % grad_accum != 0)
 
                 logits, batch_loss, n, targets_d = self.train_step(
@@ -712,6 +719,12 @@ class BaseRunner:
                         else:
                             parts_log.append(f"{tps_total:.0f} tok/s")
                         parts_log.append(f"lr: {current_lr:.2e}")
+                        s_per_step = interval_elapsed / config.log_interval
+                        eta_seconds = (max_steps - global_step) * s_per_step
+                        eta_d = int(eta_seconds // 86400)
+                        eta_h = int((eta_seconds % 86400) // 3600)
+                        eta_m = int((eta_seconds % 3600) // 60)
+                        parts_log.append(f"{s_per_step:.2f} s/step | ETA: {eta_d}d {eta_h}h {eta_m}m")
                         if backend.is_main:
                             print(f"    {' | '.join(parts_log)}")
                         if logger:
@@ -719,6 +732,8 @@ class BaseRunner:
                             logger.log_scalar('train/perplexity', ppl, step=global_step)
                             logger.log_scalar('train/throughput', tps_total, step=global_step)
                             logger.log_scalar('train/lr', current_lr, step=global_step)
+                            logger.log_scalar('train/s_per_step', s_per_step, step=global_step)
+                            logger.log_scalar('train/eta_hours', eta_seconds / 3600, step=global_step)
                             logger.log_scalar('epoch', epoch, step=global_step)
                             logger.flush()
 
@@ -767,6 +782,10 @@ class BaseRunner:
                         if config.ddp:
                             import torch.distributed as dist
                             dist.barrier()
+
+                        # Reset interval timer so checkpoint overhead isn't
+                        # counted against the next training interval's tok/s.
+                        interval_start = time.time()
 
                     if global_step >= max_steps:
                         break
@@ -1056,6 +1075,7 @@ class BaseRunner:
 
         with backend.no_grad_context():
             for batch in loader:
+                import torch; torch.compiler.cudagraph_mark_step_begin()
                 logits, batch_loss, n, targets_d = self.eval_step(model, batch, criterion)
 
                 total_loss = total_loss + batch_loss * n
@@ -1207,7 +1227,7 @@ class LanguageModelRunner(BaseRunner):
 
         # Return un-scaled loss for logging
         raw_loss = loss.detach() * grad_accum if grad_accum > 1 else loss.detach()
-        return logits, raw_loss, inputs.shape[0], targets
+        return None, raw_loss, inputs.shape[0], None
 
     def _np_train_step(self, model, batch, criterion, optimizer):
         """Numpy backend LM training step."""
