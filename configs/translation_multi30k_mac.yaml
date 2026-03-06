@@ -1,0 +1,28 @@
+name: translation-multi30k-mac
+backend: numpy
+task: seq2seq
+dataset: multi30k
+model: transformer_base
+tokenizer: bert-base-multilingual-cased
+max_seq_len: 128
+model_args:
+  src_vocab_size: 119547
+  tgt_vocab_size: 119547
+  pad_token_id: 0
+epochs: 30
+batch_size: 256
+lr: 1e-4
+optimizer: adamw
+scheduler: cosine
+warmup_epochs: 3
+grad_clip: 1.0
+label_smoothing: 0.1
+metrics: [bleu]
+generate_every: 1
+generate_max_tokens: 128
+logger: console
+log_interval: 50
+num_workers: 4
+pin_memory: false
+amp: false
+cudnn_benchmark: false

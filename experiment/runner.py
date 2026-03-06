@@ -635,6 +635,9 @@ class BaseRunner:
         # ── Metrics ─────────────────────────────────────────────
         metric_fns = self.setup_metrics()
 
+        import sys
+        sys.stdout.flush()
+
         return model, train_loader, val_loader, test_loader, optimizer, scheduler, warmup, criterion, logger, metric_fns
 
     def _generate_samples_at_step(self, model, logger, step):
@@ -880,8 +883,9 @@ class BaseRunner:
         if logger:
             logger.begin_training()
 
-        history = {f'{s}_{k}': [] for s in ('train', 'val')
-                   for k in ['loss'] + list(metric_fns)}
+        from collections import defaultdict
+        history = defaultdict(list, {f'{s}_{k}': [] for s in ('train', 'val')
+                   for k in ['loss'] + list(metric_fns)})
         primary_metric = list(metric_fns.keys())[0] if metric_fns else 'loss'
         best_metric = self.initial_best_metric(primary_metric)
         best_epoch = 0
@@ -1575,19 +1579,14 @@ class Seq2SeqRunner(BaseRunner):
         batch_loss = loss.data.item() if loss.data.ndim == 0 else float(loss.data.mean())
         return logits, batch_loss, B, tgt_target
 
-    def on_epoch_end(self, epoch, train_results, val_results, model, logger):
-        """Compute BLEU on validation subset using model.generate() + sacrebleu."""
-        if self.config.backend != 'pytorch':
-            return
-        if self.config.generate_every <= 0 or epoch % self.config.generate_every != 0:
-            return
+    def _compute_bleu(self, model, logger, step, label):
+        """Shared BLEU computation for both step-level and epoch-level generation."""
         try:
             import sacrebleu
         except ImportError:
             self.mprint("  sacrebleu not installed — skipping BLEU")
             return
 
-        import torch
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(self.config.tokenizer)
@@ -1595,58 +1594,83 @@ class Seq2SeqRunner(BaseRunner):
         if val_loader is None:
             return
 
-        # Unwrap DDP/compiled model to get .generate()
-        raw_model = model
-        if hasattr(raw_model, '_orig_mod'):       # torch.compile wrapper
-            raw_model = raw_model._orig_mod
-        if hasattr(raw_model, 'module'):           # DDP wrapper
-            raw_model = raw_model.module
-
-        device = next(raw_model.parameters()).device
         start_id = tokenizer.cls_token_id or 101
         end_id = tokenizer.sep_token_id or 102
         max_gen = self.config.generate_max_tokens
 
-        self.mprint(f"\n  Computing BLEU (epoch {epoch})...")
+        self.mprint(f"\n  Computing BLEU ({label} {step})...")
         hypotheses, references = [], []
         n_pairs = 0
         max_pairs = 500
 
-        raw_model.eval()
-        with torch.no_grad():
-            for batch in val_loader:
-                src, tgt = batch
-                src = src.to(device)
-                generated = raw_model.generate(
-                    src, max_length=max_gen,
-                    start_token_id=start_id, end_token_id=end_id,
-                )
-                for i in range(src.shape[0]):
-                    hyp = tokenizer.decode(generated[i], skip_special_tokens=True)
-                    ref = tokenizer.decode(tgt[i], skip_special_tokens=True)
-                    hypotheses.append(hyp)
-                    references.append(ref)
-                    n_pairs += 1
-                if n_pairs >= max_pairs:
-                    break
+        if self.config.backend == 'pytorch':
+            import torch
+            raw_model = model
+            if hasattr(raw_model, '_orig_mod'):
+                raw_model = raw_model._orig_mod
+            if hasattr(raw_model, 'module'):
+                raw_model = raw_model.module
+            device = next(raw_model.parameters()).device
+            raw_model.eval()
+            with torch.no_grad():
+                for batch in val_loader:
+                    src, tgt = batch
+                    src = src.to(device)
+                    generated = raw_model.generate(
+                        src, max_length=max_gen,
+                        start_token_id=start_id, end_token_id=end_id,
+                    )
+                    for i in range(src.shape[0]):
+                        hyp = tokenizer.decode(generated[i], skip_special_tokens=True)
+                        ref = tokenizer.decode(tgt[i], skip_special_tokens=True)
+                        hypotheses.append(hyp)
+                        references.append(ref)
+                        n_pairs += 1
+                    if n_pairs >= max_pairs:
+                        break
+        else:
+            # numpy backend
+            with self.backend.no_grad_context():
+                for batch in val_loader:
+                    src, tgt = batch
+                    generated = model.generate(
+                        src, max_length=max_gen,
+                        start_token_id=start_id, end_token_id=end_id,
+                    )
+                    for i in range(src.shape[0]):
+                        hyp = tokenizer.decode(generated[i], skip_special_tokens=True)
+                        ref = tokenizer.decode(tgt[i], skip_special_tokens=True)
+                        hypotheses.append(hyp)
+                        references.append(ref)
+                        n_pairs += 1
+                    if n_pairs >= max_pairs:
+                        break
 
         bleu = sacrebleu.corpus_bleu(hypotheses, [references])
         self.mprint(f"  BLEU: {bleu.score:.2f} ({n_pairs} pairs)")
 
-        # Print a few examples
         for i in range(min(3, len(hypotheses))):
             self.mprint(f"    ref: {references[i][:120]}")
             self.mprint(f"    hyp: {hypotheses[i][:120]}")
             self.mprint("")
 
         if logger:
-            logger.log_scalar('val/bleu', bleu.score, step=epoch)
-            # Log example translations as text
+            logger.log_scalar('val/bleu', bleu.score, step=step)
             examples_text = "\n".join(
                 f"ref: {references[i]}\nhyp: {hypotheses[i]}\n"
                 for i in range(min(5, len(hypotheses)))
             )
-            logger.log_text('val/translations', examples_text, step=epoch)
+            logger.log_text('val/translations', examples_text, step=step)
+
+    def _generate_samples_at_step(self, model, logger, step):
+        """Generate translations and compute BLEU at a given training step."""
+        self._compute_bleu(model, logger, step, label='step')
+
+    def on_epoch_end(self, epoch, train_results, val_results, model, logger):
+        """Compute BLEU on validation subset using model.generate() + sacrebleu."""
+        if self.config.generate_every <= 0 or epoch % self.config.generate_every != 0:
+            return
+        self._compute_bleu(model, logger, epoch, label='epoch')
 
     def format_metric(self, name, value):
         if name == 'loss':
@@ -1667,6 +1691,18 @@ def get_runner(config: Config) -> BaseRunner:
         return LanguageModelRunner(config)
     elif task == 'seq2seq':
         return Seq2SeqRunner(config)
+    elif task == 'mlm':
+        from experiment.runners.mlm import MLMRunner
+        return MLMRunner(config)
+    elif task == 'nsp':
+        from experiment.runners.nsp import NSPRunner
+        return NSPRunner(config)
+    elif task == 'bert_pretrain':
+        from experiment.runners.bert_pretrain import BertPreTrainRunner
+        return BertPreTrainRunner(config)
+    elif task == 'token_classification':
+        from experiment.runners.token_classification import TokenClassificationRunner
+        return TokenClassificationRunner(config)
     else:
         return ClassificationRunner(config)
 

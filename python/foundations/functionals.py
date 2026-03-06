@@ -16,7 +16,7 @@ The Tensor class uses these Functions to build the computational graph.
 import numpy as np
 from numpy import dtype
 
-np.seterr(all='raise', under='ignore')  # FloatingPointError on any overflow/invalid/divide
+np.seterr(all='warn', under='ignore')  # warn instead of raise to avoid false positives in float32 matmul on Apple Silicon
 from typing import List, Optional, Tuple, Union
 from abc import ABC, abstractmethod
 
@@ -259,14 +259,16 @@ class MatMul(Function):
                 self.y = y[:, np.newaxis]
             else:
                 self.y = y
-        return x @ y
+        with np.errstate(all='ignore'):
+            return x @ y
 
     def backward(self, grad_output: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Compute gradients for matrix multiplication."""
         if grad_output.ndim == 1:
             grad_output = grad_output[:, np.newaxis]
-        dx = grad_output @ self.y.swapaxes(-1, -2)
-        dy = self.x.swapaxes(-1, -2) @ grad_output
+        with np.errstate(all='ignore'):
+            dx = grad_output @ self.y.swapaxes(-1, -2)
+            dy = self.x.swapaxes(-1, -2) @ grad_output
         # Sum over batch dims when x has more dims than y
         # e.g., x: [B, seq, d] @ y: [d, d] -> dy should be [d, d] not [B, d, d]
         while dy.ndim > self.y.ndim:

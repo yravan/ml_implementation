@@ -1,0 +1,25 @@
+# BERT Pre-Training (Joint MLM+NSP) — Mac / Numpy / Tiny
+name: bert_pretrain_mac
+backend: numpy
+task: bert_pretrain
+dataset: bert_pretrain_wikitext2
+model: bert_pretrain
+tokenizer: bert-base-uncased
+
+max_seq_len: 128
+batch_size: 16
+epochs: 5
+lr: 1e-4
+optimizer: adamw
+weight_decay: 0.01
+scheduler: cosine
+warmup_epochs: 1
+
+model_args:
+  tiny: true
+
+subset: 1000
+num_workers: 0
+pin_memory: false
+logger: console
+metrics: []

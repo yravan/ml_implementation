@@ -1,0 +1,29 @@
+# BERT POS Tagging — GPU / PyTorch / Base
+name: bert_pos_gpu
+backend: pytorch
+task: token_classification
+dataset: ud_pos
+model: bert_token_cls
+tokenizer: bert-base-uncased
+
+max_seq_len: 256
+batch_size: 32
+epochs: 20
+lr: 5e-5
+optimizer: adamw
+weight_decay: 0.01
+scheduler: cosine
+warmup_epochs: 2
+grad_clip: 1.0
+
+model_args:
+  num_classes: 18
+
+amp: true
+compile: true
+
+num_workers: 8
+pin_memory: true
+logger: wandb
+wandb_project: bert-pos
+metrics: []

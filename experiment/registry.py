@@ -1246,6 +1246,16 @@ class _NpSeq2SeqDataset:
         return (self.src_ids[idx], self.tgt_ids[idx])
 
 
+def _tokenize_parallel(src_texts, tgt_texts, tokenizer, max_seq_len):
+    """Batch-tokenize parallel src/tgt texts into fixed-length numpy arrays."""
+    import numpy as np
+    src_enc = tokenizer(src_texts, truncation=True, padding='max_length',
+                        max_length=max_seq_len, return_tensors='np')
+    tgt_enc = tokenizer(tgt_texts, truncation=True, padding='max_length',
+                        max_length=max_seq_len, return_tensors='np')
+    return src_enc['input_ids'].astype(np.int64), tgt_enc['input_ids'].astype(np.int64)
+
+
 @register_dataset('wikitext2', 'numpy')
 def _np_wikitext2(config):
     from python.utils.data_utils import DataLoader as NpLoader
@@ -1396,3 +1406,12 @@ def _np_wmt14(config):
         NpLoader(_NpSeq2SeqDataset(val_src, val_tgt), batch_size=config.batch_size, shuffle=False),
         NpLoader(_NpSeq2SeqDataset(test_src, test_tgt), batch_size=config.batch_size, shuffle=False),
     )
+
+
+# =============================================================================
+# Import submodule registrations (BERT datasets, models, etc.)
+# These trigger @register_model/@register_dataset decorators on import.
+# =============================================================================
+
+from experiment import datasets as _datasets  # noqa: F401, E402
+from experiment import models as _models      # noqa: F401, E402

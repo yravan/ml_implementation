@@ -1,0 +1,26 @@
+# BERT POS Tagging — Mac / Numpy / Tiny
+name: bert_pos_mac
+backend: numpy
+task: token_classification
+dataset: ud_pos
+model: bert_token_cls
+tokenizer: bert-base-uncased
+
+max_seq_len: 128
+batch_size: 16
+epochs: 10
+lr: 5e-5
+optimizer: adamw
+weight_decay: 0.01
+scheduler: cosine
+warmup_epochs: 1
+
+model_args:
+  tiny: true
+  num_classes: 18
+
+subset: 500
+num_workers: 0
+pin_memory: false
+logger: console
+metrics: []

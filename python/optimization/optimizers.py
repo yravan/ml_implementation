@@ -353,7 +353,7 @@ class SGD(Optimizer):
         lib = _load_optim_c()
         for key, value in self.flattened_params.items():
             params = self.param_groups[key]["params"]
-            grads_flat = np.concatenate([p.grad.ravel() for p in params])
+            grads_flat = np.concatenate([p.grad.ravel() if p.grad is not None else np.zeros_like(p.data).ravel() for p in params])
             grads_flat = grads_flat.astype(value["params_flat"].dtype, copy=False)  # ADD THIS
 
             if lib is not None and value["params_flat"].dtype == np.float32:
@@ -418,7 +418,7 @@ class SGDW(SGD):
         lib = _load_optim_c()
         for key, value in self.flattened_params.items():
             params = self.param_groups[key]["params"]
-            grads_flat = np.concatenate([p.grad.ravel() for p in params])
+            grads_flat = np.concatenate([p.grad.ravel() if p.grad is not None else np.zeros_like(p.data).ravel() for p in params])
             grads_flat = grads_flat.astype(value["params_flat"].dtype, copy=False)  # ADD THIS
 
             if lib is not None and value["params_flat"].dtype == np.float32:
@@ -836,7 +836,7 @@ class Adam(Optimizer):
         lib = _load_optim_c()
         for key, value in self.flattened_params.items():
             params = self.param_groups[key]["params"]
-            grads_flat = np.concatenate([p.grad.ravel() for p in params])
+            grads_flat = np.concatenate([p.grad.ravel() if p.grad is not None else np.zeros_like(p.data).ravel() for p in params])
             grads_flat = grads_flat.astype(value["params_flat"].dtype, copy=False)  # ADD THIS
 
             bc1 = 1 - value["beta_1"] ** (self._step_count + 1)
@@ -958,7 +958,7 @@ class AdamW(Optimizer):
         lib = _load_optim_c()
         for key, value in self.flattened_params.items():
             params = self.param_groups[key]["params"]
-            grads_flat = np.concatenate([p.grad.ravel() for p in params])
+            grads_flat = np.concatenate([p.grad.ravel() if p.grad is not None else np.zeros_like(p.data).ravel() for p in params])
             grads_flat = grads_flat.astype(value["params_flat"].dtype, copy=False)  # ADD THIS
 
             bc1 = 1 - value["beta_1"] ** (self._step_count + 1)

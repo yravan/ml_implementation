@@ -265,9 +265,14 @@ class CrossEntropyLoss(Module):
         # log softmax
         log_probs = logits.log_softmax(axis=axis)
 
-        # one-hot labels
+        # mask ignored samples
+        tgt = targets.data.astype(np.int64)
+        valid = tgt != ignore_index
+        safe_tgt = np.where(valid, tgt, 0)
+
+        # one-hot labels (using safe indices)
         labels_data = np.zeros(logits.shape)
-        labels_data[np.arange(B), targets.data.astype(np.int64)] = 1.0
+        labels_data[np.arange(B), safe_tgt] = 1.0
         labels = Tensor(labels_data)
 
         # label smoothing
@@ -281,10 +286,15 @@ class CrossEntropyLoss(Module):
         if weight is not None:
             loss = loss * weight[targets.data]
 
-        # mask ignored samples
-        valid = targets.data != ignore_index
+        # zero out ignored samples
         loss = loss * Tensor(valid.astype(float))
-        loss = _reduce(loss, reduction)
+
+        # reduce: divide by number of valid tokens (not total)
+        if reduction == 'mean':
+            n_valid = max(valid.sum(), 1)
+            loss = loss.sum() / Tensor(np.array(float(n_valid)))
+        elif reduction == 'sum':
+            loss = loss.sum()
         return loss
 
 class BinaryCrossEntropyLoss(Module):

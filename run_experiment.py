@@ -4,7 +4,8 @@ Change CONFIG_PATH below, then Run/Debug this file.
 """
 from experiment import Config, run
 
-CONFIG_PATH = "configs/gpt2_wikitext2_mac.yaml"
+CONFIG_PATH = "configs/translation_multi30k_mac.yaml"
 
-config = Config.from_yaml(CONFIG_PATH)
-run(config)
+if __name__ == '__main__':
+    config = Config.from_yaml(CONFIG_PATH)
+    run(config)

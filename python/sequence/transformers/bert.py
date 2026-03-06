@@ -84,13 +84,21 @@ import numpy as np
 from typing import Optional, Tuple
 
 from python.foundations import Tensor
-from python.nn_core import Module, Parameter, ModuleList
+from python.nn_core import (
+    Module,
+    Parameter,
+    ModuleList,
+    Sequential,
+    SinusoidalPositionalEncoding,
+)
 from python.nn_core.linear import Linear
 from python.nn_core.normalization import LayerNorm
 from python.nn_core.attention import MultiHeadAttention
 from python.nn_core.regularization import Dropout
 from python.nn_core.activations import GELU, Tanh
 from python.nn_core.positional import LearnedPositionalEmbedding
+from python.nn_core.init import normal_
+from python.sequence.transformers import TransformerEncoder, EncoderLayer
 
 
 class BertEmbeddings(Module):
@@ -123,14 +131,14 @@ class BertEmbeddings(Module):
         eps: float = 1e-12,
     ):
         super().__init__()
-        raise NotImplementedError(
-            "BERT embeddings combine three learned embedding tables "
-            "(token, position, and segment/token-type) by element-wise "
-            "addition, then apply layer normalization and dropout. "
-            "Position embeddings encode absolute position in the sequence, "
-            "while segment embeddings distinguish between sentence A and B "
-            "in sentence-pair tasks."
-        )
+        self.token_embeddings = Parameter(np.zeros((vocab_size, d_model)))
+        normal_(self.token_embeddings, std=0.02)
+        self.position_embeddings = LearnedPositionalEmbedding(max_seq_len, d_model)
+        self.segment_embeddings = LearnedPositionalEmbedding(num_segments, d_model)
+
+        self.drop = Dropout(dropout)
+        self.out_norm = LayerNorm(d_model, eps=eps)
+
 
     def forward(
         self,
@@ -149,12 +157,19 @@ class BertEmbeddings(Module):
         Returns:
             [batch, seq_len, d_model]
         """
-        raise NotImplementedError(
-            "Looks up token, position, and segment embeddings, sums them "
-            "element-wise, applies layer normalization and dropout, and "
-            "returns the combined embedding. Missing token_type_ids default "
-            "to zeros; missing position_ids default to sequential indices."
-        )
+        B, L = input_ids.shape
+        tokens = self.token_embeddings[input_ids.data.flatten().astype(int)].reshape(B, L, -1)
+        positions = self.position_embeddings(position_ids.data.flatten().astype(int)).reshape(B, L, -1)
+        if token_type_ids is None:
+            token_type_ids = Tensor(np.zeros((B, L)))
+        segments = self.segment_embeddings(token_type_ids.data.flatten().astype(int)).reshape(B, L, -1)
+
+        input = tokens + positions + segments
+        input = self.out_norm(input)
+        input = self.drop(input)
+
+        return input
+
 
 
 class BertModel(Module):
@@ -194,13 +209,15 @@ class BertModel(Module):
         activation: str = "gelu",
     ):
         super().__init__()
-        raise NotImplementedError(
-            "BertModel consists of a BertEmbeddings layer, a stack of "
-            "bidirectional encoder layers (each with multi-head self-attention "
-            "and a feed-forward network using pre-layer-normalization), and "
-            "a pooler that projects the [CLS] token representation through "
-            "a linear layer and tanh activation for downstream classification."
-        )
+        self.embedding = BertEmbeddings(vocab_size, d_model, max_seq_len, 2, dropout)
+        self.encoder = ModuleList([
+            EncoderLayer(d_model, num_heads, d_ff, dropout, activation)
+            for _ in range(num_layers)
+        ])
+        self.pooler = Sequential(Linear(d_model, d_model), Tanh())
+        self.positions = None
+        self.max_seq_len = max_seq_len
+        self._cached_batch_size = None
 
     def forward(
         self,
@@ -220,12 +237,24 @@ class BertModel(Module):
             hidden_states: [batch, seq_len, d_model]
             pooled_output: [batch, d_model]
         """
-        raise NotImplementedError(
-            "Passes input through the embedding layer, then through each "
-            "encoder layer with the attention mask, and finally pools the "
-            "[CLS] token (first position) through a linear+tanh projection. "
-            "Returns both the full sequence hidden states and the pooled output."
-        )
+        B, L = input_ids.shape
+        if self.positions is None or self._cached_batch_size != B:
+            self.positions = Tensor(np.tile(np.arange(L), (B, 1)))
+            self._cached_batch_size = B
+        positions = self.positions
+        if positions.shape[1] > L:
+            positions = Tensor(positions.data[:, :L])
+        input = self.embedding(input_ids, token_type_ids, positions)
+        # Convert 1/0 attention mask to boolean (True=attend) for encoder layers
+        if attention_mask is not None:
+            m = attention_mask.data
+            attention_mask = Tensor(m.astype(bool))
+        for layer in self.encoder:
+            input = layer(input, attention_mask)
+
+        hidden_states = input
+        pooled = self.pooler(input[:, 0, :])
+        return hidden_states, pooled
 
 
 class BertForSequenceClassification(Module):
@@ -248,12 +277,12 @@ class BertForSequenceClassification(Module):
 
     def __init__(self, num_classes: int, d_model: int = 768, dropout: float = 0.1, **bert_kwargs):
         super().__init__()
-        raise NotImplementedError(
-            "Wraps a BertModel and adds a dropout + linear classification "
-            "head on the pooled [CLS] token output. The linear layer projects "
-            "from d_model to the number of classes."
+        self.bert = BertModel(d_model=d_model, **bert_kwargs)
+        self.classifier = Sequential(
+            Linear(in_features=d_model, out_features=num_classes),
+            Dropout(dropout),
+            Linear(in_features=num_classes, out_features=num_classes),
         )
-
     def forward(
         self,
         input_ids: Tensor,
@@ -271,11 +300,9 @@ class BertForSequenceClassification(Module):
         Returns:
             logits: [batch, num_classes]
         """
-        raise NotImplementedError(
-            "Passes input through BertModel to get the pooled [CLS] "
-            "representation, applies dropout, and projects through the "
-            "classification head to produce class logits."
-        )
+        _, pooled = self.bert(input_ids, token_type_ids, attention_mask)
+        logits = self.classifier(pooled)
+        return logits
 
 
 class BertForTokenClassification(Module):
@@ -297,10 +324,11 @@ class BertForTokenClassification(Module):
 
     def __init__(self, num_classes: int, d_model: int = 768, dropout: float = 0.1, **bert_kwargs):
         super().__init__()
-        raise NotImplementedError(
-            "Wraps a BertModel and adds a dropout + linear classification "
-            "head applied to every token position. The linear layer projects "
-            "from d_model to the number of entity/tag classes."
+        self.bert = BertModel(d_model=d_model, **bert_kwargs)
+        self.classifier = Sequential(
+            Linear(in_features=d_model, out_features=num_classes),
+            Dropout(dropout),
+            Linear(in_features=num_classes, out_features=num_classes),
         )
 
     def forward(
@@ -320,11 +348,9 @@ class BertForTokenClassification(Module):
         Returns:
             logits: [batch, seq_len, num_classes]
         """
-        raise NotImplementedError(
-            "Passes input through BertModel to get per-token hidden states, "
-            "applies dropout, and projects each token through the "
-            "classification head to produce per-token class logits."
-        )
+        encoded, _ = self.bert(input_ids, token_type_ids, attention_mask)
+        logits = self.classifier(encoded)
+        return logits
 
 
 class BertForMaskedLM(Module):
@@ -346,12 +372,12 @@ class BertForMaskedLM(Module):
 
     def __init__(self, vocab_size: int = 30522, d_model: int = 768, **bert_kwargs):
         super().__init__()
-        raise NotImplementedError(
-            "Wraps a BertModel and adds a masked language modeling head "
-            "consisting of a linear projection, GELU activation, layer "
-            "normalization, and a final linear projection to vocabulary size. "
-            "The output logits at masked positions are used to predict "
-            "the original tokens during pre-training."
+        self.bert = BertModel(d_model=d_model, vocab_size=vocab_size, **bert_kwargs)
+        self.mlm_head = Sequential(
+            Linear(in_features=d_model, out_features=d_model),
+            GELU(),
+            LayerNorm(d_model),
+            Linear(in_features=d_model, out_features=vocab_size),
         )
 
     def forward(
@@ -371,11 +397,104 @@ class BertForMaskedLM(Module):
         Returns:
             logits: [batch, seq_len, vocab_size]
         """
-        raise NotImplementedError(
-            "Passes input through BertModel to get hidden states, then "
-            "applies the MLM head (linear -> activation -> layer norm -> "
-            "linear) to project each position to vocabulary logits."
+        encoded, _ = self.bert(input_ids, token_type_ids, attention_mask)
+        logits = self.mlm_head(encoded)
+        return logits
+
+
+class BertForNextSentencePrediction(Module):
+    """
+    BERT for Next Sentence Prediction.
+
+    Adds a binary classification head on the pooled [CLS] output.
+
+    Args:
+        d_model (int): Model dimension. Default: 768
+        **bert_kwargs: Arguments for BertModel
+
+    Shape:
+        Input:  input_ids: [batch, seq_len]
+        Output: logits: [batch, 2]
+    """
+
+    def __init__(self, d_model: int = 768, **bert_kwargs):
+        super().__init__()
+        self.bert = BertModel(d_model=d_model, **bert_kwargs)
+        self.nsp_head = Linear(in_features=d_model, out_features=2)
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        token_type_ids: Optional[Tensor] = None,
+        attention_mask: Optional[Tensor] = None,
+    ) -> Tensor:
+        """
+        Predict if sentence B follows sentence A.
+
+        Args:
+            input_ids: [batch, seq_len]
+            token_type_ids: [batch, seq_len]
+            attention_mask: [batch, seq_len]
+
+        Returns:
+            logits: [batch, 2]
+        """
+        _, pooled = self.bert(input_ids, token_type_ids, attention_mask)
+        logits = self.nsp_head(pooled)
+        return logits
+
+
+class BertForPreTraining(Module):
+    """
+    BERT for Pre-Training (combined MLM + NSP).
+
+    Adds both an MLM head and an NSP head on top of BertModel.
+    Returns both sets of logits for joint training.
+
+    Args:
+        vocab_size (int): Vocabulary size. Default: 30522
+        d_model (int): Model dimension. Default: 768
+        **bert_kwargs: Arguments for BertModel
+
+    Shape:
+        Input:  input_ids: [batch, seq_len]
+        Output: (mlm_logits: [batch, seq_len, vocab_size],
+                 nsp_logits: [batch, 2])
+    """
+
+    def __init__(self, vocab_size: int = 30522, d_model: int = 768, **bert_kwargs):
+        super().__init__()
+        self.bert = BertModel(d_model=d_model, vocab_size=vocab_size, **bert_kwargs)
+        self.mlm_head = Sequential(
+            Linear(in_features=d_model, out_features=d_model),
+            GELU(),
+            LayerNorm(d_model),
+            Linear(in_features=d_model, out_features=vocab_size),
         )
+        self.nsp_head = Linear(in_features=d_model, out_features=2)
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        token_type_ids: Optional[Tensor] = None,
+        attention_mask: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Joint MLM + NSP forward pass.
+
+        Args:
+            input_ids: [batch, seq_len]
+            token_type_ids: [batch, seq_len]
+            attention_mask: [batch, seq_len]
+
+        Returns:
+            mlm_logits: [batch, seq_len, vocab_size]
+            nsp_logits: [batch, 2]
+        """
+        encoded, pooled = self.bert(input_ids, token_type_ids, attention_mask)
+        mlm_logits = self.mlm_head(encoded)
+        nsp_logits = self.nsp_head(pooled)
+        return mlm_logits, nsp_logits
 
 
 # Configuration dictionaries
@@ -397,6 +516,17 @@ BERT_LARGE_CONFIG = {
     "num_layers": 24,
     "d_ff": 4096,
     "max_seq_len": 512,
+    "dropout": 0.1,
+    "activation": "gelu",
+}
+
+BERT_TINY_CONFIG = {
+    "vocab_size": 30522,
+    "d_model": 256,
+    "num_heads": 4,
+    "num_layers": 4,
+    "d_ff": 1024,
+    "max_seq_len": 128,
     "dropout": 0.1,
     "activation": "gelu",
 }
